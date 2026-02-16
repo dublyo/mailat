@@ -179,6 +179,7 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 
 		// Auth routes (public)
 		group.Group("/auth", func(authGroup *ghttp.RouterGroup) {
+			authGroup.GET("/register-status", authCtrl.RegisterStatus)
 			authGroup.POST("/register", authCtrl.Register)
 			authGroup.POST("/login", authCtrl.Login)
 

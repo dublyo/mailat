@@ -19,6 +19,17 @@ func NewAuthController(authService *service.AuthService) *AuthController {
 	return &AuthController{authService: authService}
 }
 
+// RegisterStatus checks if registration is open
+// GET /api/v1/auth/register-status
+func (c *AuthController) RegisterStatus(r *ghttp.Request) {
+	open, err := c.authService.IsRegistrationOpen(r.Context())
+	if err != nil {
+		response.InternalError(r, err.Error())
+		return
+	}
+	response.Success(r, map[string]bool{"open": open})
+}
+
 // Register creates a new user and organization
 // POST /api/v1/auth/register
 func (c *AuthController) Register(r *ghttp.Request) {

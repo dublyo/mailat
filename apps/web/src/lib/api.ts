@@ -261,6 +261,9 @@ export const authApi = {
   register: (data: { email: string; password: string; name: string }) =>
     api.post<{ token: string; user: User }>('/api/v1/auth/register', data),
 
+  registerStatus: () =>
+    api.get<{ open: boolean }>('/api/v1/auth/register-status'),
+
   me: () => api.get<User>('/api/v1/auth/me'),
 }
 

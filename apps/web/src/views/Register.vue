@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Mail, Eye, EyeOff, Check, X } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
+import { authApi } from '@/lib/api'
 import Button from '@/components/common/Button.vue'
 
 const router = useRouter()
@@ -15,6 +16,21 @@ const confirmPassword = ref('')
 const showPassword = ref(false)
 const error = ref('')
 const isLoading = ref(false)
+const registrationClosed = ref(false)
+const checkingStatus = ref(true)
+
+onMounted(async () => {
+  try {
+    const res = await authApi.registerStatus()
+    if (!res.open) {
+      registrationClosed.value = true
+    }
+  } catch {
+    // If check fails, allow form to show — backend will reject anyway
+  } finally {
+    checkingStatus.value = false
+  }
+})
 
 const passwordRequirements = computed(() => [
   { label: 'At least 8 characters', met: password.value.length >= 8 },
@@ -64,8 +80,29 @@ const handleSubmit = async () => {
           <span class="text-2xl font-medium text-gmail-gray">Mailat</span>
         </div>
 
+        <!-- Loading state -->
+        <div v-if="checkingStatus" class="text-center py-8">
+          <p class="text-gmail-gray">Loading...</p>
+        </div>
+
+        <!-- Registration closed -->
+        <div v-else-if="registrationClosed" class="text-center">
+          <h1 class="text-2xl font-normal mb-2">Registration Closed</h1>
+          <p class="text-gmail-gray mb-6">
+            Registration is closed. Only the admin can invite new users.
+          </p>
+          <router-link
+            to="/login"
+            class="inline-block px-6 py-3 bg-gmail-blue text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+          >
+            Sign in instead
+          </router-link>
+        </div>
+
+        <!-- Registration form -->
+        <template v-else>
         <h1 class="text-2xl font-normal text-center mb-2">Create account</h1>
-        <p class="text-gmail-gray text-center mb-8">Join Mailat today</p>
+        <p class="text-gmail-gray text-center mb-8">Set up your admin account</p>
 
         <div v-if="error" class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
           {{ error }}
@@ -175,6 +212,7 @@ const handleSubmit = async () => {
             Sign in
           </router-link>
         </div>
+        </template>
       </div>
     </div>
   </div>

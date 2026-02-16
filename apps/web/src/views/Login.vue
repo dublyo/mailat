@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { Mail, Eye, EyeOff } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
+import { authApi } from '@/lib/api'
 import Button from '@/components/common/Button.vue'
 import Spinner from '@/components/common/Spinner.vue'
 
@@ -15,6 +16,16 @@ const password = ref('')
 const showPassword = ref(false)
 const error = ref('')
 const isLoading = ref(false)
+const registrationOpen = ref(false)
+
+onMounted(async () => {
+  try {
+    const res = await authApi.registerStatus()
+    registrationOpen.value = res.open
+  } catch {
+    // ignore — just hide register link
+  }
+})
 
 const handleSubmit = async () => {
   error.value = ''
@@ -109,7 +120,7 @@ const handleSubmit = async () => {
           </Button>
         </form>
 
-        <div class="mt-6 text-center">
+        <div v-if="registrationOpen" class="mt-6 text-center">
           <span class="text-gmail-gray">Don't have an account? </span>
           <router-link to="/register" class="text-gmail-blue hover:underline font-medium">
             Create account

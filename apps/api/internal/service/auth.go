@@ -286,6 +286,16 @@ func (s *AuthService) DeleteAPIKey(ctx context.Context, orgID int64, keyUUID str
 	return nil
 }
 
+// IsRegistrationOpen checks if registration is still available (no users exist yet)
+func (s *AuthService) IsRegistrationOpen(ctx context.Context) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to check users: %w", err)
+	}
+	return count == 0, nil
+}
+
 func (s *AuthService) generateToken(user *model.User) (string, error) {
 	// Parse expiry duration (e.g., "7d")
 	expiry := 7 * 24 * time.Hour // default 7 days
