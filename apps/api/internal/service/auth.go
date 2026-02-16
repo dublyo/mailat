@@ -29,18 +29,23 @@ func NewAuthService(db *sql.DB, cfg *config.Config) *AuthService {
 	return &AuthService{db: db, cfg: cfg}
 }
 
-// Register creates a new user and organization
+// Register creates the first admin user and organization.
+// Registration is one-time only — once an owner exists, new users must be invited.
 func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) (*model.AuthResponse, error) {
-	// Check if email already exists
-	var exists bool
-	err := s.db.QueryRowContext(ctx, `
-		SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)
-	`, strings.ToLower(req.Email)).Scan(&exists)
+	// One-time registration: reject if any users already exist
+	var userCount int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&userCount)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check existing user: %w", err)
+		return nil, fmt.Errorf("failed to check existing users: %w", err)
 	}
-	if exists {
-		return nil, fmt.Errorf("email already registered")
+	if userCount > 0 {
+		return nil, fmt.Errorf("registration is closed — contact your admin for an invite")
+	}
+
+	// Auto-generate org name if not provided
+	orgName := req.OrgName
+	if orgName == "" {
+		orgName = req.Name + "'s Workspace"
 	}
 
 	// Hash password
@@ -50,7 +55,7 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 	}
 
 	// Generate org slug
-	slug := generateSlug(req.OrgName)
+	slug := generateSlug(orgName)
 
 	// Start transaction
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -66,7 +71,7 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 		INSERT INTO organizations (uuid, name, slug, plan, monthly_email_limit, max_domains, max_identities, max_contacts, updated_at)
 		VALUES ($1, $2, $3, 'free', $4, $5, $6, $7, NOW())
 		RETURNING id
-	`, orgUUID, req.OrgName, slug,
+	`, orgUUID, orgName, slug,
 		s.cfg.DefaultMonthlyEmailLimit,
 		s.cfg.DefaultMaxDomains,
 		s.cfg.DefaultMaxIdentities,

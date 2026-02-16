@@ -134,7 +134,7 @@ type RegisterRequest struct {
 	Email    string `json:"email" v:"required|email"`
 	Password string `json:"password" v:"required|min-length:8"`
 	Name     string `json:"name" v:"required|min-length:2"`
-	OrgName  string `json:"orgName" v:"required|min-length:2"`
+	OrgName  string `json:"orgName"`
 }
 
 type LoginRequest struct {

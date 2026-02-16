@@ -95,6 +95,13 @@ func main() {
 	defer db.Close()
 	fmt.Println("Connected to PostgreSQL")
 
+	// Auto-migrate database schema
+	if err := database.InitSchema(db); err != nil {
+		fmt.Printf("Failed to initialize database schema: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Database schema initialized")
+
 	// Connect to Redis
 	redis, err := database.ConnectRedis(cfg)
 	if err != nil {
