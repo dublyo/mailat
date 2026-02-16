@@ -1,0 +1,1125 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [uuid_ossp(map: "uuid-ossp", schema: "public")]
+}
+
+model Organization {
+  id                Int             @id @default(autoincrement())
+  uuid              String          @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name              String          @db.VarChar(255)
+  slug              String          @unique @db.VarChar(100)
+  settings          Json            @default("{}")
+  maxDomains        Int             @default(5) @map("max_domains")
+  maxUsers          Int             @default(10) @map("max_users")
+  maxContacts       Int             @default(1000) @map("max_contacts")
+  monthlyEmailLimit Int             @default(10000) @map("monthly_email_limit")
+  plan              String          @default("free") @db.VarChar(50)
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  apiKeys           ApiKey[]
+  campaigns         Campaign[]
+  contacts          Contact[]
+  domains           Domain[]
+  lists             List[]
+  sharedMailboxes   SharedMailbox[]
+  templates         Template[]
+  branding          TenantBranding?
+  users             User[]
+  webhooks          Webhook[]
+
+  @@map("organizations")
+}
+
+model User {
+  id                       Int                   @id @default(autoincrement())
+  uuid                     String                @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId                    Int                   @map("org_id")
+  email                    String                @unique @db.VarChar(255)
+  passwordHash             String                @map("password_hash") @db.VarChar(255)
+  name                     String?               @db.VarChar(255)
+  role                     String                @default("member") @db.VarChar(50)
+  emailVerified            Boolean               @default(false) @map("email_verified")
+  emailVerifiedAt          DateTime?             @map("email_verified_at") @db.Timestamptz(6)
+  status                   String                @default("active") @db.VarChar(50)
+  createdAt                DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  lastLoginAt              DateTime?             @map("last_login_at") @db.Timestamptz(6)
+  backupCodes              String[]              @default([]) @map("backup_codes")
+  totpEnabled              Boolean               @default(false) @map("totp_enabled")
+  totpSecret               String?               @map("totp_secret") @db.VarChar(64)
+  totpVerifiedAt           DateTime?             @map("totp_verified_at") @db.Timestamptz(6)
+  auditLogs                AuditLog[]
+  identities               Identity[]
+  oauthConnections         OAuthConnection[]
+  pushSubscriptions        PushSubscription[]
+  sharedMailboxMemberships SharedMailboxMember[]
+  sieveScripts             SieveScript[]
+  threadGroups             ThreadGroup[]
+  sessions                 UserSession[]
+  organization             Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  webauthnCredentials      WebAuthnCredential[]
+
+  @@map("users")
+}
+
+model OAuthConnection {
+  id             Int       @id @default(autoincrement())
+  userId         Int       @map("user_id")
+  provider       String    @db.VarChar(50)
+  providerUserId String    @map("provider_user_id") @db.VarChar(255)
+  accessToken    String?   @map("access_token")
+  refreshToken   String?   @map("refresh_token")
+  tokenExpiry    DateTime? @map("token_expiry") @db.Timestamptz(6)
+  email          String?   @db.VarChar(255)
+  name           String?   @db.VarChar(255)
+  avatarUrl      String?   @map("avatar_url")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@unique([userId, provider])
+  @@index([userId])
+  @@map("oauth_connections")
+}
+
+model ApiKey {
+  id           Int          @id @default(autoincrement())
+  uuid         String       @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        Int          @map("org_id")
+  userId       Int?         @map("user_id")
+  name         String       @db.VarChar(255)
+  keyPrefix    String       @map("key_prefix") @db.VarChar(10)
+  keyHash      String       @map("key_hash") @db.VarChar(255)
+  permissions  String[]     @default([])
+  rateLimit    Int          @default(100) @map("rate_limit")
+  lastUsedAt   DateTime?    @map("last_used_at") @db.Timestamptz(6)
+  expiresAt    DateTime?    @map("expires_at") @db.Timestamptz(6)
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("api_keys")
+}
+
+model Domain {
+  id                  Int               @id @default(autoincrement())
+  uuid                String            @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId               Int               @map("org_id")
+  name                String            @db.VarChar(255)
+  verificationToken   String            @map("verification_token") @db.VarChar(100)
+  verifiedAt          DateTime?         @map("verified_at") @db.Timestamptz(6)
+  mxVerified          Boolean           @default(false) @map("mx_verified")
+  spfVerified         Boolean           @default(false) @map("spf_verified")
+  dkimVerified        Boolean           @default(false) @map("dkim_verified")
+  dmarcVerified       Boolean           @default(false) @map("dmarc_verified")
+  dkimSelector        String            @default("mail") @map("dkim_selector") @db.VarChar(50)
+  dkimPrivateKey      String?           @map("dkim_private_key")
+  dkimPublicKey       String?           @map("dkim_public_key")
+  defaultMailboxQuota BigInt            @default(1073741824) @map("default_mailbox_quota")
+  maxMessageSize      Int               @default(26214400) @map("max_message_size")
+  openTracking        Boolean           @default(true) @map("open_tracking")
+  clickTracking       Boolean           @default(true) @map("click_tracking")
+  status              String            @default("pending") @db.VarChar(50)
+  createdAt           DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  lastDnsCheckAt      DateTime?         @map("last_dns_check_at") @db.Timestamptz(6)
+  sesVerified         Boolean?          @default(false) @map("ses_verified")
+  sesDkimTokens       String[]          @default([]) @map("ses_dkim_tokens")
+  sesIdentityArn      String?           @map("ses_identity_arn") @db.VarChar(255)
+  emailProvider       String?           @default("ses") @map("email_provider") @db.VarChar(20)
+  // Email receiving configuration
+  receivingEnabled    Boolean           @default(false) @map("receiving_enabled")
+  receivingS3Bucket   String?           @map("receiving_s3_bucket") @db.VarChar(255)
+  receivingSnsTopicArn String?          @map("receiving_sns_topic_arn") @db.VarChar(255)
+  receivingRuleSetName String?          @map("receiving_rule_set_name") @db.VarChar(255)
+  receivingRuleName   String?           @map("receiving_rule_name") @db.VarChar(255)
+  receivingSetupAt    DateTime?         @map("receiving_setup_at") @db.Timestamptz(6)
+  dnsRecords          DomainDnsRecord[]
+  organization        Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  emails              Email[]
+  identities          Identity[]
+  receivedEmails      ReceivedEmail[]
+
+  @@unique([orgId, name])
+  @@map("domains")
+}
+
+model DomainDnsRecord {
+  id            Int       @id @default(autoincrement())
+  domainId      Int       @map("domain_id")
+  recordType    String    @map("record_type") @db.VarChar(10)
+  hostname      String    @db.VarChar(255)
+  expectedValue String    @map("expected_value")
+  actualValue   String?   @map("actual_value")
+  verified      Boolean   @default(false)
+  lastCheckedAt DateTime? @map("last_checked_at") @db.Timestamptz(6)
+  domain        Domain    @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@unique([domainId, recordType, hostname])
+  @@map("domain_dns_records")
+}
+
+model Identity {
+  id                Int               @id @default(autoincrement())
+  uuid              String            @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            Int               @map("user_id")
+  domainId          Int               @map("domain_id")
+  email             String            @unique @db.VarChar(255)
+  displayName       String?           @map("display_name") @db.VarChar(255)
+  signatureHtml     String?           @map("signature_html")
+  signatureText     String?           @map("signature_text")
+  isDefault         Boolean           @default(false) @map("is_default")
+  canSend           Boolean           @default(true) @map("can_send")
+  canReceive        Boolean           @default(true) @map("can_receive")
+  isCatchAll        Boolean           @default(false) @map("is_catch_all")
+  color             String?           @db.VarChar(7)  // Hex color for UI display (e.g., #3B82F6)
+  passwordHash      String?           @map("password_hash") @db.VarChar(255)
+  encryptedPassword String?           @map("encrypted_password")
+  quotaBytes        BigInt            @default(1073741824) @map("quota_bytes")
+  usedBytes         BigInt            @default(0) @map("used_bytes")
+  stalwartAccountId String?           @map("stalwart_account_id") @db.VarChar(255)
+  createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  emails            Email[]
+  receivedEmails    ReceivedEmail[]
+  domain            Domain            @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messageMetadata   MessageMetadata[]
+
+  @@index([stalwartAccountId])
+  @@index([domainId, isCatchAll])
+  @@map("identities")
+}
+
+model MessageMetadata {
+  id                BigInt       @id @default(autoincrement())
+  stalwartMessageId String       @unique @map("stalwart_message_id") @db.VarChar(255)
+  stalwartAccountId String       @map("stalwart_account_id") @db.VarChar(255)
+  identityId        Int?         @map("identity_id")
+  labels            String[]     @default([])
+  tags              String[]     @default([])
+  source            String?      @db.VarChar(50)
+  campaignId        Int?         @map("campaign_id")
+  contactId         BigInt?      @map("contact_id")
+  threadGroupId     BigInt?      @map("thread_group_id")
+  createdAt         DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  campaign          Campaign?    @relation(fields: [campaignId], references: [id])
+  contact           Contact?     @relation(fields: [contactId], references: [id])
+  identity          Identity?    @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  threadGroup       ThreadGroup? @relation(fields: [threadGroupId], references: [id])
+
+  @@index([identityId])
+  @@index([campaignId])
+  @@index([threadGroupId])
+  @@map("message_metadata")
+}
+
+model ThreadGroup {
+  id               BigInt            @id @default(autoincrement())
+  userId           Int               @map("user_id")
+  subjectHash      String?           @map("subject_hash") @db.VarChar(64)
+  participantsHash String?           @map("participants_hash") @db.VarChar(64)
+  messageCount     Int               @default(1) @map("message_count")
+  lastMessageAt    DateTime          @default(now()) @map("last_message_at") @db.Timestamptz(6)
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  messages         MessageMetadata[]
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, lastMessageAt(sort: Desc)])
+  @@map("thread_groups")
+}
+
+model Contact {
+  id               BigInt            @id @default(autoincrement())
+  uuid             String            @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId            Int               @map("org_id")
+  email            String            @db.VarChar(255)
+  firstName        String?           @map("first_name") @db.VarChar(100)
+  lastName         String?           @map("last_name") @db.VarChar(100)
+  attributes       Json              @default("{}")
+  status           String            @default("active") @db.VarChar(50)
+  consentSource    String?           @map("consent_source") @db.VarChar(100)
+  consentTimestamp DateTime?         @map("consent_timestamp") @db.Timestamptz(6)
+  consentIp        String?           @map("consent_ip") @db.VarChar(45)
+  consentUserAgent String?           @map("consent_user_agent")
+  lastEngagedAt    DateTime?         @map("last_engaged_at") @db.Timestamptz(6)
+  engagementScore  Float             @default(0) @map("engagement_score")
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  organization     Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  emails           Email[]
+  listMemberships  ListContact[]
+  messageMetadata  MessageMetadata[]
+
+  @@unique([orgId, email])
+  @@index([orgId, status])
+  @@map("contacts")
+}
+
+model List {
+  id           Int           @id @default(autoincrement())
+  uuid         String        @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        Int           @map("org_id")
+  name         String        @db.VarChar(255)
+  description  String?
+  type         String        @default("static") @db.VarChar(50)
+  segmentRules Json?         @map("segment_rules")
+  contactCount Int           @default(0) @map("contact_count")
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  campaigns    Campaign[]
+  contacts     ListContact[]
+  organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("lists")
+}
+
+model ListContact {
+  id        BigInt   @id @default(autoincrement())
+  listId    Int      @map("list_id")
+  contactId BigInt   @map("contact_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  list      List     @relation(fields: [listId], references: [id], onDelete: Cascade)
+
+  @@unique([listId, contactId])
+  @@map("list_contacts")
+}
+
+model Campaign {
+  id               Int               @id @default(autoincrement())
+  uuid             String            @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId            Int               @map("org_id")
+  name             String            @db.VarChar(255)
+  subject          String            @db.VarChar(500)
+  htmlContent      String?           @map("html_content")
+  textContent      String?           @map("text_content")
+  templateId       Int?              @map("template_id")
+  fromName         String            @map("from_name") @db.VarChar(255)
+  fromEmail        String            @map("from_email") @db.VarChar(255)
+  replyTo          String?           @map("reply_to") @db.VarChar(255)
+  listId           Int               @map("list_id")
+  status           String            @default("draft") @db.VarChar(50)
+  scheduledAt      DateTime?         @map("scheduled_at") @db.Timestamptz(6)
+  startedAt        DateTime?         @map("started_at") @db.Timestamptz(6)
+  completedAt      DateTime?         @map("completed_at") @db.Timestamptz(6)
+  totalRecipients  Int               @default(0) @map("total_recipients")
+  sentCount        Int               @default(0) @map("sent_count")
+  deliveredCount   Int               @default(0) @map("delivered_count")
+  openCount        Int               @default(0) @map("open_count")
+  clickCount       Int               @default(0) @map("click_count")
+  bounceCount      Int               @default(0) @map("bounce_count")
+  unsubscribeCount Int               @default(0) @map("unsubscribe_count")
+  complaintCount   Int               @default(0) @map("complaint_count")
+  isAbTest         Boolean           @default(false) @map("is_ab_test")
+  abTestSettings   Json?             @map("ab_test_settings")
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  list             List              @relation(fields: [listId], references: [id])
+  organization     Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  template         Template?         @relation(fields: [templateId], references: [id])
+  emails           Email[]
+  messageMetadata  MessageMetadata[]
+
+  @@map("campaigns")
+}
+
+model Template {
+  id              Int          @id @default(autoincrement())
+  uuid            String       @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           Int          @map("org_id")
+  name            String       @db.VarChar(255)
+  description     String?
+  htmlContent     String       @map("html_content")
+  textContent     String?      @map("text_content")
+  category        String       @default("general") @db.VarChar(50)
+  variablesSchema Json?        @map("variables_schema")
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  campaigns       Campaign[]
+  emails          Email[]
+  organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("templates")
+}
+
+model TransactionalEmail {
+  id                    BigInt                       @id @default(autoincrement())
+  uuid                  String                       @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId                 Int                          @map("org_id")
+  identityId            Int                          @default(0) @map("identity_id")
+  messageId             String                       @unique @map("message_id") @db.VarChar(500)
+  fromAddress           String                       @map("from_address") @db.VarChar(255)
+  toAddresses           String                       @map("to_addresses")
+  ccAddresses           String?                      @map("cc_addresses")
+  bccAddresses          String?                      @map("bcc_addresses")
+  replyTo               String?                      @map("reply_to") @db.VarChar(255)
+  subject               String                       @db.VarChar(500)
+  htmlBody              String?                      @map("html_body")
+  textBody              String?                      @map("text_body")
+  templateId            Int?                         @map("template_id")
+  tags                  String?
+  metadata              String?
+  status                String                       @default("queued") @db.VarChar(50)
+  scheduledFor          DateTime?                    @map("scheduled_for") @db.Timestamptz(6)
+  sentAt                DateTime?                    @map("sent_at") @db.Timestamptz(6)
+  deliveredAt           DateTime?                    @map("delivered_at") @db.Timestamptz(6)
+  openedAt              DateTime?                    @map("opened_at") @db.Timestamptz(6)
+  clickedAt             DateTime?                    @map("clicked_at") @db.Timestamptz(6)
+  bouncedAt             DateTime?                    @map("bounced_at") @db.Timestamptz(6)
+  bounceType            String?                      @map("bounce_type") @db.VarChar(20)
+  bounceReason          String?                      @map("bounce_reason")
+  idempotencyKey        String?                      @map("idempotency_key") @db.VarChar(255)
+  createdAt             DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  providerMessageId     String?                      @map("provider_message_id") @db.VarChar(255)
+  emailProvider         String?                      @default("ses") @map("email_provider") @db.VarChar(20)
+  deliveryEvents        TransactionalDeliveryEvent[]
+  transactionalTemplate TransactionalTemplate?       @relation(fields: [templateId], references: [id])
+
+  @@index([orgId, createdAt(sort: Desc)])
+  @@index([status])
+  @@index([idempotencyKey])
+  @@index([providerMessageId])
+  @@map("transactional_emails")
+}
+
+model TransactionalTemplate {
+  id          Int                  @id @default(autoincrement())
+  uuid        String               @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId       Int                  @map("org_id")
+  name        String               @db.VarChar(255)
+  description String?
+  subject     String               @db.VarChar(500)
+  htmlBody    String               @map("html_body")
+  textBody    String?              @map("text_body")
+  variables   String?
+  isActive    Boolean              @default(true) @map("is_active")
+  createdAt   DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  emails      TransactionalEmail[]
+
+  @@index([orgId])
+  @@map("email_templates")
+}
+
+model TransactionalDeliveryEvent {
+  id        BigInt             @id @default(autoincrement())
+  emailId   BigInt             @map("email_id")
+  eventType String             @map("event_type") @db.VarChar(50)
+  details   String?
+  ipAddress String?            @map("ip_address") @db.VarChar(45)
+  userAgent String?            @map("user_agent")
+  createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  email     TransactionalEmail @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId, createdAt(sort: Desc)])
+  @@map("transactional_delivery_events")
+}
+
+model SuppressionList {
+  id        BigInt   @id @default(autoincrement())
+  orgId     Int      @map("org_id")
+  email     String   @db.VarChar(255)
+  reason    String?
+  source    String   @default("manual") @db.VarChar(50)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([orgId, email])
+  @@index([orgId, email])
+  @@map("suppression_list")
+}
+
+model Email {
+  id                BigInt          @id @default(autoincrement())
+  uuid              String          @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId             Int             @map("org_id")
+  messageId         String          @unique @map("message_id") @db.VarChar(255)
+  identityId        Int             @map("identity_id")
+  fromEmail         String          @map("from_email") @db.VarChar(255)
+  fromName          String?         @map("from_name") @db.VarChar(255)
+  toEmails          String[]        @map("to_emails")
+  ccEmails          String[]        @default([]) @map("cc_emails")
+  bccEmails         String[]        @default([]) @map("bcc_emails")
+  replyTo           String?         @map("reply_to") @db.VarChar(255)
+  subject           String          @db.VarChar(500)
+  htmlContent       String?         @map("html_content")
+  textContent       String?         @map("text_content")
+  source            String          @default("api") @db.VarChar(50)
+  domainId          Int             @map("domain_id")
+  campaignId        Int?            @map("campaign_id")
+  templateId        Int?            @map("template_id")
+  contactId         BigInt?         @map("contact_id")
+  tags              String[]        @default([])
+  metadata          Json            @default("{}")
+  headers           Json            @default("{}")
+  status            String          @default("queued") @db.VarChar(50)
+  scheduledAt       DateTime?       @map("scheduled_at") @db.Timestamptz(6)
+  sentAt            DateTime?       @map("sent_at") @db.Timestamptz(6)
+  deliveredAt       DateTime?       @map("delivered_at") @db.Timestamptz(6)
+  openCount         Int             @default(0) @map("open_count")
+  clickCount        Int             @default(0) @map("click_count")
+  idempotencyKey    String?         @unique @map("idempotency_key") @db.VarChar(255)
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  providerMessageId String?         @map("provider_message_id") @db.VarChar(255)
+  emailProvider     String?         @default("ses") @map("email_provider") @db.VarChar(20)
+  deliveryEvents    DeliveryEvent[]
+  campaign          Campaign?       @relation(fields: [campaignId], references: [id])
+  contact           Contact?        @relation(fields: [contactId], references: [id])
+  domain            Domain          @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  identity          Identity        @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  template          Template?       @relation(fields: [templateId], references: [id])
+
+  @@index([orgId, createdAt(sort: Desc)])
+  @@index([status])
+  @@index([messageId])
+  @@index([providerMessageId])
+  @@map("emails")
+}
+
+model DeliveryEvent {
+  id                BigInt   @id @default(autoincrement())
+  emailId           BigInt   @map("email_id")
+  eventType         String   @map("event_type") @db.VarChar(50)
+  stalwartMessageId String?  @map("stalwart_message_id") @db.VarChar(255)
+  data              Json     @default("{}")
+  occurredAt        DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  email             Email    @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId, occurredAt(sort: Desc)])
+  @@map("delivery_events")
+}
+
+model Webhook {
+  id              Int           @id @default(autoincrement())
+  uuid            String        @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           Int           @map("org_id")
+  name            String        @db.VarChar(255)
+  url             String        @db.VarChar(2048)
+  secret          String        @db.VarChar(255)
+  events          String[]      @default([])
+  active          Boolean       @default(true)
+  successCount    Int           @default(0) @map("success_count")
+  failureCount    Int           @default(0) @map("failure_count")
+  lastTriggeredAt DateTime?     @map("last_triggered_at") @db.Timestamptz(6)
+  lastSuccessAt   DateTime?     @map("last_success_at") @db.Timestamptz(6)
+  lastFailureAt   DateTime?     @map("last_failure_at") @db.Timestamptz(6)
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  calls           WebhookCall[]
+  organization    Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("webhooks")
+}
+
+model WebhookCall {
+  id             BigInt    @id @default(autoincrement())
+  webhookId      Int       @map("webhook_id")
+  eventType      String    @map("event_type") @db.VarChar(50)
+  payload        Json
+  responseStatus Int?      @map("response_status")
+  responseBody   String?   @map("response_body")
+  responseTimeMs Int?      @map("response_time_ms")
+  status         String    @default("pending") @db.VarChar(50)
+  attempts       Int       @default(0)
+  error          String?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz(6)
+  webhook        Webhook   @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId, createdAt(sort: Desc)])
+  @@map("webhook_calls")
+}
+
+model Suppression {
+  id         BigInt   @id @default(autoincrement())
+  orgId      Int      @map("org_id")
+  email      String   @db.VarChar(255)
+  reason     String   @db.VarChar(50)
+  sourceType String   @map("source_type") @db.VarChar(50)
+  sourceId   String?  @map("source_id") @db.VarChar(255)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([orgId, email])
+  @@index([orgId, email])
+  @@map("suppressions")
+}
+
+model WarmupProgress {
+  id           Int       @id @default(autoincrement())
+  orgId        Int       @map("org_id")
+  ipAddress    String    @map("ip_address") @db.VarChar(45)
+  scheduleName String    @default("conservative") @map("schedule_name") @db.VarChar(50)
+  currentDay   Int       @default(1) @map("current_day")
+  status       String    @default("active") @db.VarChar(20)
+  pauseReason  String?   @map("pause_reason")
+  startedAt    DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt  DateTime? @map("completed_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([orgId, ipAddress])
+  @@map("warmup_progress")
+}
+
+model Alert {
+  id           BigInt   @id @default(autoincrement())
+  orgId        Int      @map("org_id")
+  type         String   @db.VarChar(50)
+  severity     String   @db.VarChar(20)
+  title        String   @db.VarChar(255)
+  message      String
+  data         Json?
+  acknowledged Boolean  @default(false)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([orgId, acknowledged, createdAt(sort: Desc)])
+  @@map("alerts")
+}
+
+model BlacklistCheck {
+  id          BigInt   @id @default(autoincrement())
+  ipAddress   String   @map("ip_address") @db.VarChar(45)
+  listedCount Int      @default(0) @map("listed_count")
+  results     Json
+  checkedAt   DateTime @default(now()) @map("checked_at") @db.Timestamptz(6)
+
+  @@index([ipAddress, checkedAt(sort: Desc)])
+  @@map("blacklist_checks")
+}
+
+model EmailRule {
+  id             Int       @id @default(autoincrement())
+  uuid           String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         Int       @map("user_id")
+  orgId          Int       @map("org_id")
+  name           String    @db.VarChar(255)
+  description    String?
+  priority       Int       @default(0)
+  conditions     Json
+  conditionLogic String    @default("all") @map("condition_logic") @db.VarChar(10)
+  actions        Json
+  identityIds    Int[]     @default([]) @map("identity_ids")
+  active         Boolean   @default(true)
+  matchCount     Int       @default(0) @map("match_count")
+  lastMatchedAt  DateTime? @map("last_matched_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([userId, active, priority])
+  @@index([orgId])
+  @@map("email_rules")
+}
+
+model AutoReply {
+  id              Int               @id @default(autoincrement())
+  uuid            String            @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          Int               @map("user_id")
+  orgId           Int               @map("org_id")
+  name            String            @db.VarChar(255)
+  startDate       DateTime          @map("start_date") @db.Timestamptz(6)
+  endDate         DateTime?         @map("end_date") @db.Timestamptz(6)
+  subject         String            @db.VarChar(500)
+  htmlContent     String            @map("html_content")
+  textContent     String?           @map("text_content")
+  replyOnce       Boolean           @default(true) @map("reply_once")
+  replyToAll      Boolean           @default(true) @map("reply_to_all")
+  excludePatterns String[]          @default([]) @map("exclude_patterns")
+  identityIds     Int[]             @default([]) @map("identity_ids")
+  active          Boolean           @default(true)
+  replyCount      Int               @default(0) @map("reply_count")
+  lastRepliedAt   DateTime?         @map("last_replied_at") @db.Timestamptz(6)
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  repliedSenders  AutoReplySender[]
+
+  @@index([userId, active])
+  @@index([orgId])
+  @@map("auto_replies")
+}
+
+model AutoReplySender {
+  id          BigInt    @id @default(autoincrement())
+  autoReplyId Int       @map("auto_reply_id")
+  senderEmail String    @map("sender_email") @db.VarChar(255)
+  repliedAt   DateTime  @default(now()) @map("replied_at") @db.Timestamptz(6)
+  autoReply   AutoReply @relation(fields: [autoReplyId], references: [id], onDelete: Cascade)
+
+  @@unique([autoReplyId, senderEmail])
+  @@index([autoReplyId, senderEmail])
+  @@map("auto_reply_senders")
+}
+
+model EmailForward {
+  id              Int       @id @default(autoincrement())
+  uuid            String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          Int       @map("user_id")
+  orgId           Int       @map("org_id")
+  identityId      Int       @map("identity_id")
+  forwardTo       String    @map("forward_to") @db.VarChar(255)
+  keepCopy        Boolean   @default(true) @map("keep_copy")
+  active          Boolean   @default(true)
+  verified        Boolean   @default(false)
+  verifyToken     String?   @map("verify_token") @db.VarChar(100)
+  verifiedAt      DateTime? @map("verified_at") @db.Timestamptz(6)
+  forwardCount    Int       @default(0) @map("forward_count")
+  lastForwardedAt DateTime? @map("last_forwarded_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([identityId, forwardTo])
+  @@index([userId, active])
+  @@map("email_forwards")
+}
+
+model AuditLog {
+  id          BigInt   @id @default(autoincrement())
+  orgId       Int      @map("org_id")
+  userId      Int?     @map("user_id")
+  action      String   @db.VarChar(100)
+  resource    String   @db.VarChar(100)
+  resourceId  String?  @map("resource_id") @db.VarChar(255)
+  description String?
+  ipAddress   String?  @map("ip_address") @db.VarChar(45)
+  userAgent   String?  @map("user_agent")
+  requestId   String?  @map("request_id") @db.VarChar(100)
+  oldValues   Json?    @map("old_values")
+  newValues   Json?    @map("new_values")
+  status      String   @default("success") @db.VarChar(20)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user        User?    @relation(fields: [userId], references: [id])
+
+  @@index([orgId, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+model UserSession {
+  id         BigInt    @id @default(autoincrement())
+  uuid       String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     Int       @map("user_id")
+  orgId      Int       @map("org_id")
+  tokenHash  String    @unique @map("token_hash") @db.VarChar(64)
+  deviceName String?   @map("device_name") @db.VarChar(255)
+  deviceType String?   @map("device_type") @db.VarChar(50)
+  browser    String?   @db.VarChar(100)
+  os         String?   @db.VarChar(100)
+  ipAddress  String?   @map("ip_address") @db.VarChar(45)
+  location   String?   @db.VarChar(255)
+  active     Boolean   @default(true)
+  lastSeenAt DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, active])
+  @@index([orgId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@map("user_sessions")
+}
+
+model WebAuthnCredential {
+  id              BigInt    @id @default(autoincrement())
+  uuid            String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          Int       @map("user_id")
+  credentialId    Bytes     @unique @map("credential_id")
+  publicKey       Bytes     @map("public_key")
+  signCount       Int       @default(0) @map("sign_count")
+  transports      String[]  @default([])
+  aaguid          String?   @db.VarChar(36)
+  attestationType String?   @map("attestation_type") @db.VarChar(50)
+  name            String    @db.VarChar(255)
+  deviceType      String?   @map("device_type") @db.VarChar(50)
+  lastUsedAt      DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("webauthn_credentials")
+}
+
+model SharedMailbox {
+  id               Int                   @id @default(autoincrement())
+  uuid             String                @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId            Int                   @map("org_id")
+  name             String                @db.VarChar(255)
+  email            String                @unique @db.VarChar(255)
+  description      String?
+  autoReplyEnabled Boolean               @default(false) @map("auto_reply_enabled")
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  members          SharedMailboxMember[]
+  organization     Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("shared_mailboxes")
+}
+
+model SharedMailboxMember {
+  id              Int           @id @default(autoincrement())
+  sharedMailboxId Int           @map("shared_mailbox_id")
+  userId          Int           @map("user_id")
+  canRead         Boolean       @default(true) @map("can_read")
+  canSend         Boolean       @default(false) @map("can_send")
+  canManage       Boolean       @default(false) @map("can_manage")
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  sharedMailbox   SharedMailbox @relation(fields: [sharedMailboxId], references: [id], onDelete: Cascade)
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sharedMailboxId, userId])
+  @@map("shared_mailbox_members")
+}
+
+model SieveScript {
+  id        Int      @id @default(autoincrement())
+  uuid      String   @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    Int      @map("user_id")
+  orgId     Int      @map("org_id")
+  name      String   @db.VarChar(255)
+  script    String
+  active    Boolean  @default(false)
+  isDefault Boolean  @default(false) @map("is_default")
+  isValid   Boolean  @default(true) @map("is_valid")
+  lastError String?  @map("last_error")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, active])
+  @@map("sieve_scripts")
+}
+
+model WebhookTrigger {
+  id              Int       @id @default(autoincrement())
+  uuid            String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           Int       @map("org_id")
+  userId          Int       @map("user_id")
+  name            String    @db.VarChar(255)
+  description     String?
+  triggerType     String    @map("trigger_type") @db.VarChar(50)
+  filters         Json?
+  webhookUrl      String    @map("webhook_url")
+  secret          String?   @db.VarChar(255)
+  active          Boolean   @default(true)
+  lastTriggeredAt DateTime? @map("last_triggered_at") @db.Timestamptz(6)
+  triggerCount    Int       @default(0) @map("trigger_count")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([orgId, triggerType, active])
+  @@map("webhook_triggers")
+}
+
+model PushSubscription {
+  id             BigInt    @id @default(autoincrement())
+  uuid           String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         Int       @map("user_id")
+  endpoint       String    @unique
+  p256dhKey      String    @map("p256dh_key")
+  authKey        String    @map("auth_key") @db.VarChar(255)
+  userAgent      String?   @map("user_agent")
+  deviceName     String?   @map("device_name") @db.VarChar(255)
+  notifyNewEmail Boolean   @default(true) @map("notify_new_email")
+  notifyCampaign Boolean   @default(false) @map("notify_campaign")
+  notifyMentions Boolean   @default(true) @map("notify_mentions")
+  active         Boolean   @default(true)
+  lastUsedAt     DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, active])
+  @@map("push_subscriptions")
+}
+
+model TenantBranding {
+  id                   Int          @id @default(autoincrement())
+  orgId                Int          @unique @map("org_id")
+  logoUrl              String?      @map("logo_url")
+  logoLightUrl         String?      @map("logo_light_url")
+  faviconUrl           String?      @map("favicon_url")
+  primaryColor         String?      @map("primary_color") @db.VarChar(7)
+  accentColor          String?      @map("accent_color") @db.VarChar(7)
+  customDomain         String?      @unique @map("custom_domain") @db.VarChar(255)
+  customDomainVerified Boolean      @default(false) @map("custom_domain_verified")
+  emailFooterHtml      String?      @map("email_footer_html")
+  emailHeaderHtml      String?      @map("email_header_html")
+  hidePoweredBy        Boolean      @default(false) @map("hide_powered_by")
+  createdAt            DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  organization         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_brandings")
+}
+
+model UserSettings {
+  id                   Int      @id @default(autoincrement())
+  uuid                 String   @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId               Int      @unique @map("user_id")
+  orgId                Int      @map("org_id")
+  displayName          String?  @map("display_name") @db.VarChar(255)
+  // General settings
+  showSnippets         Boolean  @default(true) @map("show_snippets")
+  conversationView     Boolean  @default(true) @map("conversation_view")
+  autoAdvance          Boolean  @default(false) @map("auto_advance")
+  // Notification settings
+  newEmailNotifications  Boolean  @default(true) @map("new_email_notifications")
+  campaignReports        Boolean  @default(true) @map("campaign_reports")
+  weeklyDigest           Boolean  @default(false) @map("weekly_digest")
+  blacklistAlerts        Boolean  @default(true) @map("blacklist_alerts")
+  bounceRateWarnings     Boolean  @default(true) @map("bounce_rate_warnings")
+  quotaWarnings          Boolean  @default(true) @map("quota_warnings")
+  browserNotifications   Boolean  @default(false) @map("browser_notifications")
+  // Appearance settings
+  theme                String   @default("light") @db.VarChar(20)
+  density              String   @default("comfortable") @db.VarChar(20)
+  inboxLayout          String   @default("default") @map("inbox_layout") @db.VarChar(20)
+  // Security settings
+  twoFactorEnabled     Boolean  @default(false) @map("two_factor_enabled")
+  twoFactorMethod      String?  @map("two_factor_method") @db.VarChar(20)
+  // Timestamps
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([userId])
+  @@index([orgId])
+  @@map("user_settings")
+}
+
+model Automation {
+  id              Int                    @id @default(autoincrement())
+  uuid            String                 @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           Int                    @map("org_id")
+  name            String                 @db.VarChar(255)
+  description     String?
+  triggerType     String                 @map("trigger_type") @db.VarChar(50)
+  triggerConfig   Json                   @default("{}") @map("trigger_config")
+  workflow        Json                   @default("{\"edges\": [], \"nodes\": []}")
+  status          String                 @default("draft") @db.VarChar(50)
+  enrolledCount   Int                    @default(0) @map("enrolled_count")
+  completedCount  Int                    @default(0) @map("completed_count")
+  inProgressCount Int                    @default(0) @map("in_progress_count")
+  errorCount      Int                    @default(0) @map("error_count")
+  createdAt       DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  enrollments     AutomationEnrollment[]
+
+  @@index([orgId, status])
+  @@map("automations")
+}
+
+model AutomationEnrollment {
+  id           BigInt     @id @default(autoincrement())
+  uuid         String     @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  automationId Int        @map("automation_id")
+  contactId    BigInt     @map("contact_id")
+  orgId        Int        @map("org_id")
+  status       String     @default("active") @db.VarChar(50)
+  stepIndex    Int        @default(0) @map("step_index")
+  stepData     Json       @default("{}") @map("step_data")
+  nextRunAt    DateTime?  @map("next_run_at") @db.Timestamptz(6)
+  completedAt  DateTime?  @map("completed_at") @db.Timestamptz(6)
+  errorMessage String?    @map("error_message")
+  retryCount   Int        @default(0) @map("retry_count")
+  enrolledAt   DateTime   @default(now()) @map("enrolled_at") @db.Timestamptz(6)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  automation   Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  @@unique([automationId, contactId])
+  @@index([automationId, status])
+  @@index([orgId])
+  @@index([nextRunAt])
+  @@map("automation_enrollments")
+}
+
+model AutomationLog {
+  id           BigInt   @id @default(autoincrement())
+  enrollmentId BigInt   @map("enrollment_id")
+  automationId Int      @map("automation_id")
+  stepIndex    Int      @map("step_index")
+  stepType     String   @map("step_type") @db.VarChar(50)
+  status       String   @default("success") @db.VarChar(50)
+  message      String?
+  data         Json?
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([enrollmentId, createdAt(sort: Desc)])
+  @@index([automationId, createdAt(sort: Desc)])
+  @@map("automation_logs")
+}
+
+model ConsentAudit {
+  id        BigInt   @id @default(autoincrement())
+  contactId BigInt   @map("contact_id")
+  orgId     Int      @map("org_id")
+  action    String   @db.VarChar(50)
+  source    String   @db.VarChar(50)
+  listId    Int?     @map("list_id")
+  ipAddress String?  @map("ip_address") @db.VarChar(45)
+  userAgent String?  @map("user_agent")
+  details   String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([contactId, createdAt(sort: Desc)])
+  @@index([orgId, createdAt(sort: Desc)])
+  @@map("consent_audit")
+}
+
+// ============================================
+// Email Receiving Models
+// ============================================
+
+model ReceivedEmail {
+  id                BigInt            @id @default(autoincrement())
+  uuid              String            @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId             Int               @map("org_id")
+  domainId          Int               @map("domain_id")
+  identityId        Int               @map("identity_id")
+  messageId         String            @unique @map("message_id") @db.VarChar(500)
+  inReplyTo         String?           @map("in_reply_to") @db.VarChar(500)
+  references        String[]          @default([])
+  threadId          String?           @map("thread_id") @db.VarChar(100)
+  fromEmail         String            @map("from_email") @db.VarChar(255)
+  fromName          String?           @map("from_name") @db.VarChar(255)
+  toEmails          String[]          @map("to_emails")
+  ccEmails          String[]          @default([]) @map("cc_emails")
+  bccEmails         String[]          @default([]) @map("bcc_emails")
+  replyTo           String?           @map("reply_to") @db.VarChar(255)
+  subject           String            @db.VarChar(1000)
+  textBody          String?           @map("text_body")
+  htmlBody          String?           @map("html_body")
+  snippet           String?           @db.VarChar(500)
+  rawS3Key          String?           @map("raw_s3_key") @db.VarChar(500)
+  rawS3Bucket       String?           @map("raw_s3_bucket") @db.VarChar(255)
+  sizeBytes         Int               @default(0) @map("size_bytes")
+  hasAttachments    Boolean           @default(false) @map("has_attachments")
+  // Mailbox state
+  folder            String            @default("inbox") @db.VarChar(50)
+  isRead            Boolean           @default(false) @map("is_read")
+  isStarred         Boolean           @default(false) @map("is_starred")
+  isArchived        Boolean           @default(false) @map("is_archived")
+  isTrashed         Boolean           @default(false) @map("is_trashed")
+  isSpam            Boolean           @default(false) @map("is_spam")
+  labels            String[]          @default([])
+  // Spam detection
+  spamScore         Float?            @map("spam_score")
+  spamVerdict       String?           @map("spam_verdict") @db.VarChar(20)
+  virusVerdict      String?           @map("virus_verdict") @db.VarChar(20)
+  spfVerdict        String?           @map("spf_verdict") @db.VarChar(20)
+  dkimVerdict       String?           @map("dkim_verdict") @db.VarChar(20)
+  dmarcVerdict      String?           @map("dmarc_verdict") @db.VarChar(20)
+  // AWS metadata
+  sesMessageId      String?           @map("ses_message_id") @db.VarChar(255)
+  snsNotificationId String?           @map("sns_notification_id") @db.VarChar(255)
+  // Timestamps
+  receivedAt        DateTime          @default(now()) @map("received_at") @db.Timestamptz(6)
+  readAt            DateTime?         @map("read_at") @db.Timestamptz(6)
+  trashedAt         DateTime?         @map("trashed_at") @db.Timestamptz(6)
+  createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  // Relations
+  domain            Domain            @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  identity          Identity          @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  attachments       EmailAttachment[]
+
+  @@index([orgId, identityId, folder, receivedAt(sort: Desc)])
+  @@index([orgId, identityId, isRead])
+  @@index([identityId, folder, isTrashed, receivedAt(sort: Desc)])
+  @@index([identityId, isStarred])
+  @@index([threadId])
+  @@index([sesMessageId])
+  @@map("received_emails")
+}
+
+model EmailAttachment {
+  id              BigInt        @id @default(autoincrement())
+  uuid            String        @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  receivedEmailId BigInt        @map("received_email_id")
+  filename        String        @db.VarChar(255)
+  contentType     String        @map("content_type") @db.VarChar(255)
+  sizeBytes       Int           @map("size_bytes")
+  s3Key           String        @map("s3_key") @db.VarChar(500)
+  s3Bucket        String        @map("s3_bucket") @db.VarChar(255)
+  contentId       String?       @map("content_id") @db.VarChar(255)
+  isInline        Boolean       @default(false) @map("is_inline")
+  checksum        String?       @db.VarChar(64)
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  receivedEmail   ReceivedEmail @relation(fields: [receivedEmailId], references: [id], onDelete: Cascade)
+
+  @@index([receivedEmailId])
+  @@map("email_attachments")
+}
+
+model EmailLabel {
+  id        Int      @id @default(autoincrement())
+  uuid      String   @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId     Int      @map("org_id")
+  userId    Int      @map("user_id")
+  name      String   @db.VarChar(100)
+  color     String   @default("#6366f1") @db.VarChar(7)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([userId, name])
+  @@index([orgId, userId])
+  @@map("email_labels")
+}
+
+model InboxFilter {
+  id             Int       @id @default(autoincrement())
+  uuid           String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId          Int       @map("org_id")
+  userId         Int       @map("user_id")
+  identityId     Int?      @map("identity_id")
+  name           String    @db.VarChar(255)
+  priority       Int       @default(0)
+  active         Boolean   @default(true)
+  // Conditions (JSON: {field, operator, value}[])
+  conditions     Json      @default("[]")
+  conditionLogic String    @default("all") @map("condition_logic") @db.VarChar(10)
+  // Actions
+  actionLabels   String[]  @default([]) @map("action_labels")
+  actionFolder   String?   @map("action_folder") @db.VarChar(50)
+  actionStar     Boolean   @default(false) @map("action_star")
+  actionMarkRead Boolean   @default(false) @map("action_mark_read")
+  actionArchive  Boolean   @default(false) @map("action_archive")
+  actionTrash    Boolean   @default(false) @map("action_trash")
+  actionForward  String?   @map("action_forward") @db.VarChar(255)
+  // Stats
+  matchCount     Int       @default(0) @map("match_count")
+  lastMatchedAt  DateTime? @map("last_matched_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([userId, active, priority])
+  @@index([orgId])
+  @@map("inbox_filters")
+}
+
+model ReceivingConfig {
+  id               Int       @id @default(autoincrement())
+  uuid             String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId            Int       @unique @map("org_id")
+  s3Bucket         String    @map("s3_bucket") @db.VarChar(255)
+  s3Region         String    @map("s3_region") @db.VarChar(50)
+  snsTopicArn      String    @map("sns_topic_arn") @db.VarChar(255)
+  sesRuleSetName   String    @map("ses_rule_set_name") @db.VarChar(255)
+  webhookSecret    String    @map("webhook_secret") @db.VarChar(255)
+  status           String    @default("pending") @db.VarChar(50)
+  lastHealthCheck  DateTime? @map("last_health_check") @db.Timestamptz(6)
+  setupCompletedAt DateTime? @map("setup_completed_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("receiving_configs")
+}

@@ -1,0 +1,103 @@
+# ===================
+# mailat.co - Production Deployment
+# ===================
+# Deploy with: docker compose -f docker-compose.prod.yml up -d
+
+services:
+  # ===================
+  # REVERSE PROXY (SSL)
+  # ===================
+  caddy:
+    image: caddy:2-alpine
+    container_name: mailat-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - api
+    networks:
+      - mailat-network
+
+  # ===================
+  # WEB APP (Vue)
+  # ===================
+  web:
+    image: ghcr.io/dublyo/mailat-web:${VERSION:-latest}
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ""
+    container_name: mailat-web
+    restart: unless-stopped
+    networks:
+      - mailat-network
+
+  # ===================
+  # API (Go)
+  # ===================
+  api:
+    image: ghcr.io/dublyo/mailat-api:${VERSION:-latest}
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: mailat-api
+    restart: unless-stopped
+    environment:
+      - PORT=8000
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - STALWART_URL=http://stalwart:8080
+      - STALWART_ADMIN_TOKEN=${STALWART_ADMIN_TOKEN}
+      - SMTP_HOST=stalwart
+      - SMTP_PORT=587
+      - SMTP_TLS=false
+      - ENV=production
+      - NODE_ENV=production
+      - AWS_REGION=${AWS_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - EMAIL_PROVIDER=ses
+    depends_on:
+      - stalwart
+    networks:
+      - mailat-network
+
+  # ===================
+  # MAIL SERVER
+  # ===================
+  stalwart:
+    image: stalwartlabs/stalwart:latest
+    container_name: mailat-stalwart
+    restart: unless-stopped
+    ports:
+      - "25:25"       # SMTP
+      - "587:587"     # Submission
+      - "465:465"     # SMTPS
+      - "143:143"     # IMAP
+      - "993:993"     # IMAPS
+      - "4190:4190"   # ManageSieve
+    environment:
+      - STALWART_DATABASE_URL=${STALWART_DATABASE_URL}
+      - STALWART_ADMIN_TOKEN=${STALWART_ADMIN_TOKEN}
+    volumes:
+      - stalwart_data:/opt/stalwart
+      - ./docker/stalwart/config.toml:/opt/stalwart/etc/config.toml:ro
+    networks:
+      - mailat-network
+
+networks:
+  mailat-network:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
+  stalwart_data:

@@ -1,0 +1,119 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --gmail-red: #c5221f;
+  --gmail-blue: #1a73e8;
+  --gmail-gray: #5f6368;
+  --gmail-light-gray: #f1f3f4;
+  --gmail-border: #dadce0;
+  --gmail-hover: #f1f3f4;
+  --gmail-selected: #e8f0fe;
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Gmail-style scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #dadce0;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #bdc1c6;
+}
+
+/* Gmail-style checkbox */
+.gmail-checkbox {
+  @apply w-5 h-5 rounded border-gmail-border cursor-pointer accent-gmail-blue;
+}
+
+/* Gmail-style button */
+.gmail-btn {
+  @apply px-6 py-2 rounded-full font-medium transition-all duration-200;
+}
+
+.gmail-btn-primary {
+  @apply bg-gmail-blue text-white hover:bg-blue-700 shadow-md;
+}
+
+.gmail-btn-secondary {
+  @apply bg-white text-gmail-gray border border-gmail-border hover:bg-gmail-hover;
+}
+
+/* Email row hover effect */
+.email-row {
+  @apply flex items-center px-2 py-2 border-b border-gmail-border cursor-pointer transition-colors;
+}
+
+.email-row:hover {
+  @apply shadow-md z-10;
+}
+
+.email-row.unread {
+  @apply font-semibold bg-white;
+}
+
+.email-row.read {
+  @apply bg-gmail-lightGray/50;
+}
+
+.email-row.selected {
+  @apply bg-gmail-selected;
+}
+
+/* Sidebar navigation */
+.nav-item {
+  @apply flex items-center gap-4 px-6 py-2 rounded-r-full cursor-pointer transition-colors;
+}
+
+.nav-item:hover {
+  @apply bg-gmail-hover;
+}
+
+.nav-item.active {
+  @apply bg-gmail-selected text-gmail-blue font-medium;
+}
+
+/* Loading spinner */
+.spinner {
+  @apply w-6 h-6 border-2 border-gmail-blue border-t-transparent rounded-full animate-spin;
+}
+
+/* Toast notifications */
+.toast {
+  @apply fixed bottom-4 left-1/2 -translate-x-1/2 px-6 py-3 rounded-lg shadow-lg z-50;
+}
+
+.toast-success {
+  @apply bg-green-600 text-white;
+}
+
+.toast-error {
+  @apply bg-red-600 text-white;
+}
+
+.toast-info {
+  @apply bg-gmail-gray text-white;
+}

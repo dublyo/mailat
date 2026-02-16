@@ -1,0 +1,84 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+.next/
+.nuxt/
+out/
+
+# Private documentation (not for public)
+docs/
+*.private.md
+readme2.md
+
+# Environment files (keep .env.example)
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Secrets & credentials
+**/secrets/
+**/*.secret
+credentials.json
+service-account.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Prisma
+prisma/migrations/**/migration_lock.toml
+
+# Docker volumes (local)
+docker/stalwart/data/
+docker/rspamd/data/
+
+
+# Certificates & keys (don't commit real certs)
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+dkim/private/
+!docker/stalwart/certs/.gitkeep
+
+# Binaries (generated files)
+apps/api/bin/
+apps/api/server
+apps/api/api
+apps/api/*-api
+**/bin/
+**/*.exe
+
+# OS files
+Thumbs.db
+ehthumbs.db
+.DS_Store
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp

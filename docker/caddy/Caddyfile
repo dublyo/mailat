@@ -1,0 +1,52 @@
+# ===================
+# Mailat - Caddy Configuration
+# ===================
+# Automatic HTTPS with Let's Encrypt
+#
+# Configure domains via environment variables:
+#   DOMAIN         - Main app domain (e.g., mailat.example.com)
+#   API_DOMAIN     - API subdomain (e.g., api.example.com)
+#   MAIL_DOMAIN    - Mail server admin UI (e.g., mail.example.com)
+
+# Main web app
+{$DOMAIN:localhost} {
+    # Proxy API requests
+    handle /api/* {
+        reverse_proxy api:8000
+    }
+
+    # Serve static files and SPA
+    handle {
+        reverse_proxy web:80
+    }
+
+    # Security headers
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # Compression
+    encode gzip zstd
+}
+
+# API subdomain (optional - for direct API access)
+{$API_DOMAIN:api.localhost} {
+    reverse_proxy api:8000
+
+    header {
+        X-Content-Type-Options "nosniff"
+        Access-Control-Allow-Origin "*"
+        Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+        Access-Control-Allow-Headers "Authorization, Content-Type"
+    }
+
+    encode gzip zstd
+}
+
+# Stalwart mail server admin UI (optional)
+{$MAIL_DOMAIN:mail.localhost} {
+    reverse_proxy stalwart:8080
+}

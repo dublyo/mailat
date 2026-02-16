@@ -1,0 +1,12 @@
+DKIM Public Key for mailat.co
+================================
+
+DNS Record:
+-----------
+Type: TXT
+Name: mail._domainkey
+Value: v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuGARv8bjtuwnKVx0jHrNS38J5+SvqKBYTZwGFY/z8gGDzz6PmhByvra2P7TdVpNFVh4tEMtjCnZNORBxoZIuB+sttc5hlifO/Kezw79tRfqbZ5Qko6Ug/4yuDOa6EYn3OoYD8G/kVWyKZssXCPUv10WsC6n56XV3uxm7HSJ+GnB5XbBSUf4haHw/CFMiif0c5bs7jTQ1SnZ6xS1jvV9p7xRffvDAmFwmd6RVdpM1JGeFNcv1L2Exc2rZ5GyxB+ppnd0PSBPa58x5ThEZZW41sd7QbJu7CzmGj0uWYXnmMGk57MtOBIiCL2dx/rw8tWr4zciOHhZwORknGC4NDQXHDQIDAQAB
+
+Generated: 2026-01-24
+Selector: mail
+Domain: mailat.co

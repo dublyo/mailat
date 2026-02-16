@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@mailat/shared": ["packages/shared/src"],
+      "@mailat/api": ["apps/api/src"],
+      "@mailat/web": ["apps/web/src"]
+    }
+  },
+  "include": ["scripts/**/*", "prisma/**/*"],
+  "exclude": ["node_modules", "dist", "apps", "packages"]
+}

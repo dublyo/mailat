@@ -1,0 +1,87 @@
+# ===================
+# Stalwart Mail Server Configuration
+# ===================
+# Change hostname to your actual mail domain
+
+[server]
+hostname = "mail.localhost"
+
+# ===================
+# LISTENERS
+# ===================
+
+[server.listener."smtp"]
+bind = ["[::]:25"]
+protocol = "smtp"
+
+[server.listener."submission"]
+bind = ["[::]:587"]
+protocol = "smtp"
+
+[server.listener."imap"]
+bind = ["[::]:143"]
+protocol = "imap"
+
+[server.listener."http"]
+bind = ["[::]:8080"]
+protocol = "http"
+
+# ===================
+# STORAGE (RocksDB - Local)
+# ===================
+
+[store."rocksdb"]
+type = "rocksdb"
+path = "/opt/stalwart/data"
+compression = "lz4"
+
+[storage]
+data = "rocksdb"
+blob = "rocksdb"
+lookup = "rocksdb"
+fts = "rocksdb"
+directory = "internal"
+
+# ===================
+# DIRECTORY
+# ===================
+
+[directory."internal"]
+type = "internal"
+store = "rocksdb"
+
+# ===================
+# AUTHENTICATION
+# ===================
+
+[authentication]
+fallback-admin.user = "admin"
+fallback-admin.secret = "${STALWART_ADMIN_TOKEN}"
+
+# ===================
+# SMTP RELAY (Allow internal Docker network)
+# ===================
+
+# Allow relay from internal Docker network without authentication
+# This is safe because only containers on the same network can connect
+[session.rcpt]
+relay = [ { if = "remote-ip", eq = "172.0.0.0/8", then = true },
+          { if = "remote-ip", eq = "192.168.0.0/16", then = true },
+          { if = "remote-ip", eq = "10.0.0.0/8", then = true },
+          { else = false } ]
+
+# Allow MAIL FROM without auth for internal networks
+[session.auth]
+require = [ { if = "remote-ip", eq = "172.0.0.0/8", then = false },
+            { if = "remote-ip", eq = "192.168.0.0/16", then = false },
+            { if = "remote-ip", eq = "10.0.0.0/8", then = false },
+            { else = true } ]
+
+# ===================
+# TRACING
+# ===================
+
+[tracer."stdout"]
+type = "stdout"
+level = "info"
+enable = true

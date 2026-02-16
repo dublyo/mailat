@@ -1,0 +1,58 @@
+# ===================
+# mailat.co - Local Development
+# ===================
+# External services (already running):
+# - PostgreSQL
+# - Redis
+# - Typesense
+#
+# This compose file runs local services only:
+# - Stalwart Mail Server (IMAP/SMTP/JMAP)
+
+services:
+  # ===================
+  # MAIL SERVER
+  # ===================
+  stalwart:
+    image: stalwartlabs/stalwart:latest
+    container_name: mailat-stalwart
+    restart: unless-stopped
+    ports:
+      - "25:25"       # SMTP
+      - "587:587"     # Submission
+      - "465:465"     # SMTPS
+      - "143:143"     # IMAP
+      - "993:993"     # IMAPS
+      - "4190:4190"   # ManageSieve
+      - "8080:8080"   # HTTP API / JMAP
+    environment:
+      # Use external PostgreSQL
+      - STALWART_DATABASE_URL=${STALWART_DATABASE_URL}
+      - STALWART_ADMIN_TOKEN=${STALWART_ADMIN_TOKEN}
+    volumes:
+      - stalwart_data:/opt/stalwart
+      - ./docker/stalwart/config.toml:/opt/stalwart/etc/config.toml:ro
+    networks:
+      - mailat-network
+    # Note: Healthcheck disabled - curl not available in container
+    # Service verified working via: curl http://localhost:8080/
+
+  # ===================
+  # SPAM FILTER (Optional for local dev)
+  # ===================
+  # rspamd:
+  #   image: rspamd/rspamd:latest
+  #   container_name: mailat-rspamd
+  #   restart: unless-stopped
+  #   volumes:
+  #     - rspamd_data:/var/lib/rspamd
+  #     - ./docker/rspamd:/etc/rspamd/local.d:ro
+  #   networks:
+  #     - mailat-network
+
+networks:
+  mailat-network:
+    driver: bridge
+
+volumes:
+  stalwart_data:
