@@ -125,7 +125,7 @@ func (c *AuthController) CreateAPIKey(r *ghttp.Request) {
 		return
 	}
 
-	result, err := c.authService.CreateAPIKey(r.Context(), claims.OrgID, &req)
+	result, err := c.authService.CreateAPIKey(r.Context(), claims.OrgID, claims.UserID, &req)
 	if err != nil {
 		response.BadRequest(r, err.Error())
 		return

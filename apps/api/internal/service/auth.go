@@ -186,7 +186,7 @@ func (s *AuthService) GetUserByID(ctx context.Context, userID int64) (*model.Use
 }
 
 // CreateAPIKey generates a new API key for the organization
-func (s *AuthService) CreateAPIKey(ctx context.Context, orgID int64, req *model.CreateApiKeyRequest) (*model.ApiKeyResponse, error) {
+func (s *AuthService) CreateAPIKey(ctx context.Context, orgID int64, userID int64, req *model.CreateApiKeyRequest) (*model.ApiKeyResponse, error) {
 	// Generate API key
 	keyBytes := make([]byte, 32)
 	if _, err := rand.Read(keyBytes); err != nil {
@@ -221,10 +221,10 @@ func (s *AuthService) CreateAPIKey(ctx context.Context, orgID int64, req *model.
 	var result model.ApiKeyResponse
 	keyUUID := uuid.New().String()
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO api_keys (uuid, org_id, name, key_prefix, key_hash, permissions, rate_limit, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO api_keys (uuid, org_id, user_id, name, key_prefix, key_hash, permissions, rate_limit, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, uuid, name, key_prefix, permissions, rate_limit, expires_at, created_at
-	`, keyUUID, orgID, req.Name, keyPrefix, keyHash, pq.Array(req.Permissions), rateLimit, expiresAt).Scan(
+	`, keyUUID, orgID, userID, req.Name, keyPrefix, keyHash, pq.Array(req.Permissions), rateLimit, expiresAt).Scan(
 		&result.ID, &result.UUID, &result.Name, &result.KeyPrefix,
 		pq.Array(&result.Permissions), &result.RateLimit, &result.ExpiresAt, &result.CreatedAt,
 	)
