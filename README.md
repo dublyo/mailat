@@ -2,6 +2,10 @@
 
 All-in-one email platform combining transactional email, marketing campaigns, email receiving, and unified inbox management.
 
+<p align="center">
+  <img src="https://dublyo.com/images/ossaas/mailat-gmail-inbox-like.jpg" alt="Mailat — Gmail-like unified inbox" width="100%" />
+</p>
+
 ## Current Status
 
 **Phase 2.7 Complete - Unified Inbox & Identity Management**
@@ -503,6 +507,26 @@ mailat/
 - Monitoring dashboard
 - Analytics and reporting
 - Alerting system
+
+---
+
+## n8n Integration
+
+Automate your email workflows with the official [n8n community node](https://www.npmjs.com/package/n8n-nodes-mailat). Send emails, manage your inbox, and react to email events directly from n8n.
+
+```
+n8n-nodes-mailat
+```
+
+Install via **Settings > Community Nodes > Install** in your n8n instance, or manually:
+
+```bash
+cd ~/.n8n && npm install n8n-nodes-mailat
+```
+
+**Supported operations:** Send email, batch send, inbox management, domain & identity listing, and 8 webhook trigger events (email received, email sent, contact CRUD, bounces, complaints).
+
+See the [n8n-nodes-mailat README](https://github.com/dublyo/n8n-nodes-mailat) for full documentation.
 
 ---
 
