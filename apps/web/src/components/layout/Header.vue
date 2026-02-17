@@ -55,9 +55,7 @@ const logout = () => {
         <Menu class="w-6 h-6 text-gmail-gray" />
       </button>
       <div class="flex items-center gap-2 cursor-pointer" @click="router.push('/')">
-        <div class="w-8 h-8 bg-gmail-red rounded flex items-center justify-center">
-          <span class="text-white font-bold text-lg">U</span>
-        </div>
+        <img src="/logo.jpg" alt="Mailat" class="w-8 h-8 rounded object-contain" />
         <span class="text-xl font-medium text-gmail-gray hidden sm:block">
           Mailat
         </span>

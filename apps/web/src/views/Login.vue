@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { Mail, Eye, EyeOff } from 'lucide-vue-next'
+import { Eye, EyeOff } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { authApi } from '@/lib/api'
 import Button from '@/components/common/Button.vue'
@@ -48,10 +48,8 @@ const handleSubmit = async () => {
     <div class="w-full max-w-md">
       <div class="bg-white rounded-2xl shadow-lg p-8">
         <!-- Logo -->
-        <div class="flex items-center justify-center gap-2 mb-8">
-          <div class="w-12 h-12 bg-gmail-red rounded-lg flex items-center justify-center">
-            <Mail class="w-7 h-7 text-white" />
-          </div>
+        <div class="flex items-center justify-center gap-3 mb-8">
+          <img src="/logo.jpg" alt="Mailat" class="w-12 h-12 rounded-lg object-contain" />
           <span class="text-2xl font-medium text-gmail-gray">Mailat</span>
         </div>
 
