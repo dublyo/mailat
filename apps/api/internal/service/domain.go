@@ -694,6 +694,23 @@ func (s *DomainService) InitiateSESVerification(ctx context.Context, domainID in
 		})
 	}
 
+	// Add inbound MX record for SES receiving (so user can set up all DNS at once)
+	if s.cfg.AWSRegion != "" {
+		inboundMXValue := fmt.Sprintf("10 inbound-smtp.%s.amazonaws.com", s.cfg.AWSRegion)
+		_, err = s.db.ExecContext(ctx, `
+			INSERT INTO domain_dns_records (domain_id, record_type, hostname, expected_value, verified)
+			VALUES ($1, 'MX', $2, $3, false)
+		`, domainID, domainName, inboundMXValue)
+		if err != nil {
+			fmt.Printf("Warning: Failed to insert inbound MX record: %v\n", err)
+		}
+		sesRecords = append(sesRecords, map[string]string{
+			"type":  "MX",
+			"name":  domainName,
+			"value": inboundMXValue,
+		})
+	}
+
 	fmt.Printf("Domain %s registered with SES, DKIM tokens: %v, MAIL FROM: %s\n", domainName, sesDkimTokens, sesVerificationResult.MailFromDomain)
 	return sesRecords, nil
 }
