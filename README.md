@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.jpg" alt="Mailat" width="120" />
+</p>
+
 # mailat.co
 
 All-in-one email platform combining transactional email, marketing campaigns, email receiving, and unified inbox management.
