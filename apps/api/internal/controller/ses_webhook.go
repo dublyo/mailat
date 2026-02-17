@@ -244,8 +244,12 @@ func verifySNSSignature(notification *model.SNSNotification) error {
 		return fmt.Errorf("failed to decode signature: %w", err)
 	}
 
-	// Verify the signature
-	err = cert.CheckSignature(x509.SHA1WithRSA, []byte(stringToSign), signature)
+	// Verify the signature — SNS SignatureVersion "2" uses SHA256, "1" uses SHA1
+	algo := x509.SHA1WithRSA
+	if notification.SignatureVersion == "2" {
+		algo = x509.SHA256WithRSA
+	}
+	err = cert.CheckSignature(algo, []byte(stringToSign), signature)
 	if err != nil {
 		return fmt.Errorf("signature verification failed: %w", err)
 	}

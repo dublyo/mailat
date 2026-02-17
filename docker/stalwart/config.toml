@@ -10,9 +10,7 @@ hostname = "mail.localhost"
 # LISTENERS
 # ===================
 
-[server.listener."smtp"]
-bind = ["[::]:25"]
-protocol = "smtp"
+# Port 25 (SMTP inbound) not needed — inbound emails arrive via SES/S3/SNS
 
 [server.listener."submission"]
 bind = ["[::]:587"]

@@ -72,14 +72,15 @@ func (s *ReceivingService) SetupDomainReceiving(ctx context.Context, orgID int64
 	// Check if org has existing receiving config
 	var existingConfig struct {
 		S3Bucket       sql.NullString
+		S3Region       sql.NullString
 		SNSTopicArn    sql.NullString
 		SESRuleSetName sql.NullString
 		WebhookSecret  sql.NullString
 	}
 	err = s.db.QueryRowContext(ctx,
-		`SELECT s3_bucket, sns_topic_arn, ses_rule_set_name, webhook_secret FROM receiving_configs WHERE org_id = $1`,
+		`SELECT s3_bucket, s3_region, sns_topic_arn, ses_rule_set_name, webhook_secret FROM receiving_configs WHERE org_id = $1`,
 		orgID,
-	).Scan(&existingConfig.S3Bucket, &existingConfig.SNSTopicArn, &existingConfig.SESRuleSetName, &existingConfig.WebhookSecret)
+	).Scan(&existingConfig.S3Bucket, &existingConfig.S3Region, &existingConfig.SNSTopicArn, &existingConfig.SESRuleSetName, &existingConfig.WebhookSecret)
 
 	var result *provider.ReceivingSetupResult
 	var webhookSecret string
@@ -94,6 +95,7 @@ func (s *ReceivingService) SetupDomainReceiving(ctx context.Context, orgID int64
 
 		result = &provider.ReceivingSetupResult{
 			S3Bucket:    existingConfig.S3Bucket.String,
+			S3Region:    existingConfig.S3Region.String,
 			SNSTopicArn: existingConfig.SNSTopicArn.String,
 			RuleSetName: existingConfig.SESRuleSetName.String,
 			RuleName:    fmt.Sprintf("receive-%s", strings.ReplaceAll(domain.Name, ".", "-")),
@@ -136,12 +138,25 @@ func (s *ReceivingService) SetupDomainReceiving(ctx context.Context, orgID int64
 		return nil, fmt.Errorf("failed to update domain: %w", err)
 	}
 
+	// Auto-add MX record for inbound receiving to domain_dns_records
+	// so it appears in the DNS records list and zone file download
+	mxValue := fmt.Sprintf("10 inbound-smtp.%s.amazonaws.com", result.S3Region)
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO domain_dns_records (domain_id, record_type, hostname, expected_value, verified)
+		 VALUES ($1, 'MX', $2, $3, false)
+		 ON CONFLICT DO NOTHING`,
+		domainID, domain.Name, mxValue,
+	)
+	if err != nil {
+		log.Printf("Warning: Failed to insert MX DNS record: %v", err)
+	}
+
 	// Generate required DNS records for receiving
 	mxRecords := []model.DomainDNSRecord{
 		{
 			RecordType: "MX",
 			Hostname:   domain.Name,
-			Value:      fmt.Sprintf("10 inbound-smtp.%s.amazonaws.com", result.S3Region),
+			Value:      mxValue,
 		},
 	}
 
