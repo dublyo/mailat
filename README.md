@@ -6,21 +6,6 @@ All-in-one email platform combining transactional email, marketing campaigns, em
   <img src="https://dublyo.com/images/ossaas/mailat-gmail-inbox-like.jpg" alt="Mailat — Gmail-like unified inbox" width="100%" />
 </p>
 
-## Current Status
-
-**Phase 2.7 Complete - Unified Inbox & Identity Management**
-
-```
-Phase 0: Stalwart Integration    ████████████████████ 100% ✅
-Phase 1: Core Foundation         ████████████████████ 100% ✅
-Phase 2: Transactional API       ████████████████████ 100% ✅
-Phase 2.5: Email Receiving       ████████████████████ 100% ✅
-Phase 2.6: Email Sending (SES)   ████████████████████ 100% ✅
-Phase 2.7: Unified Inbox         ████████████████████ 100% ✅ NEW
-Phase 3: Marketing Campaigns     ░░░░░░░░░░░░░░░░░░░░   0% ⏳
-Phase 4: Health & Operations     ░░░░░░░░░░░░░░░░░░░░   0% ⏳
-```
-
 ## Features
 
 - **Send Emails**: Transactional email API with templates, webhooks, and tracking
