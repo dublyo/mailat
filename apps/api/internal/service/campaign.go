@@ -14,13 +14,19 @@ import (
 )
 
 type CampaignService struct {
-	db    *sql.DB
-	cfg   *config.Config
-	redis *redis.Client
+	db                    *sql.DB
+	cfg                   *config.Config
+	redis                 *redis.Client
+	webhookTriggerService *WebhookTriggerService
 }
 
 func NewCampaignService(db *sql.DB, cfg *config.Config, redis *redis.Client) *CampaignService {
 	return &CampaignService{db: db, cfg: cfg, redis: redis}
+}
+
+// SetWebhookTriggerService sets the webhook trigger service for firing trigger events
+func (s *CampaignService) SetWebhookTriggerService(svc *WebhookTriggerService) {
+	s.webhookTriggerService = svc
 }
 
 // CreateCampaign creates a new email campaign
@@ -361,6 +367,16 @@ func (s *CampaignService) SendCampaignNow(ctx context.Context, orgID int64, camp
 
 	// Queue the campaign for immediate processing
 	s.queueCampaignJob(ctx, campaign.ID, now)
+
+	// Fire webhook trigger
+	if s.webhookTriggerService != nil {
+		go s.webhookTriggerService.Fire(context.Background(), orgID, TriggerCampaignSent, map[string]interface{}{
+			"campaign_id":     campaignUUID,
+			"campaign_name":   campaign.Name,
+			"recipient_count": recipientCount,
+			"list_id":         campaign.ListID,
+		})
+	}
 
 	return s.GetCampaign(ctx, orgID, campaignUUID)
 }

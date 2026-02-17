@@ -13,12 +13,18 @@ import (
 )
 
 type ContactService struct {
-	db  *sql.DB
-	cfg *config.Config
+	db                    *sql.DB
+	cfg                   *config.Config
+	webhookTriggerService *WebhookTriggerService
 }
 
 func NewContactService(db *sql.DB, cfg *config.Config) *ContactService {
 	return &ContactService{db: db, cfg: cfg}
+}
+
+// SetWebhookTriggerService sets the webhook trigger service for firing trigger events
+func (s *ContactService) SetWebhookTriggerService(svc *WebhookTriggerService) {
+	s.webhookTriggerService = svc
 }
 
 // CreateContact creates a new contact
@@ -99,6 +105,16 @@ func (s *ContactService) CreateContact(ctx context.Context, orgID int64, req *mo
 		if err != nil {
 			return nil, fmt.Errorf("failed to update list counts: %w", err)
 		}
+	}
+
+	// Fire webhook trigger
+	if s.webhookTriggerService != nil {
+		go s.webhookTriggerService.Fire(context.Background(), orgID, TriggerContactCreated, map[string]interface{}{
+			"contact_id": contact.UUID,
+			"email":      contact.Email,
+			"first_name": contact.FirstName,
+			"last_name":  contact.LastName,
+		})
 	}
 
 	return &contact, nil
@@ -317,7 +333,20 @@ func (s *ContactService) UpdateContact(ctx context.Context, orgID int64, contact
 		return nil, fmt.Errorf("failed to update contact: %w", err)
 	}
 
-	return s.GetContact(ctx, orgID, contactUUID)
+	contact, err := s.GetContact(ctx, orgID, contactUUID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fire webhook trigger
+	if s.webhookTriggerService != nil {
+		go s.webhookTriggerService.Fire(context.Background(), orgID, TriggerContactUpdated, map[string]interface{}{
+			"contact_id": contactUUID,
+			"email":      contact.Email,
+		})
+	}
+
+	return contact, nil
 }
 
 // DeleteContact deletes a contact
@@ -333,6 +362,13 @@ func (s *ContactService) DeleteContact(ctx context.Context, orgID int64, contact
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return fmt.Errorf("contact not found")
+	}
+
+	// Fire webhook trigger
+	if s.webhookTriggerService != nil {
+		go s.webhookTriggerService.Fire(context.Background(), orgID, TriggerContactDeleted, map[string]interface{}{
+			"contact_id": contactUUID,
+		})
 	}
 
 	return nil

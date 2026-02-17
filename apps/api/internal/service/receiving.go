@@ -25,8 +25,9 @@ import (
 
 // ReceivingService handles email receiving operations
 type ReceivingService struct {
-	db                *sql.DB
-	receivingProvider *provider.ReceivingProvider
+	db                    *sql.DB
+	receivingProvider     *provider.ReceivingProvider
+	webhookTriggerService *WebhookTriggerService
 }
 
 // NewReceivingService creates a new receiving service
@@ -47,6 +48,16 @@ func NewReceivingService(db *sql.DB, region, accessKeyID, secretAccessKey, webho
 		db:                db,
 		receivingProvider: rp,
 	}, nil
+}
+
+// SetWebhookTriggerService sets the webhook trigger service for firing trigger events
+func (s *ReceivingService) SetWebhookTriggerService(svc *WebhookTriggerService) {
+	s.webhookTriggerService = svc
+}
+
+// DB returns the database connection
+func (s *ReceivingService) DB() *sql.DB {
+	return s.db
 }
 
 // SetupDomainReceiving sets up email receiving for a domain
@@ -317,6 +328,18 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, notificatio
 
 	// Apply filters
 	go s.applyFilters(context.Background(), identity.OrgID, emailID)
+
+	// Fire webhook trigger (n8n / Zapier integration)
+	if s.webhookTriggerService != nil {
+		go s.webhookTriggerService.Fire(context.Background(), identity.OrgID, TriggerEmailReceived, map[string]interface{}{
+			"email_id": emailID,
+			"from":     extractEmail(headers.From),
+			"to":       headers.To,
+			"subject":  headers.Subject,
+			"domain":   domainName,
+			"folder":   folder,
+		})
+	}
 
 	return nil
 }

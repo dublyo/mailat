@@ -86,6 +86,10 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 	pushService := service.NewPushNotificationService(database.DB, cfg)
 	brandingService := service.NewBrandingService(database.DB, cfg)
 
+	// Wire webhook trigger service to services that fire events (n8n/Zapier integration)
+	contactService.SetWebhookTriggerService(webhookTriggerService)
+	campaignService.SetWebhookTriggerService(webhookTriggerService)
+
 	// Email Receiving service
 	receivingService, _ := service.NewReceivingService(
 		database.DB,
@@ -94,6 +98,9 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 		cfg.AWSSecretAccessKey,
 		cfg.APIUrl,
 	)
+	if receivingService != nil {
+		receivingService.SetWebhookTriggerService(webhookTriggerService)
+	}
 
 	// Initialize controllers
 	healthCtrl := controller.NewHealthController()
@@ -122,7 +129,7 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 
 	// Email Receiving controllers
 	sseCtrl := controller.NewSSEController()
-	sesWebhookCtrl := controller.NewSESWebhookController(receivingService)
+	sesWebhookCtrl := controller.NewSESWebhookController(receivingService, webhookTriggerService)
 	receivedInboxCtrl := controller.NewReceivedInboxController(inboxService, receivingService)
 
 	// CORS middleware

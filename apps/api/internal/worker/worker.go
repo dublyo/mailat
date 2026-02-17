@@ -108,8 +108,12 @@ func NewWorker(db *sql.DB, cfg *config.Config) *Worker {
 
 // RegisterHandlers registers all task handlers
 func (w *Worker) RegisterHandlers() {
+	// Create webhook trigger firer for n8n/Zapier integration
+	triggerFirer := NewWebhookTriggerFirer(w.db, w.cfg)
+
 	// Create handlers
 	emailHandler := NewEmailHandler(w.db, w.cfg)
+	emailHandler.SetWebhookTriggerService(triggerFirer)
 	campaignHandler := NewCampaignHandler(w.db, w.cfg)
 	webhookHandler := NewWebhookHandler(w.db, w.cfg)
 	bounceHandler := NewBounceHandler(w.db, w.cfg)

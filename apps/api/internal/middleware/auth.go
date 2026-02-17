@@ -103,15 +103,16 @@ func validateAPIKey(r *ghttp.Request, apiKey string) {
 	hash := sha256.Sum256([]byte(apiKey))
 	keyHash := hex.EncodeToString(hash[:])
 
-	// Lookup in database (Prisma schema has no status column)
+	// Lookup in database
 	var orgID int64
+	var userID sql.NullInt64
 	var expiresAt sql.NullTime
 
 	err := database.DB.QueryRowContext(r.Context(), `
-		SELECT org_id, expires_at
+		SELECT org_id, user_id, expires_at
 		FROM api_keys
 		WHERE key_hash = $1
-	`, keyHash).Scan(&orgID, &expiresAt)
+	`, keyHash).Scan(&orgID, &userID, &expiresAt)
 
 	if err == sql.ErrNoRows {
 		response.Unauthorized(r, "Invalid API key")
@@ -137,7 +138,10 @@ func validateAPIKey(r *ghttp.Request, apiKey string) {
 	// Create claims for API key auth
 	claims := &model.JWTClaims{
 		OrgID: orgID,
-		Role:  "api", // API keys have special role
+		Role:  "api",
+	}
+	if userID.Valid {
+		claims.UserID = userID.Int64
 	}
 
 	ctx := context.WithValue(r.Context(), ClaimsContextKey, claims)

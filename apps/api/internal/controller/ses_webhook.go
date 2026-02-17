@@ -22,13 +22,15 @@ import (
 
 // SESWebhookController handles incoming webhooks from AWS SES
 type SESWebhookController struct {
-	receivingService *service.ReceivingService
+	receivingService      *service.ReceivingService
+	webhookTriggerService *service.WebhookTriggerService
 }
 
 // NewSESWebhookController creates a new SES webhook controller
-func NewSESWebhookController(receivingService *service.ReceivingService) *SESWebhookController {
+func NewSESWebhookController(receivingService *service.ReceivingService, webhookTriggerService *service.WebhookTriggerService) *SESWebhookController {
 	return &SESWebhookController{
-		receivingService: receivingService,
+		receivingService:      receivingService,
+		webhookTriggerService: webhookTriggerService,
 	}
 }
 
@@ -145,13 +147,23 @@ func (c *SESWebhookController) handleBounce(ctx g.Ctx, notification *model.SESNo
 	bounce := notification.Bounce
 	g.Log().Infof(ctx, "Processing bounce: type=%s, subType=%s", bounce.BounceType, bounce.BounceSubType)
 
-	// Add bounced recipients to suppression list
+	// Collect bounced recipients
+	recipients := make([]string, 0, len(bounce.BouncedRecipients))
 	for _, recipient := range bounce.BouncedRecipients {
 		g.Log().Infof(ctx, "Bounced recipient: %s, action=%s, status=%s",
 			recipient.EmailAddress, recipient.Action, recipient.Status)
+		recipients = append(recipients, recipient.EmailAddress)
 
 		// TODO: Add to suppression list and update transactional emails
 	}
+
+	// Fire webhook trigger
+	c.fireForSESEvent(ctx, notification, service.TriggerBounceReceived, map[string]interface{}{
+		"bounce_type":    bounce.BounceType,
+		"bounce_subtype": bounce.BounceSubType,
+		"recipients":     recipients,
+		"message_id":     notification.Mail.MessageId,
+	})
 }
 
 // handleComplaint processes complaint notifications
@@ -163,11 +175,20 @@ func (c *SESWebhookController) handleComplaint(ctx g.Ctx, notification *model.SE
 	complaint := notification.Complaint
 	g.Log().Infof(ctx, "Processing complaint: type=%s", complaint.ComplaintFeedbackType)
 
-	// Add complained recipients to suppression list
+	// Collect complained recipients
+	recipients := make([]string, 0, len(complaint.ComplainedRecipients))
 	for _, recipient := range complaint.ComplainedRecipients {
 		g.Log().Infof(ctx, "Complained recipient: %s", recipient.EmailAddress)
+		recipients = append(recipients, recipient.EmailAddress)
 		// TODO: Add to suppression list
 	}
+
+	// Fire webhook trigger
+	c.fireForSESEvent(ctx, notification, service.TriggerComplaintReceived, map[string]interface{}{
+		"complaint_type": complaint.ComplaintFeedbackType,
+		"recipients":     recipients,
+		"message_id":     notification.Mail.MessageId,
+	})
 }
 
 // handleDelivery processes delivery notifications
@@ -181,6 +202,40 @@ func (c *SESWebhookController) handleDelivery(ctx g.Ctx, notification *model.SES
 		len(delivery.Recipients), delivery.ProcessingTimeMillis)
 
 	// TODO: Update transactional email status to delivered
+}
+
+// fireForSESEvent fires a webhook trigger for SES events, looking up orgID from the sender domain
+func (c *SESWebhookController) fireForSESEvent(ctx g.Ctx, notification *model.SESNotification, triggerType string, data map[string]interface{}) {
+	if c.webhookTriggerService == nil {
+		return
+	}
+
+	// Look up orgID from the sender's domain
+	source := notification.Mail.Source
+	if source == "" && len(notification.Mail.CommonHeaders.From) > 0 {
+		source = notification.Mail.CommonHeaders.From[0]
+	}
+	if source == "" {
+		return
+	}
+
+	// Extract domain from email
+	parts := strings.SplitN(source, "@", 2)
+	if len(parts) != 2 {
+		return
+	}
+	domain := strings.ToLower(parts[1])
+	// Strip any trailing ">"
+	domain = strings.TrimRight(domain, ">")
+
+	// Look up org from domain
+	var orgID int64
+	err := c.receivingService.DB().QueryRowContext(ctx, `SELECT org_id FROM domains WHERE name = $1`, domain).Scan(&orgID)
+	if err != nil || orgID == 0 {
+		return
+	}
+
+	go c.webhookTriggerService.Fire(ctx, orgID, triggerType, data)
 }
 
 // confirmSNSSubscription confirms an SNS subscription by visiting the SubscribeURL

@@ -87,9 +87,15 @@ func sendMailWithTLS(addr, host string, auth smtp.Auth, from string, to []string
 
 // EmailHandler handles email sending tasks
 type EmailHandler struct {
-	db            *sql.DB
-	cfg           *config.Config
-	emailProvider provider.EmailProvider
+	db                    *sql.DB
+	cfg                   *config.Config
+	emailProvider         provider.EmailProvider
+	webhookTriggerService webhookTriggerFirer
+}
+
+// webhookTriggerFirer is a minimal interface for firing webhook triggers
+type webhookTriggerFirer interface {
+	Fire(ctx context.Context, orgID int64, triggerType string, data map[string]interface{}) error
 }
 
 // NewEmailHandler creates a new email handler
@@ -135,6 +141,11 @@ func NewEmailHandler(db *sql.DB, cfg *config.Config) *EmailHandler {
 	}
 
 	return handler
+}
+
+// SetWebhookTriggerService sets the webhook trigger service for firing trigger events
+func (h *EmailHandler) SetWebhookTriggerService(svc webhookTriggerFirer) {
+	h.webhookTriggerService = svc
 }
 
 // HandleEmailSend processes a single email send task
@@ -252,6 +263,16 @@ func (h *EmailHandler) HandleEmailSend(ctx context.Context, t *asynq.Task) error
 
 	// Trigger webhook delivery for 'sent' event
 	go h.triggerWebhook(ctx, payload.OrgID, payload.EmailID, "sent")
+
+	// Fire webhook trigger (n8n / Zapier integration)
+	if h.webhookTriggerService != nil {
+		go h.webhookTriggerService.Fire(context.Background(), payload.OrgID, "email_sent", map[string]interface{}{
+			"email_id": payload.EmailID,
+			"to":       payload.To,
+			"subject":  payload.Subject,
+			"from":     payload.From,
+		})
+	}
 
 	return nil
 }
