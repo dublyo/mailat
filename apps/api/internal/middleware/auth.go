@@ -142,6 +142,16 @@ func validateAPIKey(r *ghttp.Request, apiKey string) {
 	}
 	if userID.Valid {
 		claims.UserID = userID.Int64
+	} else {
+		// API key has no user binding — resolve to org's primary user
+		// (Mailat only allows one registration per org, so this is safe)
+		var adminUserID int64
+		err2 := database.DB.QueryRowContext(r.Context(),
+			`SELECT id FROM users WHERE org_id = $1 ORDER BY id LIMIT 1`, orgID,
+		).Scan(&adminUserID)
+		if err2 == nil {
+			claims.UserID = adminUserID
+		}
 	}
 
 	ctx := context.WithValue(r.Context(), ClaimsContextKey, claims)
