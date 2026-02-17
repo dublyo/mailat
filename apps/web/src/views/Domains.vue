@@ -344,6 +344,22 @@ function skipCloudflare() {
   setupStep.value = 3
 }
 
+// Delete domain
+const deletingDomain = ref<string | null>(null)
+
+async function handleDeleteDomain(domain: any) {
+  if (!confirm(`Are you sure you want to delete "${domain.name || domain.domain}"? This will remove all DNS records and identities. This action cannot be undone.`)) return
+
+  deletingDomain.value = domain.uuid
+  try {
+    await domainsStore.deleteDomain(domain.uuid)
+  } catch (e: any) {
+    console.error('Failed to delete domain:', e)
+  } finally {
+    deletingDomain.value = null
+  }
+}
+
 // Email Receiving Setup
 async function handleSetupReceiving(domain: any) {
   if (!domain.id) {
@@ -526,6 +542,15 @@ async function handleSetupReceiving(domain: any) {
                       <Inbox class="w-3 h-3 mr-1" />
                       Receiving
                     </Badge>
+                    <button
+                      @click="handleDeleteDomain(domain)"
+                      class="p-2 hover:bg-red-50 rounded-lg transition-colors group"
+                      :disabled="deletingDomain === domain.uuid"
+                      title="Delete domain"
+                    >
+                      <Loader2 v-if="deletingDomain === domain.uuid" class="w-4 h-4 text-red-400 animate-spin" />
+                      <Trash2 v-else class="w-4 h-4 text-gray-400 group-hover:text-red-500" />
+                    </button>
                     <button
                       @click="toggleDomainExpand(domain.uuid)"
                       class="p-2 hover:bg-gray-100 rounded-lg transition-colors"
