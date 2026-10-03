@@ -161,11 +161,12 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 		                     dkim_public_key, dkim_private_key, ses_dkim_tokens, email_provider, status, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', NOW())
 		RETURNING id, uuid, org_id, name, status, verification_token, dkim_selector,
-		          dkim_public_key, verified_at, created_at, updated_at
+		          dkim_public_key, email_provider, ses_dkim_tokens, verified_at, created_at, updated_at
 	`, domainUUID, orgID, domainName, verificationToken, selector,
 		publicKeyB64, string(privateKeyPEM), pq.Array(sesDkimTokens), emailProvider).Scan(
 		&domain.ID, &domain.UUID, &domain.OrgID, &domain.Name, &domain.Status,
 		&domain.VerificationToken, &domain.DKIMSelector, &domain.DKIMPublicKey,
+		&domain.EmailProvider, pq.Array(&domain.SESDKIMTokens),
 		&domain.VerifiedAt, &domain.CreatedAt, &domain.UpdatedAt,
 	)
 	if err != nil {
@@ -588,10 +589,10 @@ func (s *DomainService) DeleteDomain(ctx context.Context, orgID int64, domainUUI
 // InitiateSESVerification registers an existing domain with AWS SES
 func (s *DomainService) InitiateSESVerification(ctx context.Context, domainID int64) ([]map[string]string, error) {
 	// Get domain details
-	var domainName string
+	var domainName, verificationToken string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT name FROM domains WHERE id = $1
-	`, domainID).Scan(&domainName)
+		SELECT name, verification_token FROM domains WHERE id = $1
+	`, domainID).Scan(&domainName, &verificationToken)
 	if err != nil {
 		return nil, fmt.Errorf("domain not found: %w", err)
 	}
@@ -647,8 +648,21 @@ func (s *DomainService) InitiateSESVerification(ctx context.Context, domainID in
 		return nil, fmt.Errorf("failed to update domain: %w", err)
 	}
 
-	// Delete old DNS records and add SES records
-	_, err = s.db.ExecContext(ctx, `DELETE FROM domain_dns_records WHERE domain_id = $1`, domainID)
+	// VerifyDNS requires this token even after SES verifies the domain. Preserve its
+	// checked state on re-init, and repair installations where an earlier re-init removed it.
+	verificationHostname := "_verification." + domainName
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO domain_dns_records(domain_id,record_type,hostname,expected_value,verified)
+		VALUES($1,'TXT',$2,$3,false)
+		ON CONFLICT(domain_id,record_type,hostname) DO UPDATE SET expected_value=EXCLUDED.expected_value
+	`, domainID, verificationHostname, verificationToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to preserve domain verification record: %w", err)
+	}
+	sesRecords = append(sesRecords, map[string]string{"type": "TXT", "name": verificationHostname, "value": verificationToken})
+
+	// Replace provider DNS records without dropping the internal ownership check.
+	_, err = s.db.ExecContext(ctx, `DELETE FROM domain_dns_records WHERE domain_id=$1 AND NOT (record_type='TXT' AND hostname=$2)`, domainID, verificationHostname)
 	if err != nil {
 		fmt.Printf("Warning: Failed to delete old DNS records: %v\n", err)
 	}
