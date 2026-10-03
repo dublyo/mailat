@@ -31,6 +31,10 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
   let activeListPromise: Promise<void> | null = null
   let connected = false
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
+  let pollTimer: ReturnType<typeof setInterval> | undefined
+  let syncGeneration = 0
+  let refreshing = false
+  let refreshPending = false
   // Cache is memory-only, short lived, and cleared on account changes and mutations.
   const listCache = new Map<string, { at: number; data: InboxListResponse }>()
   const detailCache = new Map<string, ReceivedEmail>()
@@ -151,20 +155,21 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
       counts.value = cached.data
       return
     }
+    // A post-event refresh must not reuse counts requested before that event.
+    let request = force ? undefined : countRequests.get(identityId)
     try {
-      let request = countRequests.get(identityId)
       if (!request) {
         request = receivedInboxApi.getCounts(identityId)
         countRequests.set(identityId, request)
       }
       const result = await request
-      if (token !== api.getToken()) return
+      if (token !== api.getToken() || sequence !== countSequence) return
       countCache.set(identityId, { at: Date.now(), data: result })
-      if (sequence === countSequence) counts.value = result
+      counts.value = result
     } catch {
       // A counts failure must not hide usable mail or fabricate zero counts.
     } finally {
-      countRequests.delete(identityId)
+      if (countRequests.get(identityId) === request) countRequests.delete(identityId)
     }
   }
 
@@ -204,31 +209,82 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
   function selectAll() { selectedEmailUuids.value = allSelected.value ? [] : emails.value.map(e => e.uuid) }
   function clearSelection() { selectedEmailUuids.value = [] }
 
-  function refreshSoon() {
+  function canRefresh() {
+    return (typeof document === 'undefined' || !document.hidden) && (typeof navigator === 'undefined' || navigator.onLine !== false)
+  }
+  function refreshSoon(delay = 300) {
     invalidate()
-    clearTimeout(refreshTimer)
-    refreshTimer = setTimeout(() => {
-      void fetchEmails(currentIdentityId.value, { force: true })
-      void fetchCounts(currentIdentityId.value, true)
-    }, 300)
+    refreshPending = true
+    if (!connected || !canRefresh() || refreshing || refreshTimer) return
+    refreshTimer = setTimeout(() => { void refreshMailbox() }, delay)
+  }
+  async function refreshMailbox() {
+    refreshTimer = undefined
+    if (!connected || !canRefresh()) return
+    // Let a user action or initial load finish. A trailing refresh then covers
+    // events that arrived after that request's database snapshot was taken.
+    if (isMutating.value || isLoading.value) { refreshSoon(); return }
+    const generation = syncGeneration
+    refreshPending = false
+    refreshing = true
+    await Promise.all([fetchEmails(currentIdentityId.value, { force: true }), fetchCounts(currentIdentityId.value, true)])
+    if (generation !== syncGeneration) return
+    refreshing = false
+    if (refreshPending) refreshSoon()
+  }
+  function resumeMailbox() { if (canRefresh()) refreshSoon(0) }
+  function resumeConnection() {
+    if (!connected) return
+    disconnectSSE()
+    connectSSE()
+    resumeMailbox()
   }
   function connectSSE() {
+    ensureOwner()
     if (connected) return
     connected = true
+    const generation = ++syncGeneration
+    const active = () => connected && generation === syncGeneration && ownerToken === api.getToken()
+    const changed = () => { if (active()) refreshSoon() }
     inboxSSE.connect({
-      onConnected: () => { sseConnected.value = true },
-      onNewEmail: refreshSoon,
-      onEmailUpdate: refreshSoon,
-      onEmailDeleted: refreshSoon,
-      onCountsUpdate: refreshSoon,
-      onError: () => { sseConnected.value = false },
+      // SSE has no replay log. Catch up after both first connect and reconnect,
+      // including mail committed while a deployment interrupted the stream.
+      onConnected: () => { if (active()) { sseConnected.value = true; refreshSoon() } },
+      onNewEmail: changed,
+      onEmailUpdate: changed,
+      onEmailDeleted: changed,
+      onCountsUpdate: changed,
+      onError: () => { if (active()) sseConnected.value = false },
     })
+    let pollTicks = 0
+    pollTimer = setInterval(() => {
+      pollTicks++
+      if (canRefresh() && (!sseConnected.value || pollTicks % 4 === 0)) refreshSoon(0)
+    }, 15000)
+    // A healthy connection is not proof that no event was missed. Reconcile
+    // periodically, and catch up immediately when a sleeping/mobile tab returns.
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', resumeMailbox)
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', resumeMailbox)
+      window.addEventListener('online', resumeConnection)
+    }
   }
   function disconnectSSE() {
+    ++syncGeneration
     inboxSSE.disconnect()
     connected = false
     sseConnected.value = false
     clearTimeout(refreshTimer)
+    clearInterval(pollTimer)
+    refreshTimer = undefined
+    pollTimer = undefined
+    refreshing = false
+    refreshPending = false
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', resumeMailbox)
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('focus', resumeMailbox)
+      window.removeEventListener('online', resumeConnection)
+    }
   }
   function reset() {
     ++listSequence

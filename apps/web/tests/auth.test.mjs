@@ -34,8 +34,8 @@ function apiFixture() {
   globalThis.localStorage = { getItem: key => saved.get(key) || null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) }
   globalThis.window = { location: { href: '/login?redirect=%2Freceived%3Ffolder%3Dsent' } }
   globalThis.__authAxios = { create: () => ({ interceptors: { request: { use() {} }, response: { use(_accept, reject) { rejectResponse = reject } } } }) }
-  const { api } = evaluate(apiBuild.outputFiles[0].text)
-  return { api, rejectResponse }
+  const { api, InboxSSE } = evaluate(apiBuild.outputFiles[0].text)
+  return { api, rejectResponse, InboxSSE }
 }
 function storesFixture() {
   const state = { token: 'first-account' }
@@ -107,4 +107,36 @@ test('logout invalidates pending metadata creates even when the token is reused'
   await Promise.all(pending)
   assert.deepEqual(domains.domains, [])
   assert.deepEqual(domains.identities, [])
+})
+
+test('SSE errors close native retry sources and only one controlled reconnect survives', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { api, InboxSSE } = apiFixture()
+  window.setTimeout = setTimeout
+  const sources = []
+  const original = globalThis.EventSource
+  globalThis.EventSource = class {
+    listeners = new Map(); closed = false
+    constructor() { sources.push(this) }
+    addEventListener(name, listener) { this.listeners.set(name, listener) }
+    close() { this.closed = true }
+    emit(name) { this.listeners.get(name)?.({ data: JSON.stringify({ data: {} }) }) }
+  }
+  api.setToken('session-token')
+  const stream = new InboxSSE(); let connections = 0, messages = 0
+  t.after(() => { stream.disconnect(); globalThis.EventSource = original })
+  stream.connect({ onConnected: () => connections++, onNewEmail: () => messages++ })
+  sources[0].emit('connected')
+  sources[0].onerror(new Event('error'))
+  assert.equal(sources[0].closed, true)
+  sources[0].emit('connected'); sources[0].emit('new_email')
+  assert.equal(connections, 1); assert.equal(messages, 0)
+  t.mock.timers.tick(1000)
+  assert.equal(sources.length, 2)
+  sources[1].emit('connected')
+  assert.equal(connections, 2)
+  sources[1].onerror(new Event('error'))
+  stream.disconnect()
+  t.mock.timers.tick(30000)
+  assert.equal(sources.length, 2)
 })

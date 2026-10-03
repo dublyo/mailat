@@ -1145,6 +1145,7 @@ export class InboxSSE {
     onConnected?: (data: { clientId: string }) => void
     onError?: (error: Event) => void
   }) {
+    this.disconnect()
     const token = api.getToken()
     if (!token) {
       console.error('Cannot connect to SSE: No auth token')
@@ -1154,35 +1155,47 @@ export class InboxSSE {
     const baseUrl = import.meta.env.VITE_API_URL || ''
     const url = `${baseUrl}/api/v1/sse/connect?token=${encodeURIComponent(token)}`
 
-    this.eventSource = new EventSource(url)
+    const source = new EventSource(url)
+    this.eventSource = source
+    const active = () => this.eventSource === source && api.getToken() === token
 
-    this.eventSource.addEventListener('connected', (event) => {
+    source.addEventListener('connected', (event) => {
+      if (!active()) return
       this.reconnectDelay = 1000
       const data = JSON.parse(event.data)
       handlers.onConnected?.(data.data)
     })
 
-    this.eventSource.addEventListener('new_email', (event) => {
+    source.addEventListener('new_email', (event) => {
+      if (!active()) return
       const data = JSON.parse(event.data)
       handlers.onNewEmail?.(data.data)
     })
 
-    this.eventSource.addEventListener('email_update', (event) => {
+    source.addEventListener('email_update', (event) => {
+      if (!active()) return
       const data = JSON.parse(event.data)
       handlers.onEmailUpdate?.(data.data)
     })
 
-    this.eventSource.addEventListener('email_deleted', (event) => {
+    source.addEventListener('email_deleted', (event) => {
+      if (!active()) return
       const data = JSON.parse(event.data)
       handlers.onEmailDeleted?.(data.data)
     })
 
-    this.eventSource.addEventListener('counts_update', (event) => {
+    source.addEventListener('counts_update', (event) => {
+      if (!active()) return
       const data = JSON.parse(event.data)
       handlers.onCountsUpdate?.({ ...data.data, identityId: data.identityId })
     })
 
-    this.eventSource.onerror = (error) => {
+    source.onerror = (error) => {
+      if (!active()) return
+      // Own the retry loop: leaving this source open also enables the browser's
+      // native retry, which can race our timer and close a recovered connection.
+      source.close()
+      this.eventSource = null
       handlers.onError?.(error)
       this.scheduleReconnect(handlers)
     }

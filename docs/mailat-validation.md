@@ -16,6 +16,13 @@ Date: 2026-10-03. This report records checks run by the implementation agents an
 
 ## Frontend
 
+### Realtime follow-up after live onboarding
+
+- The live SSE endpoint delivered `connected` in 0.18 seconds and its heartbeat at 30.18 seconds. The reported stale inbox was traced to missing reconciliation after a connection gap, not demonstrated proxy buffering.
+- Inbox now catches up after initial connection/reconnection, tab visibility/focus return, and network recovery. Visible tabs reconcile every 60 seconds even with a healthy stream; disconnected fallback runs every 15 seconds. Failed EventSource instances close before the client schedules its own retry.
+- **31 frontend tests and the production build passed.** Added regressions cover missed events, reconnect bursts, hidden-tab return, periodic fallback, events arriving during refresh, stale unread-count requests, and retired connections. Existing auth/account-isolation and compose regressions remain green.
+- A production-build Chromium test used a loopback-only HTTP/SSE fixture: severed the stream after adding a message without emitting its notification. Reconnection fetched and displayed that message automatically, retained all three URL filters, and preserved the selected existing row. The browser tab closed before the separate silent-event periodic check completed; periodic timing is covered by the controlled timer tests, not claimed as a completed visual check.
+
 - `cd apps/web && npm test`: **24 passed, 0 failed** in canonical `mailat` after the security, reply-recipient, login-error, metadata-account-isolation, and final compose retry/threading changes.
 - `cd apps/web && npm run build`: **passed** (`vue-tsc --noEmit` and Vite production build), in canonical `mailat`, including compact desktop rows, incoming-status cleanup, auth/metadata isolation, and the final compose retry/threading follow-up.
 - Regression tests exercise unified-identity search/clear, obsolete-response protection, in-flight request deduplication, cache return, post-mutation forced refresh, detail races, unified counts, failed-mutation selection preservation, account isolation, Reply-To/Reply All, envelope-alias sender selection, and subject prefixes. Five additional regressions verify inline login 401 errors with redirect preservation, protected API 401 expiry handling, late list responses after logout, old-account success/failure isolation, and pending creates after logout even when a token is reused.

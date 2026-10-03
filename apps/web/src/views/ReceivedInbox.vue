@@ -70,7 +70,6 @@ async function downloadAttachment(attachment: ReceivedEmailAttachment) {
   } catch (e) { mailbox.error = e instanceof Error ? e.message : 'Attachment download failed.' }
   finally { downloading.value = '' }
 }
-let pollTimer: ReturnType<typeof setInterval> | undefined
 
 async function load(force = false) {
   await Promise.all([mailbox.fetchEmails(identityId.value, { ...queryOptions.value, force }), mailbox.fetchCounts(identityId.value, force)])
@@ -84,9 +83,8 @@ watch(() => route.fullPath, () => {
 onMounted(() => {
   void Promise.all([domains.fetchIdentities(), domains.fetchDomains()])
   mailbox.connectSSE()
-  pollTimer = setInterval(() => { if (!document.hidden && !mailbox.sseConnected) void load(true) }, 60000)
 })
-onUnmounted(() => { ++inlineSequence; Object.values(inlineUrls.value).forEach(URL.revokeObjectURL); clearInterval(pollTimer); mailbox.disconnectSSE(); mailbox.closeEmail() })
+onUnmounted(() => { ++inlineSequence; Object.values(inlineUrls.value).forEach(URL.revokeObjectURL); mailbox.disconnectSSE(); mailbox.closeEmail() })
 
 function updateQuery(values: Record<string, string | undefined>) {
   const query = { ...route.query, ...values, page: undefined }

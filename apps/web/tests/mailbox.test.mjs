@@ -21,14 +21,14 @@ function deferred() { let resolve, reject; const promise = new Promise((a, b) =>
 function email(uuid, extra = {}) { return { uuid, identityId: 1, folder: 'inbox', isRead: false, isStarred: false, ...extra } }
 function result(emails) { return { emails, total: emails.length, totalPages: emails.length ? 1 : 0 } }
 function fixture(overrides = {}) {
-  const state = { token: 'user-one', calls: [], counts: [] }
+  const state = { token: 'user-one', calls: [], counts: [], connections: 0, handlers: null }
   const endpoints = {
     list: async (identity, options) => { state.calls.push([identity, options]); return result([email('a')]) },
     get: async uuid => email(uuid),
     getCounts: async identity => { state.counts.push(identity); return { inbox: 1, unread: 1 } },
     mark: async () => {}, star: async () => {}, move: async () => {}, trash: async () => {}, ...overrides,
   }
-  globalThis.__mailboxFixture = { api: { getToken: () => state.token }, receivedInboxApi: endpoints, inboxSSE: { connect() {}, disconnect() {} } }
+  globalThis.__mailboxFixture = { api: { getToken: () => state.token }, receivedInboxApi: endpoints, inboxSSE: { connect(handlers) { state.connections++; state.handlers = handlers }, disconnect() {} } }
   const { useReceivedInboxStore } = evaluate(storeBuild.outputFiles[0].text)
   setActivePinia(createPinia())
   return { store: useReceivedInboxStore(), state, endpoints }
@@ -189,4 +189,107 @@ test('uncertain send keys survive later client errors while first-attempt valida
   assert.equal(retainSendAttempt(409, false), false)
   assert.equal(retainSendAttempt(503, false), true)
   assert.equal(retainSendAttempt(undefined, false), true)
+})
+
+async function settleRefresh() { for (let i = 0; i < 12; i++) await Promise.resolve() }
+function realtimeFixture(t, overrides = {}) {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  const oldDocument = globalThis.document, oldWindow = globalThis.window
+  const doc = new EventTarget(), win = new EventTarget()
+  doc.hidden = false
+  globalThis.document = doc; globalThis.window = win
+  const f = fixture(overrides)
+  t.after(() => { f.store.disconnectSSE(); globalThis.document = oldDocument; globalThis.window = oldWindow })
+  return { ...f, doc, win }
+}
+
+test('first SSE connection catches mail missed after the initial list without losing filters or selection', async t => {
+  const { store, state, endpoints } = realtimeFixture(t)
+  await store.fetchEmails(0, { folder: 'inbox', domainId: 4, search: 'invoice', isRead: false, page: 2 })
+  store.toggleSelect('a'); await store.fetchEmail('a')
+  store.connectSSE()
+  endpoints.list = async (id, options) => { state.calls.push([id, options]); return result([email('new'), email('a')]) }
+  state.handlers.onConnected({ clientId: 'first' })
+  t.mock.timers.tick(300); await settleRefresh()
+  assert.deepEqual(store.emails.map(e => e.uuid), ['new', 'a'])
+  assert.deepEqual(store.selectedEmailUuids, ['a'])
+  assert.equal(store.currentEmail.uuid, 'a')
+  assert.equal(state.calls.at(-1)[0], 0)
+  assert.deepEqual(state.calls.at(-1)[1], { folder: 'inbox', domainId: 4, search: 'invoice', isRead: false, page: 2, pageSize: 50 })
+  assert.ok(state.counts.includes(0))
+})
+
+test('SSE reconnect catches missed events and burst notifications trigger one refresh', async t => {
+  const { store, state, endpoints } = realtimeFixture(t)
+  await store.fetchEmails(0); store.connectSSE()
+  state.handlers.onConnected({ clientId: 'first' }); t.mock.timers.tick(300); await settleRefresh()
+  const before = state.calls.length
+  state.handlers.onError(new Event('error'))
+  endpoints.list = async (id, options) => { state.calls.push([id, options]); return result([email('while-disconnected')]) }
+  state.handlers.onConnected({ clientId: 'reconnected' })
+  state.handlers.onNewEmail({}); state.handlers.onCountsUpdate({}); state.handlers.onEmailUpdate({})
+  t.mock.timers.tick(300); await settleRefresh()
+  assert.equal(state.calls.length, before + 1)
+  assert.equal(store.emails[0].uuid, 'while-disconnected')
+  assert.equal(store.sseConnected, true)
+})
+
+test('visible healthy connections reconcile silently missed events and hidden tabs catch up on return', async t => {
+  const { store, state, doc, win } = realtimeFixture(t)
+  await store.fetchEmails(0); store.connectSSE()
+  state.handlers.onConnected({}); t.mock.timers.tick(300); await settleRefresh()
+  const before = state.calls.length
+  doc.hidden = true
+  t.mock.timers.tick(60000); await settleRefresh()
+  state.handlers.onNewEmail({})
+  assert.equal(state.calls.length, before)
+  doc.hidden = false
+  doc.dispatchEvent(new Event('visibilitychange')); win.dispatchEvent(new Event('focus'))
+  t.mock.timers.tick(0); await settleRefresh()
+  assert.equal(state.calls.length, before + 1)
+  t.mock.timers.tick(60000); await settleRefresh()
+  assert.equal(state.calls.length, before + 2)
+  store.disconnectSSE()
+  state.handlers.onConnected({}); win.dispatchEvent(new Event('focus'))
+  t.mock.timers.tick(60000); await settleRefresh()
+  assert.equal(state.calls.length, before + 2)
+})
+
+test('disconnected inboxes poll in 15 seconds and network return reconnects immediately', async t => {
+  const { store, state, win } = realtimeFixture(t)
+  await store.fetchEmails(0); store.connectSSE()
+  state.handlers.onError(new Event('error'))
+  const before = state.calls.length
+  t.mock.timers.tick(15000); await settleRefresh()
+  assert.equal(state.calls.length, before + 1)
+  win.dispatchEvent(new Event('online'))
+  t.mock.timers.tick(0); await settleRefresh()
+  assert.equal(state.connections, 2)
+  assert.equal(state.calls.length, before + 2)
+})
+
+test('an event arriving during refresh queues one trailing refresh instead of aborting repeatedly', async t => {
+  const { store, state, endpoints } = realtimeFixture(t)
+  await store.fetchEmails(0); store.connectSSE()
+  const pending = deferred(); let calls = 0
+  endpoints.list = async () => { calls++; return calls === 1 ? pending.promise : result([email('latest')]) }
+  state.handlers.onConnected({}); t.mock.timers.tick(300); await settleRefresh()
+  state.handlers.onNewEmail({}); state.handlers.onNewEmail({}); state.handlers.onCountsUpdate({})
+  t.mock.timers.tick(1000); await settleRefresh()
+  assert.equal(calls, 1)
+  pending.resolve(result([email('older')])); await settleRefresh()
+  t.mock.timers.tick(300); await settleRefresh()
+  assert.equal(calls, 2)
+  assert.equal(store.emails[0].uuid, 'latest')
+})
+
+test('forced post-event counts supersede pre-event requests and their stale cached result', async () => {
+  const old = deferred(); let calls = 0
+  const { store } = fixture({ getCounts: () => ++calls === 1 ? old.promise : Promise.resolve({ inbox: 2, unread: 2 }) })
+  const first = store.fetchCounts(0)
+  await store.fetchCounts(0, true)
+  old.resolve({ inbox: 1, unread: 1 }); await first
+  await store.fetchCounts(0)
+  assert.equal(calls, 2)
+  assert.equal(store.counts.unread, 2)
 })
