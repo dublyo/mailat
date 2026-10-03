@@ -1,16 +1,18 @@
 package router
 
 import (
+	"context"
+	"log"
 	"net/http"
 
 	"github.com/gogf/gf/v2/net/ghttp"
 
+	"github.com/dublyo/mailat/api/internal/config"
 	"github.com/dublyo/mailat/api/internal/controller"
+	"github.com/dublyo/mailat/api/internal/database"
 	"github.com/dublyo/mailat/api/internal/handler"
 	"github.com/dublyo/mailat/api/internal/middleware"
 	"github.com/dublyo/mailat/api/internal/service"
-	"github.com/dublyo/mailat/api/internal/config"
-	"github.com/dublyo/mailat/api/internal/database"
 )
 
 const swaggerUIHTML = `<!DOCTYPE html>
@@ -91,16 +93,17 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 	campaignService.SetWebhookTriggerService(webhookTriggerService)
 
 	// Email Receiving service
-	receivingService, _ := service.NewReceivingService(
+	receivingService, receivingErr := service.NewReceivingService(
 		database.DB,
 		cfg.AWSRegion,
 		cfg.AWSAccessKeyID,
 		cfg.AWSSecretAccessKey,
 		cfg.APIUrl,
 	)
-	if receivingService != nil {
-		receivingService.SetWebhookTriggerService(webhookTriggerService)
+	if receivingErr != nil {
+		log.Fatalf("Cannot initialize receiving: %v", receivingErr)
 	}
+	receivingService.SetWebhookTriggerService(webhookTriggerService)
 
 	// Initialize controllers
 	healthCtrl := controller.NewHealthController()
@@ -129,7 +132,9 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 
 	// Email Receiving controllers
 	sseCtrl := controller.NewSSEController()
-	sesWebhookCtrl := controller.NewSESWebhookController(receivingService, webhookTriggerService)
+	receivingService.SetNotifier(sseCtrl.NotifyNewEmail)
+	go receivingService.RunStorageCleanup(context.Background())
+	sesWebhookCtrl := controller.NewSESWebhookController(receivingService)
 	receivedInboxCtrl := controller.NewReceivedInboxController(inboxService, receivingService)
 
 	// CORS middleware
@@ -227,12 +232,13 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 			protectedGroup.GET("/inbox/received", receivedInboxCtrl.ListEmails)
 			protectedGroup.GET("/inbox/received/counts", receivedInboxCtrl.GetCounts)
 			protectedGroup.GET("/inbox/received/:uuid", receivedInboxCtrl.GetEmail)
+			protectedGroup.GET("/inbox/received/:uuid/attachments/:attachmentUuid", receivedInboxCtrl.DownloadAttachment)
 			protectedGroup.POST("/inbox/received/mark", receivedInboxCtrl.MarkEmails)
 			protectedGroup.POST("/inbox/received/star", receivedInboxCtrl.StarEmails)
 			protectedGroup.POST("/inbox/received/move", receivedInboxCtrl.MoveEmails)
 			protectedGroup.POST("/inbox/received/trash", receivedInboxCtrl.TrashEmails)
 			protectedGroup.POST("/inbox/setup", receivedInboxCtrl.SetupReceiving)
-			protectedGroup.POST("/identities/:uuid/catch-all", receivedInboxCtrl.SetCatchAll)
+			protectedGroup.POST("/identities/:uuid/catch-all", identityCtrl.Update)
 
 			// API Keys
 			protectedGroup.POST("/api-keys", authCtrl.CreateAPIKey)
@@ -255,6 +261,7 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 			protectedGroup.POST("/identities", identityCtrl.Create)
 			protectedGroup.GET("/identities", identityCtrl.List)
 			protectedGroup.GET("/identities/:uuid", identityCtrl.Get)
+			protectedGroup.PUT("/identities/:uuid", identityCtrl.Update)
 			protectedGroup.PUT("/identities/:uuid/password", identityCtrl.UpdatePassword)
 			protectedGroup.DELETE("/identities/:uuid", identityCtrl.Delete)
 

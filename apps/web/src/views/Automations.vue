@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AppLayout from '@/components/layout/AppLayout.vue'
+import { api } from '@/lib/api'
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -33,6 +35,7 @@ interface Automation {
 const router = useRouter()
 const automations = ref<Automation[]>([])
 const loading = ref(true)
+const error = ref('')
 const searchQuery = ref('')
 const filterStatus = ref<string>('all')
 
@@ -43,17 +46,11 @@ onMounted(async () => {
 const loadAutomations = async () => {
   loading.value = true
   try {
-    const token = localStorage.getItem('token')
-    const response = await fetch('/api/v1/automations?page=1&pageSize=50', {
-      headers: { 'Authorization': `Bearer ${token}` }
-    })
-
-    if (response.ok) {
-      const data = await response.json()
-      automations.value = data.data?.automations || []
-    }
-  } catch (error) {
-    console.error('Failed to load automations:', error)
+    error.value = ''
+    const data = await api.get<{ automations: Automation[] }>('/api/v1/automations?page=1&pageSize=50')
+    automations.value = data.automations || []
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Could not load automations'
   } finally {
     loading.value = false
   }
@@ -70,18 +67,11 @@ const editAutomation = (automation: Automation) => {
 const toggleStatus = async (automation: Automation, event: Event) => {
   event.stopPropagation()
   try {
-    const token = localStorage.getItem('token')
     const action = automation.status === 'active' ? 'pause' : 'activate'
-    const response = await fetch(`/api/v1/automations/${automation.uuid}/${action}`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}` }
-    })
-
-    if (response.ok) {
-      automation.status = automation.status === 'active' ? 'paused' : 'active'
-    }
-  } catch (error) {
-    console.error('Failed to toggle status:', error)
+    await api.post(`/api/v1/automations/${automation.uuid}/${action}`)
+    automation.status = automation.status === 'active' ? 'paused' : 'active'
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Could not change automation status'
   }
 }
 
@@ -90,17 +80,10 @@ const deleteAutomation = async (automation: Automation, event: Event) => {
   if (!confirm(`Are you sure you want to delete "${automation.name}"?`)) return
 
   try {
-    const token = localStorage.getItem('token')
-    const response = await fetch(`/api/v1/automations/${automation.uuid}`, {
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${token}` }
-    })
-
-    if (response.ok) {
-      automations.value = automations.value.filter(a => a.uuid !== automation.uuid)
-    }
-  } catch (error) {
-    console.error('Failed to delete automation:', error)
+    await api.delete(`/api/v1/automations/${automation.uuid}`)
+    automations.value = automations.value.filter(a => a.uuid !== automation.uuid)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Could not delete automation'
   }
 }
 
@@ -163,7 +146,9 @@ const formatDate = (dateStr: string) => {
 </script>
 
 <template>
+  <AppLayout>
   <div class="automations-page">
+    <p v-if="error" role="alert" class="m-4 rounded-lg bg-red-50 text-red-700 p-3">{{ error }}</p>
     <!-- Header -->
     <header class="page-header">
       <div class="header-content">
@@ -313,10 +298,14 @@ const formatDate = (dateStr: string) => {
       </div>
     </main>
   </div>
+  </AppLayout>
 </template>
 
 <style scoped>
 .automations-page {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
   height: 100%;
   display: flex;
   flex-direction: column;

@@ -1,63 +1,77 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
-	"mime"
-	"mime/multipart"
 	"net/mail"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
-
 	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/internal/provider"
+	"github.com/lib/pq"
 )
 
-// ReceivingService handles email receiving operations
 type ReceivingService struct {
 	db                    *sql.DB
 	receivingProvider     *provider.ReceivingProvider
+	storage               incomingStorage
+	notify                func(int64, *model.ReceivedEmail)
 	webhookTriggerService *WebhookTriggerService
 }
 
-// NewReceivingService creates a new receiving service
 func NewReceivingService(db *sql.DB, region, accessKeyID, secretAccessKey, webhookBaseURL string) (*ReceivingService, error) {
-	cfg := &provider.ReceivingConfig{
-		Region:          region,
-		AccessKeyID:     accessKeyID,
-		SecretAccessKey: secretAccessKey,
-		WebhookBaseURL:  webhookBaseURL,
-	}
-
-	rp, err := provider.NewReceivingProvider(cfg)
+	rp, err := provider.NewReceivingProvider(&provider.ReceivingConfig{Region: region, AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey, WebhookBaseURL: webhookBaseURL})
 	if err != nil {
 		return nil, err
 	}
-
-	return &ReceivingService{
-		db:                db,
-		receivingProvider: rp,
-	}, nil
+	return &ReceivingService{db: db, receivingProvider: rp, storage: rp}, nil
 }
-
-// SetWebhookTriggerService sets the webhook trigger service for firing trigger events
+func (s *ReceivingService) DB() *sql.DB { return s.db }
 func (s *ReceivingService) SetWebhookTriggerService(svc *WebhookTriggerService) {
 	s.webhookTriggerService = svc
 }
+func (s *ReceivingService) SetNotifier(fn func(int64, *model.ReceivedEmail)) { s.notify = fn }
 
-// DB returns the database connection
-func (s *ReceivingService) DB() *sql.DB {
-	return s.db
+var ErrWebhookAuthorization = errors.New("invalid webhook authorization")
+
+type incomingStorage interface {
+	GetEmailFromS3(context.Context, string, string) ([]byte, error)
+	PutAttachment(context.Context, string, string, string, []byte) error
+	DeleteObject(context.Context, string, string) error
+	GenerateDownloadURL(context.Context, string, string, string) (string, error)
+}
+
+type ReceivingAuthorization struct {
+	OrgID                    int64
+	TopicARN, Bucket, Region string
+}
+
+func (s *ReceivingService) AuthorizeNotification(ctx context.Context, topic, secret string) (*ReceivingAuthorization, error) {
+	var auth ReceivingAuthorization
+	var expected string
+	err := s.db.QueryRowContext(ctx, `SELECT org_id,sns_topic_arn,s3_bucket,s3_region,webhook_secret FROM receiving_configs WHERE sns_topic_arn=$1 AND status IN ('active','pending')`, topic).Scan(&auth.OrgID, &auth.TopicARN, &auth.Bucket, &auth.Region, &expected)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+	if err == sql.ErrNoRows || secret == "" || subtle.ConstantTimeCompare([]byte(secret), []byte(expected)) != 1 {
+		return nil, ErrWebhookAuthorization
+	}
+	return &auth, nil
+}
+
+type recipientIdentity struct {
+	ID, DomainID, OrgID, UserID int64
+	Email, Domain               string
+	Recipients                  []string
 }
 
 // SetupDomainReceiving sets up email receiving for a domain
@@ -75,6 +89,10 @@ func (s *ReceivingService) SetupDomainReceiving(ctx context.Context, orgID int64
 		return nil, fmt.Errorf("domain not found: %w", err)
 	}
 
+	if domain.Status != "active" {
+		return nil, fmt.Errorf("domain must be verified before enabling receiving")
+	}
+
 	// Check if already set up
 	if domain.ReceivingEnabled {
 		return nil, fmt.Errorf("receiving is already enabled for this domain")
@@ -83,15 +101,19 @@ func (s *ReceivingService) SetupDomainReceiving(ctx context.Context, orgID int64
 	// Check if org has existing receiving config
 	var existingConfig struct {
 		S3Bucket       sql.NullString
-		S3Region       sql.NullString
 		SNSTopicArn    sql.NullString
 		SESRuleSetName sql.NullString
 		WebhookSecret  sql.NullString
+		S3Region       sql.NullString
 	}
 	err = s.db.QueryRowContext(ctx,
-		`SELECT s3_bucket, s3_region, sns_topic_arn, ses_rule_set_name, webhook_secret FROM receiving_configs WHERE org_id = $1`,
+		`SELECT s3_bucket, sns_topic_arn, ses_rule_set_name, webhook_secret, s3_region FROM receiving_configs WHERE org_id = $1`,
 		orgID,
-	).Scan(&existingConfig.S3Bucket, &existingConfig.S3Region, &existingConfig.SNSTopicArn, &existingConfig.SESRuleSetName, &existingConfig.WebhookSecret)
+	).Scan(&existingConfig.S3Bucket, &existingConfig.SNSTopicArn, &existingConfig.SESRuleSetName, &existingConfig.WebhookSecret, &existingConfig.S3Region)
+
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("load receiving configuration: %w", err)
+	}
 
 	var result *provider.ReceivingSetupResult
 	var webhookSecret string
@@ -124,13 +146,24 @@ func (s *ReceivingService) SetupDomainReceiving(ctx context.Context, orgID int64
 
 		// Save receiving config
 		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO receiving_configs (org_id, s3_bucket, s3_region, sns_topic_arn, ses_rule_set_name, webhook_secret, status, setup_completed_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			orgID, result.S3Bucket, result.S3Region, result.SNSTopicArn, result.RuleSetName, webhookSecret, "active", time.Now(),
+			`INSERT INTO receiving_configs (org_id, s3_bucket, s3_region, sns_topic_arn, ses_rule_set_name, webhook_secret, status, setup_completed_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+			orgID, result.S3Bucket, result.S3Region, result.SNSTopicArn, result.RuleSetName, webhookSecret, "pending", time.Now(),
 		)
 		if err != nil {
-			log.Printf("Failed to save receiving config: %v", err)
+			return nil, fmt.Errorf("failed to save receiving config: %w", err)
 		}
+	}
+
+	// Persist the topic and secret before subscribing: SNS confirms asynchronously.
+	if result.WebhookURL == "" {
+		result.WebhookURL = s.receivingProvider.WebhookURL(webhookSecret)
+	}
+	if err := s.receivingProvider.SubscribeWebhook(ctx, result.SNSTopicArn, result.WebhookURL); err != nil {
+		return nil, fmt.Errorf("subscribe receiving webhook: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE receiving_configs SET status = 'active', updated_at = NOW() WHERE org_id = $1", orgID); err != nil {
+		return nil, err
 	}
 
 	// Update domain with receiving info
@@ -149,25 +182,15 @@ func (s *ReceivingService) SetupDomainReceiving(ctx context.Context, orgID int64
 		return nil, fmt.Errorf("failed to update domain: %w", err)
 	}
 
-	// Auto-add MX record for inbound receiving to domain_dns_records
-	// so it appears in the DNS records list and zone file download
-	mxValue := fmt.Sprintf("10 inbound-smtp.%s.amazonaws.com", result.S3Region)
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO domain_dns_records (domain_id, record_type, hostname, expected_value, verified)
-		 VALUES ($1, 'MX', $2, $3, false)
-		 ON CONFLICT DO NOTHING`,
-		domainID, domain.Name, mxValue,
-	)
-	if err != nil {
-		log.Printf("Warning: Failed to insert MX DNS record: %v", err)
+	if _, err = s.db.ExecContext(ctx, `INSERT INTO domain_dns_records(domain_id,record_type,hostname,expected_value,verified) VALUES($1,'MX',$2,$3,false) ON CONFLICT(domain_id,record_type,hostname) DO UPDATE SET expected_value=EXCLUDED.expected_value,verified=false`, domainID, domain.Name, fmt.Sprintf("10 inbound-smtp.%s.amazonaws.com", result.S3Region)); err != nil {
+		return nil, fmt.Errorf("save receiving DNS record: %w", err)
 	}
-
 	// Generate required DNS records for receiving
 	mxRecords := []model.DomainDNSRecord{
 		{
 			RecordType: "MX",
 			Hostname:   domain.Name,
-			Value:      mxValue,
+			Value:      fmt.Sprintf("10 inbound-smtp.%s.amazonaws.com", result.S3Region),
 		},
 	}
 
@@ -182,397 +205,263 @@ func (s *ReceivingService) SetupDomainReceiving(ctx context.Context, orgID int64
 	}, nil
 }
 
-// ProcessIncomingEmail processes an incoming email notification from SNS
-func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, notification *model.SESNotification) error {
-	log.Printf("Processing incoming email: %s", notification.Mail.MessageId)
-
-	// Only handle received notifications
-	if notification.NotificationType != "Received" {
-		log.Printf("Skipping notification type: %s", notification.NotificationType)
-		return nil
+// Each provider delivery is committed once, with one mailbox copy per identity.
+func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *ReceivingAuthorization, n *model.SESNotification) error {
+	if n.NotificationType != "Received" || n.Receipt == nil {
+		return fmt.Errorf("invalid received notification")
 	}
-
-	receipt := notification.Receipt
-	if receipt == nil {
-		return fmt.Errorf("no receipt in notification")
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`).MatchString(n.Mail.MessageId) {
+		return fmt.Errorf("invalid provider message id")
 	}
-
-	// Get the S3 location
-	action := receipt.Action
-	if action.Type != "S3" {
-		log.Printf("Unexpected action type: %s", action.Type)
+	if len(n.Receipt.Recipients) > 100 {
+		return fmt.Errorf("too many recipients")
 	}
-
-	// Find the recipient identity
-	var identity struct {
-		ID       int64
-		DomainID int64
-		OrgID    int64
-		Email    string
-	}
-
-	for _, recipient := range receipt.Recipients {
-		// Try to find exact match first
-		err := s.db.QueryRowContext(ctx,
-			`SELECT i.id, i.domain_id, d.org_id, i.email
-			 FROM identities i
-			 LEFT JOIN domains d ON i.domain_id = d.id
-			 WHERE i.email = $1`,
-			strings.ToLower(recipient),
-		).Scan(&identity.ID, &identity.DomainID, &identity.OrgID, &identity.Email)
-
-		if err == nil && identity.ID > 0 {
-			break
-		}
-
-		// Try catch-all
-		parts := strings.SplitN(recipient, "@", 2)
-		if len(parts) == 2 {
-			domain := parts[1]
-			err = s.db.QueryRowContext(ctx,
-				`SELECT i.id, i.domain_id, d.org_id, i.email
-				 FROM identities i
-				 LEFT JOIN domains d ON i.domain_id = d.id
-				 WHERE d.name = $1 AND i.is_catch_all = true`,
-				domain,
-			).Scan(&identity.ID, &identity.DomainID, &identity.OrgID, &identity.Email)
-
-			if err == nil && identity.ID > 0 {
-				break
-			}
-		}
-	}
-
-	if identity.ID == 0 {
-		log.Printf("No identity found for recipients: %v", receipt.Recipients)
-		return fmt.Errorf("no identity found for recipients")
-	}
-
-	// Get domain info for S3 bucket
-	var receivingS3Bucket sql.NullString
-	var domainName string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT receiving_s3_bucket, name FROM domains WHERE id = $1`,
-		identity.DomainID,
-	).Scan(&receivingS3Bucket, &domainName)
-	if err != nil {
-		return fmt.Errorf("failed to get domain: %w", err)
-	}
-
-	// Determine S3 bucket and key
-	s3Bucket := action.BucketName
-	s3Key := action.ObjectKey
-	if s3Bucket == "" && receivingS3Bucket.Valid {
-		s3Bucket = receivingS3Bucket.String
-	}
-	if s3Key == "" && domainName != "" {
-		// Construct S3 key from domain prefix and message ID
-		s3Key = fmt.Sprintf("incoming/%s/%s", domainName, notification.Mail.MessageId)
-	}
-
-	// Parse email headers
-	headers := notification.Mail.CommonHeaders
-
-	// Create snippet from subject
-	snippet := headers.Subject
-	if len(snippet) > 200 {
-		snippet = snippet[:200] + "..."
-	}
-
-	// Generate thread ID from In-Reply-To or References
-	threadID := generateThreadID(notification.Mail.Headers)
-
-	// Prepare spam verdict values
-	isSpam := receipt.SpamVerdict.Status == "FAIL"
-	folder := "inbox"
-	if isSpam {
-		folder = "spam"
-	}
-
-	// Insert the email
-	var emailID int64
-	err = s.db.QueryRowContext(ctx,
-		`INSERT INTO received_emails (
-			org_id, domain_id, identity_id, message_id, thread_id,
-			from_email, from_name, to_emails, cc_emails, subject, snippet,
-			raw_s3_bucket, raw_s3_key, folder, is_read, is_starred, is_spam,
-			spam_verdict, virus_verdict, spf_verdict, dkim_verdict, dmarc_verdict,
-			ses_message_id, received_at
-		) VALUES (
-			$1, $2, $3, $4, $5,
-			$6, $7, $8, $9, $10, $11,
-			$12, $13, $14, $15, $16, $17,
-			$18, $19, $20, $21, $22,
-			$23, $24
-		) RETURNING id`,
-		identity.OrgID, identity.DomainID, identity.ID, headers.MessageId, threadID,
-		extractEmail(headers.From), extractName(headers.From), pq.Array(headers.To), pq.Array(headers.Cc), headers.Subject, snippet,
-		s3Bucket, s3Key, folder, false, false, isSpam,
-		receipt.SpamVerdict.Status, receipt.VirusVerdict.Status, receipt.SPFVerdict.Status, receipt.DKIMVerdict.Status, receipt.DMARCVerdict.Status,
-		notification.Mail.MessageId, parseTimestamp(receipt.Timestamp),
-	).Scan(&emailID)
-
-	if err != nil {
-		// Check for duplicate
-		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
-			log.Printf("Email already processed: %s", headers.MessageId)
-			return nil
-		}
-		return fmt.Errorf("failed to insert email: %w", err)
-	}
-
-	log.Printf("Created received email record: %d", emailID)
-
-	// Parse email body from S3 (async)
-	go s.parseEmailBody(context.Background(), emailID, s3Bucket, s3Key)
-
-	// Apply filters
-	go s.applyFilters(context.Background(), identity.OrgID, emailID)
-
-	// Fire webhook trigger (n8n / Zapier integration)
-	if s.webhookTriggerService != nil {
-		go s.webhookTriggerService.Fire(context.Background(), identity.OrgID, TriggerEmailReceived, map[string]interface{}{
-			"email_id": emailID,
-			"from":     extractEmail(headers.From),
-			"to":       headers.To,
-			"subject":  headers.Subject,
-			"domain":   domainName,
-			"folder":   folder,
-		})
-	}
-
-	return nil
-}
-
-// parseEmailBody fetches and parses the email body from S3
-func (s *ReceivingService) parseEmailBody(ctx context.Context, emailID int64, bucket, key string) {
-	log.Printf("Parsing email body for email %d from s3://%s/%s", emailID, bucket, key)
-
-	// Fetch from S3
-	rawEmail, err := s.receivingProvider.GetEmailFromS3(ctx, bucket, key)
-	if err != nil {
-		log.Printf("Failed to fetch email from S3: %v", err)
-		return
-	}
-
-	// Parse MIME message
-	msg, err := mail.ReadMessage(bytes.NewReader(rawEmail))
-	if err != nil {
-		log.Printf("Failed to parse email: %v", err)
-		return
-	}
-
-	// Extract body and attachments
-	textBody, htmlBody, attachments, err := s.parseEmailParts(ctx, msg)
-	if err != nil {
-		log.Printf("Failed to parse email parts: %v", err)
-		return
-	}
-
-	// Create snippet from text body
-	snippet := ""
-	if textBody != "" {
-		snippet = textBody
-		if len(snippet) > 200 {
-			snippet = snippet[:200] + "..."
-		}
-	}
-
-	// Update email record
-	_, err = s.db.ExecContext(ctx,
-		`UPDATE received_emails SET
-			text_body = $1,
-			html_body = $2,
-			size_bytes = $3,
-			has_attachments = $4,
-			snippet = CASE WHEN $5 != '' THEN $5 ELSE snippet END
-		 WHERE id = $6`,
-		textBody, htmlBody, len(rawEmail), len(attachments) > 0, snippet, emailID,
-	)
-	if err != nil {
-		log.Printf("Failed to update email: %v", err)
-	}
-
-	// Save attachments
-	for _, att := range attachments {
-		_, err := s.db.ExecContext(ctx,
-			`INSERT INTO email_attachments (
-				received_email_id, filename, content_type, size_bytes,
-				s3_key, s3_bucket, content_id, is_inline, checksum
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-			emailID, att.Filename, att.ContentType, att.SizeBytes,
-			att.S3Key, att.S3Bucket, att.ContentID, att.IsInline, att.Checksum,
-		)
+	identities := map[int64]*recipientIdentity{}
+	domains := map[string]bool{}
+	for _, recipient := range n.Receipt.Recipients {
+		parsed, err := mail.ParseAddress(recipient)
 		if err != nil {
-			log.Printf("Failed to save attachment: %v", err)
-		}
-	}
-}
-
-// AttachmentInfo contains parsed attachment information
-type AttachmentInfo struct {
-	Filename    string
-	ContentType string
-	SizeBytes   int
-	S3Key       string
-	S3Bucket    string
-	ContentID   string
-	IsInline    bool
-	Checksum    string
-}
-
-// parseEmailParts parses the MIME parts of an email
-func (s *ReceivingService) parseEmailParts(ctx context.Context, msg *mail.Message) (textBody, htmlBody string, attachments []AttachmentInfo, err error) {
-	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
-	if err != nil {
-		// Assume plain text
-		body, _ := io.ReadAll(msg.Body)
-		return string(body), "", nil, nil
-	}
-
-	if strings.HasPrefix(mediaType, "multipart/") {
-		mr := multipart.NewReader(msg.Body, params["boundary"])
-		for {
-			p, err := mr.NextPart()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return textBody, htmlBody, attachments, err
-			}
-
-			partMediaType, _, _ := mime.ParseMediaType(p.Header.Get("Content-Type"))
-			disposition, dispParams, _ := mime.ParseMediaType(p.Header.Get("Content-Disposition"))
-
-			partBody, err := io.ReadAll(p)
-			if err != nil {
-				continue
-			}
-
-			switch {
-			case partMediaType == "text/plain" && disposition != "attachment":
-				textBody = string(partBody)
-			case partMediaType == "text/html" && disposition != "attachment":
-				htmlBody = string(partBody)
-			case disposition == "attachment" || disposition == "inline":
-				filename := dispParams["filename"]
-				if filename == "" {
-					filename = p.FileName()
-				}
-				if filename == "" {
-					filename = "attachment"
-				}
-
-				// Calculate checksum
-				hash := sha256.Sum256(partBody)
-				checksum := hex.EncodeToString(hash[:])
-
-				attachments = append(attachments, AttachmentInfo{
-					Filename:    filename,
-					ContentType: partMediaType,
-					SizeBytes:   len(partBody),
-					ContentID:   strings.Trim(p.Header.Get("Content-ID"), "<>"),
-					IsInline:    disposition == "inline",
-					Checksum:    checksum,
-					// Note: S3 upload would happen here in production
-				})
-			}
-		}
-	} else if mediaType == "text/plain" {
-		body, _ := io.ReadAll(msg.Body)
-		textBody = string(body)
-	} else if mediaType == "text/html" {
-		body, _ := io.ReadAll(msg.Body)
-		htmlBody = string(body)
-	}
-
-	return textBody, htmlBody, attachments, nil
-}
-
-// applyFilters applies user-defined filters to an email
-func (s *ReceivingService) applyFilters(ctx context.Context, orgID, emailID int64) {
-	// Get email
-	var email model.ReceivedEmail
-	var toEmailsArr, ccEmailsArr pq.StringArray
-	var textBody sql.NullString
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, org_id, domain_id, identity_id, from_email, to_emails, cc_emails,
-		        subject, text_body, has_attachments, folder, is_starred, is_read
-		 FROM received_emails WHERE id = $1`,
-		emailID,
-	).Scan(&email.ID, &email.OrgID, &email.DomainID, &email.IdentityID, &email.FromEmail,
-		&toEmailsArr, &ccEmailsArr, &email.Subject, &textBody, &email.HasAttachments,
-		&email.Folder, &email.IsStarred, &email.IsRead)
-	if err != nil {
-		log.Printf("Failed to get email for filtering: %v", err)
-		return
-	}
-	email.TextBody = textBody.String
-	email.ToEmails = []string(toEmailsArr)
-	email.CcEmails = []string(ccEmailsArr)
-
-	// Get applicable filters
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, conditions, condition_logic, action_labels, action_folder,
-		        action_star, action_mark_read, action_archive, action_trash
-		 FROM inbox_filters
-		 WHERE org_id = $1 AND active = true AND (identity_id IS NULL OR identity_id = $2)
-		 ORDER BY priority DESC`,
-		orgID, email.IdentityID,
-	)
-	if err != nil {
-		log.Printf("Failed to get filters: %v", err)
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var filter struct {
-			ID             int64
-			Conditions     string
-			ConditionLogic string
-			ActionLabels   sql.NullString
-			ActionFolder   sql.NullString
-			ActionStar     bool
-			ActionMarkRead bool
-			ActionArchive  bool
-			ActionTrash    bool
-		}
-
-		err := rows.Scan(&filter.ID, &filter.Conditions, &filter.ConditionLogic, &filter.ActionLabels,
-			&filter.ActionFolder, &filter.ActionStar, &filter.ActionMarkRead, &filter.ActionArchive, &filter.ActionTrash)
-		if err != nil {
-			log.Printf("Failed to scan filter: %v", err)
 			continue
 		}
-
-		var conditions []model.FilterCondition
-		json.Unmarshal([]byte(filter.Conditions), &conditions)
-
-		if s.matchesFilter(email, conditions, filter.ConditionLogic) {
-			// Apply actions based on what's set
-			if filter.ActionFolder.Valid && filter.ActionFolder.String != "" {
-				s.db.ExecContext(ctx, `UPDATE received_emails SET folder = $1 WHERE id = $2`, filter.ActionFolder.String, emailID)
+		address := strings.ToLower(parsed.Address)
+		at := strings.LastIndex(address, "@")
+		if at < 1 {
+			continue
+		}
+		domain := address[at+1:]
+		var ident recipientIdentity
+		err = s.db.QueryRowContext(ctx, `SELECT i.id,i.domain_id,d.org_id,i.user_id,i.email,d.name
+   FROM identities i JOIN domains d ON d.id=i.domain_id
+   WHERE d.org_id=$1 AND d.name=$2 AND d.status='active' AND d.receiving_enabled=true AND i.can_receive=true
+   AND (lower(i.email)=$3 OR i.is_catch_all=true)
+   ORDER BY (lower(i.email)=$3) DESC,i.id LIMIT 1`, auth.OrgID, domain, address).Scan(&ident.ID, &ident.DomainID, &ident.OrgID, &ident.UserID, &ident.Email, &ident.Domain)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		domains[domain] = true
+		if existing := identities[ident.ID]; existing != nil {
+			if !containsString(existing.Recipients, address) {
+				existing.Recipients = append(existing.Recipients, address)
 			}
-			if filter.ActionStar {
-				s.db.ExecContext(ctx, `UPDATE received_emails SET is_starred = true WHERE id = $1`, emailID)
-			}
-			if filter.ActionMarkRead {
-				s.db.ExecContext(ctx, `UPDATE received_emails SET is_read = true, read_at = $1 WHERE id = $2`, time.Now(), emailID)
-			}
-			if filter.ActionArchive {
-				s.db.ExecContext(ctx, `UPDATE received_emails SET is_archived = true WHERE id = $1`, emailID)
-			}
-			if filter.ActionTrash {
-				s.db.ExecContext(ctx, `UPDATE received_emails SET is_trashed = true, trashed_at = $1 WHERE id = $2`, time.Now(), emailID)
-			}
-
-			// Update filter stats
-			s.db.ExecContext(ctx, `UPDATE inbox_filters SET match_count = match_count + 1, last_matched_at = $1 WHERE id = $2`, time.Now(), filter.ID)
-
-			log.Printf("Applied filter %d to email %d", filter.ID, emailID)
+		} else {
+			ident.Recipients = []string{address}
+			identities[ident.ID] = &ident
 		}
 	}
+	// A message may produce separate notifications for each matched domain rule.
+	// Deduplicate the recipient identity, never the whole message/topic pair.
+	rows, err := s.db.QueryContext(ctx, `SELECT identity_id FROM received_ingestions WHERE topic_arn=$1 AND ses_message_id=$2`, auth.TopicARN, n.Mail.MessageId)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var identityID int64
+		if err = rows.Scan(&identityID); err != nil {
+			rows.Close()
+			return err
+		}
+		delete(identities, identityID)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	// Unknown addresses have no owner. Acknowledge rather than indefinitely retrying them.
+	if len(identities) == 0 {
+		return nil
+	}
+	action := n.Receipt.Action
+	if action.BucketName != "" && action.BucketName != auth.Bucket {
+		return fmt.Errorf("unapproved S3 bucket")
+	}
+	if action.TopicArn != "" && action.TopicArn != auth.TopicARN {
+		return fmt.Errorf("unapproved SNS topic")
+	}
+	keys := []string{}
+	for domain := range domains {
+		key := "incoming/" + domain + "/" + n.Mail.MessageId
+		if action.ObjectKey == "" || action.ObjectKey == key {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return fmt.Errorf("unapproved S3 object key")
+	}
+	var raw []byte
+	var key string
+	for _, candidate := range keys {
+		raw, err = s.storage.GetEmailFromS3(ctx, auth.Bucket, candidate)
+		if err == nil {
+			key = candidate
+			break
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("fetch incoming message: %w", err)
+	}
+	parsed, err := parseIncomingMIME(raw)
+	if err != nil {
+		// A permanent MIME error cannot be repaired by SNS retries. Preserve the
+		// original bytes as a private .eml attachment and make the failure visible.
+		parsed = malformedIncomingFallback(raw, n, err)
+	}
+	for index := range parsed.Attachments {
+		att := &parsed.Attachments[index]
+		att.S3Bucket = auth.Bucket
+		att.S3Key = fmt.Sprintf("attachments/%d/%s/%d-%s", auth.OrgID, n.Mail.MessageId, index, att.Checksum)
+		if err := s.storage.PutAttachment(ctx, att.S3Bucket, att.S3Key, att.ContentType, att.Data); err != nil {
+			return fmt.Errorf("save attachment: %w", err)
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	from := clipUTF8(extractEmail(parsed.Header["From"]), 255)
+	name := clipUTF8(decodeMIMEHeader(extractName(parsed.Header["From"])), 255)
+	subject := clipUTF8(decodeMIMEHeader(parsed.Header.Get("Subject")), 1000)
+	messageID := parsed.Header.Get("Message-ID")
+	if messageID == "" {
+		messageID = "<" + n.Mail.MessageId + "@ses.invalid>"
+	}
+	refs := strings.Fields(parsed.Header.Get("References"))
+	replyTo := clipUTF8(extractEmail(parsed.Header["Reply-To"]), 255)
+	thread := generateThreadID(n.Mail.Headers)
+	if thread == "" {
+		hash := sha256.Sum256([]byte(messageID))
+		thread = hex.EncodeToString(hash[:8])
+	}
+	folder := "inbox"
+	spam := n.Receipt.SpamVerdict.Status == "FAIL" || n.Receipt.VirusVerdict.Status == "FAIL"
+	if spam {
+		folder = "spam"
+	}
+	saved := map[int64]*model.ReceivedEmail{}
+	for _, ident := range identities {
+		res, err := tx.ExecContext(ctx, `INSERT INTO received_ingestions(org_id,topic_arn,ses_message_id,identity_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, auth.OrgID, auth.TopicARN, n.Mail.MessageId, ident.ID)
+		if err != nil {
+			return err
+		}
+		count, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			continue
+		}
+		var emailID int64
+		var emailUUID string
+		err = tx.QueryRowContext(ctx, `INSERT INTO received_emails(org_id,domain_id,identity_id,message_id,thread_id,from_email,from_name,to_emails,cc_emails,subject,snippet,raw_s3_bucket,raw_s3_key,folder,is_spam,spam_verdict,virus_verdict,spf_verdict,dkim_verdict,dmarc_verdict,ses_message_id,received_at,text_body,html_body,size_bytes,has_attachments,in_reply_to,"references",reply_to,envelope_recipients,updated_at)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,NOW())
+   ON CONFLICT(identity_id,ses_message_id) DO NOTHING RETURNING id,uuid`, ident.OrgID, ident.DomainID, ident.ID, clipUTF8(messageID, 500), thread, from, name, pq.Array(addressList(parsed.Header, "To")), pq.Array(addressList(parsed.Header, "Cc")), subject, clipUTF8(parsed.Text, 200), auth.Bucket, key, folder, spam, n.Receipt.SpamVerdict.Status, n.Receipt.VirusVerdict.Status, n.Receipt.SPFVerdict.Status, n.Receipt.DKIMVerdict.Status, n.Receipt.DMARCVerdict.Status, n.Mail.MessageId, parseTimestamp(n.Receipt.Timestamp), parsed.Text, parsed.HTML, len(raw), len(parsed.Attachments) > 0, clipUTF8(parsed.Header.Get("In-Reply-To"), 500), pq.Array(refs), replyTo, pq.Array(ident.Recipients)).Scan(&emailID, &emailUUID)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("insert mailbox delivery: %w", err)
+		}
+		for _, att := range parsed.Attachments {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO email_attachments(received_email_id,filename,content_type,size_bytes,s3_key,s3_bucket,content_id,is_inline,checksum) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, emailID, att.Filename, att.ContentType, att.SizeBytes, att.S3Key, att.S3Bucket, att.ContentID, att.IsInline, att.Checksum); err != nil {
+				return err
+			}
+		}
+		email := &model.ReceivedEmail{ID: emailID, UUID: emailUUID, OrgID: ident.OrgID, IdentityID: ident.ID, DomainID: ident.DomainID, FromEmail: from, Subject: subject, TextBody: parsed.Text, HasAttachments: len(parsed.Attachments) > 0, ToEmails: addressList(parsed.Header, "To"), CcEmails: addressList(parsed.Header, "Cc"), Folder: folder, ReceivedAt: parseTimestamp(n.Receipt.Timestamp)}
+		if err = s.applyReceivedFilters(ctx, tx, ident.UserID, email); err != nil {
+			return err
+		}
+		saved[ident.ID] = email
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if s.webhookTriggerService != nil {
+		for _, email := range saved {
+			go s.webhookTriggerService.Fire(context.Background(), auth.OrgID, TriggerEmailReceived, map[string]interface{}{"email_id": email.ID, "from": email.FromEmail, "to": email.ToEmails, "subject": email.Subject, "folder": email.Folder})
+		}
+	}
+	if s.notify != nil {
+		for _, ident := range identities {
+			if email := saved[ident.ID]; email != nil {
+				s.notify(ident.UserID, email)
+			}
+		}
+	}
+	return nil
+}
+func containsString(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ReceivingService) applyReceivedFilters(ctx context.Context, tx *sql.Tx, userID int64, email *model.ReceivedEmail) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id,conditions,condition_logic,action_labels,action_folder,action_star,action_mark_read,action_archive,action_trash FROM inbox_filters WHERE org_id=$1 AND user_id=$2 AND active=true AND (identity_id IS NULL OR identity_id=$3) ORDER BY priority DESC,id`, email.OrgID, userID, email.IdentityID)
+	if err != nil {
+		return err
+	}
+	type rule struct {
+		id                         int64
+		conditions                 []model.FilterCondition
+		logic                      string
+		labels                     []string
+		folder                     sql.NullString
+		star, read, archive, trash bool
+	}
+	var rules []rule
+	for rows.Next() {
+		var r rule
+		var conditions []byte
+		if err = rows.Scan(&r.id, &conditions, &r.logic, pq.Array(&r.labels), &r.folder, &r.star, &r.read, &r.archive, &r.trash); err != nil {
+			rows.Close()
+			return err
+		}
+		if err = json.Unmarshal(conditions, &r.conditions); err != nil {
+			rows.Close()
+			return err
+		}
+		rules = append(rules, r)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, r := range rules {
+		if !s.matchesFilter(*email, r.conditions, r.logic) {
+			continue
+		}
+		folder := email.Folder
+		if r.folder.Valid {
+			folder = r.folder.String
+		}
+		if r.archive {
+			folder = "archive"
+		}
+		if r.trash {
+			folder = "trash"
+		}
+		email.Folder = folder
+		email.IsArchived = folder == "archive"
+		email.IsTrashed = folder == "trash"
+		email.IsSpam = folder == "spam"
+		email.IsStarred = email.IsStarred || r.star
+		email.IsRead = email.IsRead || r.read
+		if _, err = tx.ExecContext(ctx, `UPDATE received_emails SET folder=$1,is_archived=$2,is_trashed=$3,is_spam=$4,is_starred=$5,is_read=$6,read_at=CASE WHEN $6 THEN NOW() ELSE read_at END,trashed_at=CASE WHEN $3 THEN NOW() ELSE NULL END,labels=(SELECT ARRAY(SELECT DISTINCT unnest(labels || $7::text[]))),updated_at=NOW() WHERE id=$8`, folder, email.IsArchived, email.IsTrashed, email.IsSpam, email.IsStarred, email.IsRead, pq.Array(r.labels), email.ID); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE inbox_filters SET match_count=match_count+1,last_matched_at=NOW() WHERE id=$1`, r.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // matchesFilter checks if an email matches filter conditions

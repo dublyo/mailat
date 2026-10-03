@@ -5,361 +5,225 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
-
-	"github.com/gogf/gf/v2/frame/g"
-	"github.com/gogf/gf/v2/net/ghttp"
+	"time"
 
 	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/internal/service"
 	"github.com/dublyo/mailat/api/pkg/response"
+	"github.com/gogf/gf/v2/net/ghttp"
 )
 
-// SESWebhookController handles incoming webhooks from AWS SES
-type SESWebhookController struct {
-	receivingService      *service.ReceivingService
-	webhookTriggerService *service.WebhookTriggerService
+type SESWebhookController struct{ receivingService *service.ReceivingService }
+
+func NewSESWebhookController(s *service.ReceivingService) *SESWebhookController {
+	return &SESWebhookController{receivingService: s}
 }
 
-// NewSESWebhookController creates a new SES webhook controller
-func NewSESWebhookController(receivingService *service.ReceivingService, webhookTriggerService *service.WebhookTriggerService) *SESWebhookController {
-	return &SESWebhookController{
-		receivingService:      receivingService,
-		webhookTriggerService: webhookTriggerService,
-	}
-}
+var errSNSCertificateUnavailable = errors.New("SNS certificate temporarily unavailable")
 
-// HandleIncoming handles incoming email notifications from AWS SES via SNS
-// POST /api/v1/webhooks/ses/incoming
+var snsHTTPClient = &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return fmt.Errorf("SNS redirects are not allowed") }}
+
 func (c *SESWebhookController) HandleIncoming(r *ghttp.Request) {
-	ctx := r.Context()
-
-	// Get webhook secret from query
-	secret := r.Get("secret").String()
-	if secret == "" {
-		g.Log().Warning(ctx, "Missing webhook secret")
-		response.Unauthorized(r, "Missing webhook secret")
+	if c.receivingService == nil {
+		r.Response.WriteStatus(http.StatusServiceUnavailable)
 		return
 	}
-
-	// Read request body
-	body, err := io.ReadAll(r.Request.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Request.Body, 1024*1024+1))
+	if err != nil || len(body) > 1024*1024 {
+		response.BadRequest(r, "Invalid webhook body")
+		return
+	}
+	var notification model.SNSNotification
+	if err = json.Unmarshal(body, &notification); err != nil {
+		response.BadRequest(r, "Invalid SNS notification")
+		return
+	}
+	auth, err := c.receivingService.AuthorizeNotification(r.Context(), notification.TopicArn, r.Get("secret").String())
 	if err != nil {
-		g.Log().Errorf(ctx, "Failed to read request body: %v", err)
-		response.BadRequest(r, "Failed to read request body")
+		if errors.Is(err, service.ErrWebhookAuthorization) {
+			response.Unauthorized(r, "Invalid webhook authorization")
+		} else {
+			r.Response.WriteStatus(http.StatusServiceUnavailable)
+		}
 		return
 	}
-
-	// Parse SNS notification
-	var snsNotification model.SNSNotification
-	if err := json.Unmarshal(body, &snsNotification); err != nil {
-		g.Log().Errorf(ctx, "Failed to parse SNS notification: %v", err)
-		response.BadRequest(r, "Invalid SNS notification format")
+	if err = verifySNSSignature(&notification); err != nil {
+		if errors.Is(err, errSNSCertificateUnavailable) {
+			r.Response.WriteStatus(http.StatusServiceUnavailable)
+		} else {
+			response.Unauthorized(r, "Invalid SNS signature")
+		}
 		return
 	}
-
-	g.Log().Infof(ctx, "Received SNS notification type: %s, MessageId: %s", snsNotification.Type, snsNotification.MessageId)
-
-	// Verify SNS signature (optional but recommended)
-	if err := verifySNSSignature(&snsNotification); err != nil {
-		g.Log().Warningf(ctx, "SNS signature verification failed: %v", err)
-		// Continue anyway for now, but log the warning
+	topicParts := strings.Split(notification.TopicArn, ":")
+	if len(topicParts) != 6 || topicParts[2] != "sns" || topicParts[3] != auth.Region {
+		response.Unauthorized(r, "Invalid SNS topic")
+		return
 	}
-
-	// Handle different notification types
-	switch snsNotification.Type {
+	certURL, _ := url.Parse(notification.SigningCertURL)
+	if certURL.Hostname() != "sns."+auth.Region+".amazonaws.com" {
+		response.Unauthorized(r, "Invalid SNS signing region")
+		return
+	}
+	switch notification.Type {
 	case "SubscriptionConfirmation":
-		// Confirm the subscription
-		g.Log().Infof(ctx, "Confirming SNS subscription: %s", snsNotification.SubscribeURL)
-		if err := confirmSNSSubscription(snsNotification.SubscribeURL); err != nil {
-			g.Log().Errorf(ctx, "Failed to confirm subscription: %v", err)
-			response.InternalError(r, "Failed to confirm subscription")
+		if err = confirmSNSSubscription(notification.SubscribeURL, notification.TopicArn, notification.Token, auth.Region); err != nil {
+			r.Response.WriteStatus(http.StatusBadGateway)
 			return
 		}
 		response.Success(r, map[string]string{"status": "subscription_confirmed"})
-		return
-
 	case "Notification":
-		// Parse the SES notification from the message
-		var sesNotification model.SESNotification
-		if err := json.Unmarshal([]byte(snsNotification.Message), &sesNotification); err != nil {
-			g.Log().Errorf(ctx, "Failed to parse SES notification: %v", err)
-			response.BadRequest(r, "Invalid SES notification format")
+		payload, parseErr := parseSESNotification(notification.Message)
+		if parseErr != nil {
+			response.BadRequest(r, "Invalid SES notification")
 			return
 		}
-
-		// Process based on notification type
-		switch sesNotification.NotificationType {
-		case "Received":
-			// Incoming email
-			if err := c.receivingService.ProcessIncomingEmail(ctx, &sesNotification); err != nil {
-				g.Log().Errorf(ctx, "Failed to process incoming email: %v", err)
-				// Return 200 to prevent SNS from retrying
-				response.Success(r, map[string]string{"status": "error", "message": err.Error()})
-				return
-			}
-			response.Success(r, map[string]string{"status": "processed"})
-
-		case "Bounce":
-			// Handle bounce
-			g.Log().Infof(ctx, "Received bounce notification")
-			c.handleBounce(ctx, &sesNotification)
-			response.Success(r, map[string]string{"status": "bounce_processed"})
-
-		case "Complaint":
-			// Handle complaint
-			g.Log().Infof(ctx, "Received complaint notification")
-			c.handleComplaint(ctx, &sesNotification)
-			response.Success(r, map[string]string{"status": "complaint_processed"})
-
-		case "Delivery":
-			// Handle delivery confirmation
-			g.Log().Infof(ctx, "Received delivery notification")
-			c.handleDelivery(ctx, &sesNotification)
-			response.Success(r, map[string]string{"status": "delivery_processed"})
-
-		default:
-			g.Log().Infof(ctx, "Unknown SES notification type: %s", sesNotification.NotificationType)
-			response.Success(r, map[string]string{"status": "unknown_type"})
+		if payload.NotificationType == "Received" {
+			err = c.receivingService.ProcessIncomingEmail(r.Context(), auth, payload)
+		} else {
+			err = c.receivingService.ProcessDeliveryEvent(r.Context(), auth, notification.MessageId, payload)
 		}
-
+		// Returning 5xx preserves SNS's durable retry, unlike acknowledging partial work.
+		if err != nil {
+			r.Response.WriteStatus(http.StatusServiceUnavailable)
+			return
+		}
+		response.Success(r, map[string]string{"status": "processed"})
 	case "UnsubscribeConfirmation":
-		g.Log().Infof(ctx, "Received unsubscribe confirmation")
-		response.Success(r, map[string]string{"status": "unsubscribe_confirmed"})
-
+		response.Success(r, map[string]string{"status": "unsubscribed"})
 	default:
-		g.Log().Warningf(ctx, "Unknown SNS notification type: %s", snsNotification.Type)
-		response.Success(r, map[string]string{"status": "unknown_type"})
+		response.BadRequest(r, "Unsupported SNS notification type")
 	}
 }
 
-// handleBounce processes bounce notifications
-func (c *SESWebhookController) handleBounce(ctx g.Ctx, notification *model.SESNotification) {
-	if notification.Bounce == nil {
-		return
+// SES configuration-set publishing uses eventType; identity feedback uses
+// notificationType. Both arrive signed by SNS and have the same event payload.
+func parseSESNotification(message string) (*model.SESNotification, error) {
+	var payload struct {
+		model.SESNotification
+		EventType string `json:"eventType"`
 	}
-
-	bounce := notification.Bounce
-	g.Log().Infof(ctx, "Processing bounce: type=%s, subType=%s", bounce.BounceType, bounce.BounceSubType)
-
-	// Collect bounced recipients
-	recipients := make([]string, 0, len(bounce.BouncedRecipients))
-	for _, recipient := range bounce.BouncedRecipients {
-		g.Log().Infof(ctx, "Bounced recipient: %s, action=%s, status=%s",
-			recipient.EmailAddress, recipient.Action, recipient.Status)
-		recipients = append(recipients, recipient.EmailAddress)
-
-		// TODO: Add to suppression list and update transactional emails
+	if err := json.Unmarshal([]byte(message), &payload); err != nil {
+		return nil, err
 	}
-
-	// Fire webhook trigger
-	c.fireForSESEvent(ctx, notification, service.TriggerBounceReceived, map[string]interface{}{
-		"bounce_type":    bounce.BounceType,
-		"bounce_subtype": bounce.BounceSubType,
-		"recipients":     recipients,
-		"message_id":     notification.Mail.MessageId,
-	})
+	if payload.NotificationType == "" {
+		payload.NotificationType = payload.EventType
+	} else if payload.EventType != "" && payload.EventType != payload.NotificationType {
+		return nil, fmt.Errorf("conflicting SES event types")
+	}
+	if payload.NotificationType == "" {
+		return nil, fmt.Errorf("missing SES event type")
+	}
+	return &payload.SESNotification, nil
 }
 
-// handleComplaint processes complaint notifications
-func (c *SESWebhookController) handleComplaint(ctx g.Ctx, notification *model.SESNotification) {
-	if notification.Complaint == nil {
-		return
+func confirmSNSSubscription(rawURL, topic, token, region string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Host != "sns."+region+".amazonaws.com" || u.Path != "/" || u.Fragment != "" {
+		return fmt.Errorf("invalid confirmation URL")
 	}
-
-	complaint := notification.Complaint
-	g.Log().Infof(ctx, "Processing complaint: type=%s", complaint.ComplaintFeedbackType)
-
-	// Collect complained recipients
-	recipients := make([]string, 0, len(complaint.ComplainedRecipients))
-	for _, recipient := range complaint.ComplainedRecipients {
-		g.Log().Infof(ctx, "Complained recipient: %s", recipient.EmailAddress)
-		recipients = append(recipients, recipient.EmailAddress)
-		// TODO: Add to suppression list
+	q := u.Query()
+	if q.Get("Action") != "ConfirmSubscription" || q.Get("TopicArn") != topic || q.Get("Token") != token || token == "" {
+		return fmt.Errorf("confirmation does not match signed notification")
 	}
-
-	// Fire webhook trigger
-	c.fireForSESEvent(ctx, notification, service.TriggerComplaintReceived, map[string]interface{}{
-		"complaint_type": complaint.ComplaintFeedbackType,
-		"recipients":     recipients,
-		"message_id":     notification.Mail.MessageId,
-	})
-}
-
-// handleDelivery processes delivery notifications
-func (c *SESWebhookController) handleDelivery(ctx g.Ctx, notification *model.SESNotification) {
-	if notification.Delivery == nil {
-		return
-	}
-
-	delivery := notification.Delivery
-	g.Log().Infof(ctx, "Processing delivery for %d recipients, took %dms",
-		len(delivery.Recipients), delivery.ProcessingTimeMillis)
-
-	// TODO: Update transactional email status to delivered
-}
-
-// fireForSESEvent fires a webhook trigger for SES events, looking up orgID from the sender domain
-func (c *SESWebhookController) fireForSESEvent(ctx g.Ctx, notification *model.SESNotification, triggerType string, data map[string]interface{}) {
-	if c.webhookTriggerService == nil {
-		return
-	}
-
-	// Look up orgID from the sender's domain
-	source := notification.Mail.Source
-	if source == "" && len(notification.Mail.CommonHeaders.From) > 0 {
-		source = notification.Mail.CommonHeaders.From[0]
-	}
-	if source == "" {
-		return
-	}
-
-	// Extract domain from email
-	parts := strings.SplitN(source, "@", 2)
-	if len(parts) != 2 {
-		return
-	}
-	domain := strings.ToLower(parts[1])
-	// Strip any trailing ">"
-	domain = strings.TrimRight(domain, ">")
-
-	// Look up org from domain
-	var orgID int64
-	err := c.receivingService.DB().QueryRowContext(ctx, `SELECT org_id FROM domains WHERE name = $1`, domain).Scan(&orgID)
-	if err != nil || orgID == 0 {
-		return
-	}
-
-	go c.webhookTriggerService.Fire(ctx, orgID, triggerType, data)
-}
-
-// confirmSNSSubscription confirms an SNS subscription by visiting the SubscribeURL
-func confirmSNSSubscription(subscribeURL string) error {
-	resp, err := http.Get(subscribeURL)
+	resp, err := snsHTTPClient.Get(u.String())
 	if err != nil {
-		return fmt.Errorf("failed to GET subscribe URL: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("subscribe URL returned status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("confirmation failed")
 	}
-
-	return nil
+	_, err = io.Copy(io.Discard, io.LimitReader(resp.Body, 256*1024))
+	return err
 }
-
-// verifySNSSignature verifies the SNS message signature
-func verifySNSSignature(notification *model.SNSNotification) error {
-	// Validate the certificate URL
-	certURL, err := url.Parse(notification.SigningCertURL)
-	if err != nil {
-		return fmt.Errorf("invalid signing cert URL: %w", err)
+func verifySNSSignature(n *model.SNSNotification) error {
+	u, err := url.Parse(n.SigningCertURL)
+	if err != nil || !isAWSCertURL(u) {
+		return fmt.Errorf("invalid SNS certificate URL")
 	}
-
-	// Check that the cert URL is from AWS
-	if !isAWSCertURL(certURL) {
-		return fmt.Errorf("signing cert URL is not from AWS: %s", certURL.Host)
+	if n.Type != "Notification" && n.Type != "SubscriptionConfirmation" && n.Type != "UnsubscribeConfirmation" {
+		return fmt.Errorf("invalid notification type")
 	}
-
-	// Download the certificate
-	resp, err := http.Get(notification.SigningCertURL)
+	stamp, err := time.Parse(time.RFC3339, n.Timestamp)
+	if err != nil || stamp.After(time.Now().Add(5*time.Minute)) {
+		return fmt.Errorf("invalid SNS timestamp")
+	}
+	algorithm := x509.SHA1WithRSA
+	switch n.SignatureVersion {
+	case "1":
+	case "2":
+		algorithm = x509.SHA256WithRSA
+	default:
+		return fmt.Errorf("unsupported signature version")
+	}
+	signature, err := base64.StdEncoding.DecodeString(n.Signature)
+	if err != nil || len(signature) == 0 {
+		return fmt.Errorf("invalid signature")
+	}
+	resp, err := snsHTTPClient.Get(u.String())
 	if err != nil {
-		return fmt.Errorf("failed to download certificate: %w", err)
+		return fmt.Errorf("%w: %v", errSNSCertificateUnavailable, err)
 	}
 	defer resp.Body.Close()
-
-	certPEM, err := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+		return errSNSCertificateUnavailable
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("certificate download rejected")
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024+1))
 	if err != nil {
-		return fmt.Errorf("failed to read certificate: %w", err)
+		return fmt.Errorf("%w: %v", errSNSCertificateUnavailable, err)
 	}
-
-	// Parse the certificate
-	block, _ := pem.Decode(certPEM)
+	if len(data) > 256*1024 {
+		return fmt.Errorf("invalid certificate size")
+	}
+	block, _ := pem.Decode(data)
 	if block == nil {
-		return fmt.Errorf("failed to decode PEM certificate")
+		return fmt.Errorf("invalid certificate")
 	}
-
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return fmt.Errorf("failed to parse certificate: %w", err)
+		return err
 	}
-
-	// Build the string to sign
-	stringToSign := buildStringToSign(notification)
-
-	// Decode the signature
-	signature, err := base64.StdEncoding.DecodeString(notification.Signature)
-	if err != nil {
-		return fmt.Errorf("failed to decode signature: %w", err)
+	if time.Now().Before(cert.NotBefore) || time.Now().After(cert.NotAfter) {
+		return fmt.Errorf("expired signing certificate")
 	}
-
-	// Verify the signature — SNS SignatureVersion "2" uses SHA256, "1" uses SHA1
-	algo := x509.SHA1WithRSA
-	if notification.SignatureVersion == "2" {
-		algo = x509.SHA256WithRSA
-	}
-	err = cert.CheckSignature(algo, []byte(stringToSign), signature)
-	if err != nil {
-		return fmt.Errorf("signature verification failed: %w", err)
-	}
-
-	return nil
+	return cert.CheckSignature(algorithm, []byte(buildStringToSign(n)), signature)
 }
-
-// isAWSCertURL checks if a URL is a valid AWS SNS certificate URL
 func isAWSCertURL(u *url.URL) bool {
-	// AWS SNS certificate URLs are from sns.<region>.amazonaws.com
-	pattern := regexp.MustCompile(`^sns\.[a-z0-9-]+\.amazonaws\.com$`)
-	return u.Scheme == "https" && pattern.MatchString(u.Host)
+	return u != nil && u.Scheme == "https" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && regexp.MustCompile(`^sns\.[a-z0-9-]+\.amazonaws\.com$`).MatchString(u.Host) && regexp.MustCompile(`^/SimpleNotificationService-[A-Za-z0-9_-]+\.pem$`).MatchString(u.Path)
 }
-
-// buildStringToSign builds the string to sign for SNS signature verification
-func buildStringToSign(notification *model.SNSNotification) string {
-	var sb strings.Builder
-
-	sb.WriteString("Message\n")
-	sb.WriteString(notification.Message)
-	sb.WriteString("\n")
-
-	sb.WriteString("MessageId\n")
-	sb.WriteString(notification.MessageId)
-	sb.WriteString("\n")
-
-	if notification.Subject != "" {
-		sb.WriteString("Subject\n")
-		sb.WriteString(notification.Subject)
-		sb.WriteString("\n")
+func buildStringToSign(n *model.SNSNotification) string {
+	var b strings.Builder
+	add := func(name, value string) {
+		b.WriteString(name)
+		b.WriteByte('\n')
+		b.WriteString(value)
+		b.WriteByte('\n')
 	}
-
-	if notification.SubscribeURL != "" {
-		sb.WriteString("SubscribeURL\n")
-		sb.WriteString(notification.SubscribeURL)
-		sb.WriteString("\n")
+	add("Message", n.Message)
+	add("MessageId", n.MessageId)
+	if n.Type == "Notification" {
+		if n.Subject != "" {
+			add("Subject", n.Subject)
+		}
+	} else {
+		add("SubscribeURL", n.SubscribeURL)
 	}
-
-	if notification.Token != "" {
-		sb.WriteString("Token\n")
-		sb.WriteString(notification.Token)
-		sb.WriteString("\n")
+	add("Timestamp", n.Timestamp)
+	if n.Type != "Notification" {
+		add("Token", n.Token)
 	}
-
-	sb.WriteString("Timestamp\n")
-	sb.WriteString(notification.Timestamp)
-	sb.WriteString("\n")
-
-	sb.WriteString("TopicArn\n")
-	sb.WriteString(notification.TopicArn)
-	sb.WriteString("\n")
-
-	sb.WriteString("Type\n")
-	sb.WriteString(notification.Type)
-	sb.WriteString("\n")
-
-	return sb.String()
+	add("TopicArn", n.TopicArn)
+	add("Type", n.Type)
+	return b.String()
 }

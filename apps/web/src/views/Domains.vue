@@ -16,6 +16,7 @@ const showAddIdentityModal = ref(false)
 const showSetupWizard = ref(false)
 const selectedDomainUuid = ref('')
 const newDomain = ref('')
+const selectedDomainUsesSES = computed(() => domainsStore.domains.find(d => d.uuid === selectedDomainUuid.value)?.emailProvider === 'ses')
 const newIdentity = ref({ displayName: '', email: '', password: '', isCatchAll: false })
 const isSubmitting = ref(false)
 const submitError = ref('')
@@ -158,7 +159,7 @@ function openAddIdentityModal(domainUuid: string) {
 }
 
 async function handleAddIdentity() {
-  if (!newIdentity.value.displayName.trim() || !newIdentity.value.email.trim() || !newIdentity.value.password.trim()) return
+  if (!newIdentity.value.displayName.trim() || !newIdentity.value.email.trim() || (!selectedDomainUsesSES.value && !newIdentity.value.password.trim())) return
 
   isSubmitting.value = true
   submitError.value = ''
@@ -168,7 +169,7 @@ async function handleAddIdentity() {
       displayName: newIdentity.value.displayName.trim(),
       email: newIdentity.value.email.trim(),
       domainId: selectedDomainUuid.value,
-      password: newIdentity.value.password,
+      password: selectedDomainUsesSES.value ? undefined : newIdentity.value.password,
       isCatchAll: newIdentity.value.isCatchAll
     })
     showAddIdentityModal.value = false
@@ -203,7 +204,7 @@ async function setIdentityDefault(identityUuid: string) {
     // Refresh to update UI
     await domainsStore.fetchIdentities()
   } catch (e: any) {
-    console.error('Failed to set default:', e)
+    domainsStore.error = e.message || 'Could not change the default identity'
   } finally {
     identityActionLoading.value = null
     openIdentityMenu.value = null
@@ -215,7 +216,7 @@ async function toggleIdentityCatchAll(identityUuid: string, currentValue: boolea
   try {
     await domainsStore.setCatchAll(identityUuid, !currentValue)
   } catch (e: any) {
-    console.error('Failed to toggle catch-all:', e)
+    domainsStore.error = e.message || 'Could not update catch-all'
   } finally {
     identityActionLoading.value = null
     openIdentityMenu.value = null
@@ -878,7 +879,7 @@ async function handleSetupReceiving(domain: any) {
                       />
                     </div>
                   </div>
-                  <div>
+                  <div v-if="!selectedDomainUsesSES">
                     <label class="block text-sm font-medium text-gray-700 mb-2">Password</label>
                     <input
                       v-model="newIdentity.password"
@@ -912,7 +913,7 @@ async function handleSetupReceiving(domain: any) {
                     <Button variant="secondary" type="button" @click="showAddIdentityModal = false" :disabled="isSubmitting" class="flex-1">
                       Cancel
                     </Button>
-                    <Button type="submit" :disabled="!newIdentity.displayName.trim() || !newIdentity.email.trim() || newIdentity.password.length < 8 || isSubmitting" class="flex-1">
+                    <Button type="submit" :disabled="!newIdentity.displayName.trim() || !newIdentity.email.trim() || (!selectedDomainUsesSES && newIdentity.password.length < 8) || isSubmitting" class="flex-1">
                       <Loader2 v-if="isSubmitting" class="w-4 h-4 animate-spin" />
                       <Plus v-else class="w-4 h-4" />
                       Add Identity

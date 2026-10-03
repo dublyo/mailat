@@ -1,29 +1,6 @@
-package database
 
-import (
-	"context"
-	"database/sql"
-	"fmt"
-	"time"
-)
-
-// InitSchema creates all required database tables if they don't exist.
-// This is called on API startup to ensure the database is ready.
-func InitSchema(db *sql.DB) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	_, err := db.ExecContext(ctx, schemaSQL)
-	if err != nil {
-		return fmt.Errorf("failed to initialize schema: %w", err)
-	}
-
-	return nil
-}
-
-const schemaSQL = `
 -- Enable UUID extension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 
 -- Organizations
 CREATE TABLE IF NOT EXISTS organizations (
@@ -963,4 +940,3 @@ CREATE TABLE IF NOT EXISTS webauthn_credentials (
 	last_used_at TIMESTAMPTZ(6),
 	created_at TIMESTAMPTZ(6) DEFAULT NOW()
 );
-`

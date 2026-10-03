@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"mime"
 	"strconv"
 
 	"github.com/gogf/gf/v2/net/ghttp"
@@ -13,14 +14,14 @@ import (
 
 // ReceivedInboxController handles received email inbox operations
 type ReceivedInboxController struct {
-	inboxService    *service.InboxService
+	inboxService     *service.InboxService
 	receivingService *service.ReceivingService
 }
 
 // NewReceivedInboxController creates a new received inbox controller
 func NewReceivedInboxController(inboxService *service.InboxService, receivingService *service.ReceivingService) *ReceivedInboxController {
 	return &ReceivedInboxController{
-		inboxService:    inboxService,
+		inboxService:     inboxService,
 		receivingService: receivingService,
 	}
 }
@@ -256,30 +257,28 @@ func (c *ReceivedInboxController) SetupReceiving(r *ghttp.Request) {
 	response.SuccessWithMessage(r, "Email receiving setup complete. Add the MX record to your DNS.", result)
 }
 
-// SetCatchAll sets an identity as catch-all for its domain
-// POST /api/v1/inbox/identities/:uuid/catch-all
-func (c *ReceivedInboxController) SetCatchAll(r *ghttp.Request) {
+// DownloadAttachment returns private bytes only after checking message ownership.
+func (c *ReceivedInboxController) DownloadAttachment(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
 		return
 	}
-
-	identityUUID := r.Get("uuid").String()
-	if identityUUID == "" {
-		response.BadRequest(r, "Identity UUID is required")
+	if c.receivingService == nil {
+		response.InternalError(r, "Storage service not configured")
 		return
 	}
-
-	var req struct {
-		IsCatchAll bool `json:"isCatchAll"`
-	}
-	if err := r.Parse(&req); err != nil {
-		response.BadRequest(r, err.Error())
+	data, filename, contentType, err := c.receivingService.AttachmentDownload(r.Context(), claims.UserID, r.Get("uuid").String(), r.Get("attachmentUuid").String())
+	if err != nil {
+		response.NotFound(r, "Attachment not found")
 		return
 	}
-
-	// TODO: Implement catch-all toggle in identity service
-	// For now, direct database update
-	response.SuccessWithMessage(r, "Catch-all setting updated", nil)
+	r.Response.Header().Set("Cache-Control", "no-store")
+	if _, _, parseErr := mime.ParseMediaType(contentType); parseErr != nil {
+		contentType = "application/octet-stream"
+	}
+	r.Response.Header().Set("Content-Type", contentType)
+	r.Response.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
+	r.Response.Header().Set("X-Content-Type-Options", "nosniff")
+	r.Response.Write(data)
 }

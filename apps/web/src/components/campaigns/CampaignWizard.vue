@@ -267,13 +267,14 @@ const sendTestEmail = async (email: string) => {
   }
 
   try {
-    await composeApi.send({
-      identityId: identity.id,
-      to: [email],
+    const result = await composeApi.send({
+      identityId: Number(identity.id),
+      to: [{ email }],
       subject: `[TEST] ${formData.value.subject}`,
-      body: formData.value.textContent || '',
+      textBody: formData.value.textContent || '',
       htmlBody: formData.value.htmlContent || undefined
-    })
+    }, crypto.randomUUID())
+    if (result.status !== 'sent') throw new Error(result.sendError || 'Test send was not confirmed. Check Outbox before retrying.')
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to send test email'
     throw e

@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   Inbox, Star, Send, FileText, Trash2, AlertCircle,
   Mail, BarChart3, Users, Globe, Activity, Settings, Plus,
-  ChevronDown, ChevronRight, Zap
+  ChevronDown, ChevronRight, Zap, Archive
 } from 'lucide-vue-next'
 import { useReceivedInboxStore } from '@/stores/receivedInbox'
 
@@ -17,9 +17,11 @@ const mainNavItems = [
   { id: 'starred', label: 'Starred', icon: Star, route: '/received?folder=starred', folder: 'starred' },
   { id: 'sent', label: 'Sent', icon: Send, route: '/received?folder=sent', folder: 'sent' },
   { id: 'drafts', label: 'Drafts', icon: FileText, route: '/received?folder=drafts', folder: 'drafts' },
+  { id: 'outbox', label: 'Outbox', icon: Send, route: '/received?folder=outbox', folder: 'outbox' },
 ]
 
 const moreNavItems = [
+  { id: 'archive', label: 'Archive', icon: Archive, route: '/received?folder=archive', folder: 'archive' },
   { id: 'spam', label: 'Spam', icon: AlertCircle, route: '/received?folder=spam', folder: 'spam' },
   { id: 'trash', label: 'Trash', icon: Trash2, route: '/received?folder=trash', folder: 'trash' },
 ]
@@ -36,7 +38,7 @@ const appNavItems = [
 const isActive = (itemRoute: string, folder?: string) => {
   // For received inbox, check both path and folder query param
   if (itemRoute.startsWith('/received')) {
-    if (route.path !== '/received') return false
+    if (!['/received', '/inbox'].includes(route.path)) return false
     const currentFolder = route.query.folder as string || 'inbox'
     return currentFolder === (folder || 'inbox')
   }
@@ -52,7 +54,7 @@ const getUnreadCount = (folderId: string) => {
   const counts = receivedInboxStore.counts
   if (!counts) return 0
   switch (folderId) {
-    case 'inbox': return counts.inbox || 0
+    case 'inbox': return counts.unread || 0
     case 'starred': return counts.starred || 0
     case 'drafts': return counts.drafts || 0
     default: return 0

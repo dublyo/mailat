@@ -3,6 +3,7 @@ name: Build and Push Images
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 env:
@@ -11,7 +12,47 @@ env:
   WEB_IMAGE: ghcr.io/dublyo/mailat-web
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: mailat_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MAILAT_TEST_DATABASE_URL: postgres://postgres:test-only-password@localhost:5432/mailat_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+      - name: Test API
+        working-directory: apps/api
+        run: go test -race ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Test and build web
+        working-directory: apps/web
+        run: |
+          npm ci
+          npm test
+          npm run build
+
   build-and-push:
+    needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -46,9 +87,11 @@ jobs:
           push: true
           provenance: false
           sbom: false
+          build-args: VERSION=${{ github.sha }}
           tags: |
             ${{ env.API_IMAGE }}:latest
             ${{ env.API_IMAGE }}:${{ steps.version.outputs.VERSION }}
+            ${{ env.API_IMAGE }}:sha-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -56,9 +99,10 @@ jobs:
       - name: Build Web image
         run: |
           cd apps/web
-          docker build -t ${{ env.WEB_IMAGE }}:latest -t ${{ env.WEB_IMAGE }}:${{ steps.version.outputs.VERSION }} --build-arg VITE_API_URL= .
+          docker build -t ${{ env.WEB_IMAGE }}:latest -t ${{ env.WEB_IMAGE }}:${{ steps.version.outputs.VERSION }} -t ${{ env.WEB_IMAGE }}:sha-${{ github.sha }} --build-arg VITE_API_URL= .
 
       - name: Push Web image
         run: |
           docker push ${{ env.WEB_IMAGE }}:latest
           docker push ${{ env.WEB_IMAGE }}:${{ steps.version.outputs.VERSION }}
+          docker push ${{ env.WEB_IMAGE }}:sha-${{ github.sha }}

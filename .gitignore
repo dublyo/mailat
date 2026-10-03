@@ -10,7 +10,10 @@ build/
 out/
 
 # Private documentation (not for public)
-docs/
+docs/*
+!docs/mailat-ses-reliability-spec.md
+!docs/self-hosting-ses.md
+!docs/mailat-validation.md
 *.private.md
 readme2.md
 

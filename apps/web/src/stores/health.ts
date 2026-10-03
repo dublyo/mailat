@@ -58,7 +58,7 @@ export const useHealthStore = defineStore('health', () => {
   const error = ref<string | null>(null)
 
   // Computed properties
-  const healthScore = computed(() => healthSummary.value?.healthScore || reputation.value?.score || 0)
+  const healthScore = computed(() => healthSummary.value?.healthScore ?? null)
   const healthStatus = computed(() => healthSummary.value?.healthStatus || 'unknown')
   const warnings = computed<HealthWarning[]>(() => healthSummary.value?.warnings || [])
   const criticalWarnings = computed(() => warnings.value.filter(w => w.severity === 'critical' || w.severity === 'high'))

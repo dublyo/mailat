@@ -27,7 +27,7 @@ export const useInboxStore = defineStore('inbox', () => {
 
   // Compose state
   const isComposeOpen = ref(false)
-  const composeMode = ref<'new' | 'reply' | 'replyAll' | 'forward'>('new')
+  const composeMode = ref<'new' | 'reply' | 'replyAll' | 'forward' | 'draft'>('new')
   const replyToEmail = ref<Email | null>(null)
 
   // Computed
@@ -183,7 +183,8 @@ export const useInboxStore = defineStore('inbox', () => {
     }
   }
 
-  function openCompose(mode: 'new' | 'reply' | 'replyAll' | 'forward' = 'new', email?: Email) {
+  function openCompose(mode: 'new' | 'reply' | 'replyAll' | 'forward' | 'draft' = 'new', email?: Email) {
+    if (isComposeOpen.value) return
     composeMode.value = mode
     replyToEmail.value = email || null
     isComposeOpen.value = true

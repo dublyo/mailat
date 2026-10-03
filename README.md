@@ -374,6 +374,8 @@ Deploy Mailat instantly on [Dublyo PaaS](https://dublyo.com/templates/mailat) â€
 
 For Docker-based self-hosting, see `docker-compose.prod.yml` and `.env.production.example` in this repository.
 
+The [SES self-hosting guide](docs/self-hosting-ses.md) documents the current configuration, authentication, plural draft routes, attachment storage, and send/retry behavior.
+
 ---
 
 ## Project Structure

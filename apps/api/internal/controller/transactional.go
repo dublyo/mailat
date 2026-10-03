@@ -47,7 +47,7 @@ func (c *TransactionalController) SendEmail(r *ghttp.Request) {
 		return
 	}
 
-	result, err := c.transactionalService.SendEmail(r.Context(), claims.OrgID, &req)
+	result, err := c.transactionalService.SendEmailForUser(r.Context(), claims.OrgID, claims.UserID, &req)
 	if err != nil {
 		response.BadRequest(r, err.Error())
 		return
@@ -76,7 +76,7 @@ func (c *TransactionalController) BatchSendEmail(r *ghttp.Request) {
 		return
 	}
 
-	result, err := c.transactionalService.BatchSendEmail(r.Context(), claims.OrgID, &req)
+	result, err := c.transactionalService.BatchSendEmailForUser(r.Context(), claims.OrgID, claims.UserID, &req)
 	if err != nil {
 		response.BadRequest(r, err.Error())
 		return

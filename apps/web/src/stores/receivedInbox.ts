@@ -1,379 +1,258 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import {
-  receivedInboxApi,
-  labelApi,
-  inboxSSE,
-  type ReceivedEmail,
-  type InboxCounts,
-  type EmailLabel
-} from '@/lib/api'
+import { api, receivedInboxApi, inboxSSE, type ReceivedEmail, type InboxCounts, type InboxListResponse, type InboxListOptions } from '@/lib/api'
 
 export const useReceivedInboxStore = defineStore('receivedInbox', () => {
-  // State
   const emails = ref<ReceivedEmail[]>([])
   const currentEmail = ref<ReceivedEmail | null>(null)
   const counts = ref<InboxCounts | null>(null)
-  const labels = ref<EmailLabel[]>([])
   const isLoading = ref(false)
+  const detailLoading = ref(false)
+  const isMutating = ref(false)
   const error = ref<string | null>(null)
-
-  // Pagination
   const page = ref(1)
   const pageSize = ref(50)
   const total = ref(0)
   const totalPages = ref(0)
-
-  // Filters
   const currentFolder = ref('inbox')
-  const currentIdentityId = ref<number | null>(null)
+  const currentIdentityId = ref(0)
   const searchQuery = ref('')
-  const selectedLabels = ref<string[]>([])
-
-  // Selection
   const selectedEmailUuids = ref<string[]>([])
-
-  // SSE connection status
   const sseConnected = ref(false)
-
-  // Computed
+  const notice = ref('')
+  let filters: InboxListOptions = {}
+  let ownerToken: string | null = null
+  let listSequence = 0
+  let detailSequence = 0
+  let countSequence = 0
+  let listController: AbortController | undefined
+  let detailController: AbortController | undefined
+  let activeListKey = ''
+  let activeListPromise: Promise<void> | null = null
+  let connected = false
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined
+  // Cache is memory-only, short lived, and cleared on account changes and mutations.
+  const listCache = new Map<string, { at: number; data: InboxListResponse }>()
+  const detailCache = new Map<string, ReceivedEmail>()
+  const countCache = new Map<number, { at: number; data: InboxCounts }>()
+  const countRequests = new Map<number, Promise<InboxCounts>>()
   const unreadCount = computed(() => counts.value?.unread ?? 0)
   const hasMore = computed(() => page.value < totalPages.value)
-  const allSelected = computed(() =>
-    (emails.value?.length ?? 0) > 0 && (selectedEmailUuids.value?.length ?? 0) === (emails.value?.length ?? 0)
-  )
-  const someSelected = computed(() =>
-    (selectedEmailUuids.value?.length ?? 0) > 0 && (selectedEmailUuids.value?.length ?? 0) < (emails.value?.length ?? 0)
-  )
+  const allSelected = computed(() => emails.value.length > 0 && emails.value.every(e => selectedEmailUuids.value.includes(e.uuid)))
+  const someSelected = computed(() => selectedEmailUuids.value.length > 0 && !allSelected.value)
 
-  // Actions
-  // identityId = 0 means fetch from all identities (unified inbox)
-  async function fetchEmails(identityId: number, options?: {
-    folder?: string
-    page?: number
-    search?: string
-    labels?: string[]
-    reset?: boolean
-  }) {
+  function ensureOwner() {
+    const token = api.getToken()
+    if (ownerToken !== token) {
+      reset()
+      ownerToken = token
+    }
+  }
+
+  function invalidate() {
+    listCache.clear()
+    detailCache.clear()
+    countCache.clear()
+  }
+
+  function applyList(data: InboxListResponse) {
+    emails.value = data.emails || []
+    total.value = data.total || 0
+    totalPages.value = data.totalPages || 0
+    selectedEmailUuids.value = selectedEmailUuids.value.filter(id => emails.value.some(e => e.uuid === id))
+  }
+
+  async function fetchEmails(identityId = currentIdentityId.value, options: InboxListOptions & { reset?: boolean; force?: boolean } = {}) {
+    ensureOwner()
+    const { reset: resetPage, force, ...nextFilters } = options
+    filters = { ...filters, ...nextFilters }
+    if (resetPage) {
+      filters.page = 1
+      selectedEmailUuids.value = []
+    }
+    currentIdentityId.value = identityId
+    currentFolder.value = filters.folder || 'inbox'
+    searchQuery.value = filters.search || ''
+    page.value = filters.page || 1
+    const requestOptions = { ...filters, page: page.value, pageSize: pageSize.value }
+    const key = JSON.stringify([identityId, requestOptions])
+    if (!force && key === activeListKey && activeListPromise) return activeListPromise
+    const sequence = ++listSequence
+    listController?.abort()
+    activeListKey = ''
+    activeListPromise = null
+    listController = new AbortController()
+    const cached = listCache.get(key)
+    if (cached) applyList(cached.data)
+    if (!force && cached && Date.now() - cached.at < 15000) {
+      isLoading.value = false
+      return
+    }
+    activeListKey = key
     isLoading.value = true
     error.value = null
-
-    try {
-      currentIdentityId.value = identityId
-      if (options?.folder) currentFolder.value = options.folder
-      if (options?.page) page.value = options.page
-      if (options?.search !== undefined) searchQuery.value = options.search
-      if (options?.labels) selectedLabels.value = options.labels
-      if (options?.reset) {
-        page.value = 1
-        selectedEmailUuids.value = []
+    const token = ownerToken
+    activeListPromise = (async () => {
+      try {
+        const result = await receivedInboxApi.list(identityId, requestOptions, listController!.signal)
+        if (sequence !== listSequence || token !== api.getToken()) return
+        listCache.set(key, { at: Date.now(), data: result })
+        if (listCache.size > 20) listCache.delete(listCache.keys().next().value!)
+        applyList(result)
+      } catch (e) {
+        if (sequence === listSequence) error.value = e instanceof Error ? e.message : 'Could not load mail. Try again.'
+      } finally {
+        if (sequence === listSequence) {
+          isLoading.value = false
+          activeListPromise = null
+          activeListKey = ''
+        }
       }
-
-      const result = await receivedInboxApi.list(identityId, {
-        folder: currentFolder.value,
-        search: searchQuery.value || undefined,
-        labels: selectedLabels.value.length ? selectedLabels.value : undefined,
-        page: page.value,
-        pageSize: pageSize.value
-      })
-
-      emails.value = result.emails
-      total.value = result.total
-      totalPages.value = result.totalPages
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch emails'
-      emails.value = []
-    } finally {
-      isLoading.value = false
-    }
+    })()
+    return activeListPromise
   }
 
   async function fetchEmail(uuid: string) {
-    isLoading.value = true
+    ensureOwner()
+    const sequence = ++detailSequence
+    detailController?.abort()
+    detailController = new AbortController()
+    currentEmail.value = detailCache.get(uuid) || null
+    detailLoading.value = !currentEmail.value
     error.value = null
-
+    const token = ownerToken
     try {
-      currentEmail.value = await receivedInboxApi.get(uuid)
-
-      // Update email in list as read
-      const index = emails.value.findIndex(e => e.uuid === uuid)
-      if (index !== -1) {
-        emails.value[index] = { ...emails.value[index], isRead: true }
-      }
+      const result = await receivedInboxApi.get(uuid, detailController.signal)
+      if (sequence !== detailSequence || token !== api.getToken()) return
+      currentEmail.value = result
+      detailCache.set(uuid, result)
+      if (detailCache.size > 30) detailCache.delete(detailCache.keys().next().value!)
+      return result
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch email'
-      currentEmail.value = null
+      if (sequence === detailSequence) error.value = e instanceof Error ? e.message : 'Could not open this message.'
     } finally {
-      isLoading.value = false
+      if (sequence === detailSequence) detailLoading.value = false
     }
   }
 
-  // identityId = 0 means fetch counts across all identities
-  async function fetchCounts(identityId: number) {
-    try {
-      counts.value = await receivedInboxApi.getCounts(identityId)
-    } catch (e) {
-      console.error('Failed to fetch counts:', e)
-    }
+  function closeEmail() {
+    ++detailSequence
+    detailController?.abort()
+    currentEmail.value = null
+    detailLoading.value = false
   }
 
-  async function fetchLabels() {
-    try {
-      labels.value = await labelApi.list()
-    } catch (e) {
-      console.error('Failed to fetch labels:', e)
+  async function fetchCounts(identityId = currentIdentityId.value, force = false) {
+    ensureOwner()
+    const sequence = ++countSequence
+    const token = ownerToken
+    const cached = countCache.get(identityId)
+    if (!force && cached && Date.now() - cached.at < 15000) {
+      counts.value = cached.data
+      return
     }
-  }
-
-  async function markAsRead(uuids: string[], isRead: boolean) {
     try {
-      await receivedInboxApi.mark(uuids, isRead)
-
-      // Update local state
-      for (const uuid of uuids) {
-        const index = emails.value.findIndex(e => e.uuid === uuid)
-        if (index !== -1) {
-          emails.value[index] = { ...emails.value[index], isRead }
-        }
-        if (currentEmail.value?.uuid === uuid) {
-          currentEmail.value = { ...currentEmail.value, isRead }
-        }
+      let request = countRequests.get(identityId)
+      if (!request) {
+        request = receivedInboxApi.getCounts(identityId)
+        countRequests.set(identityId, request)
       }
-
-      // Refresh counts
-      if (currentIdentityId.value) {
-        await fetchCounts(currentIdentityId.value)
-      }
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to update emails'
-      throw e
+      const result = await request
+      if (token !== api.getToken()) return
+      countCache.set(identityId, { at: Date.now(), data: result })
+      if (sequence === countSequence) counts.value = result
+    } catch {
+      // A counts failure must not hide usable mail or fabricate zero counts.
+    } finally {
+      countRequests.delete(identityId)
     }
   }
 
-  async function starEmails(uuids: string[], isStarred: boolean) {
+  async function mutate(action: () => Promise<unknown>, uuids: string[], patch?: Partial<ReceivedEmail>, remove = false) {
+    if (isMutating.value) return
+    isMutating.value = true
+    error.value = null
     try {
-      await receivedInboxApi.star(uuids, isStarred)
-
-      // Update local state
-      for (const uuid of uuids) {
-        const index = emails.value.findIndex(e => e.uuid === uuid)
-        if (index !== -1) {
-          emails.value[index] = { ...emails.value[index], isStarred }
-        }
-        if (currentEmail.value?.uuid === uuid) {
-          currentEmail.value = { ...currentEmail.value, isStarred }
-        }
-      }
-
-      // Refresh counts
-      if (currentIdentityId.value) {
-        await fetchCounts(currentIdentityId.value)
-      }
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to update emails'
-      throw e
-    }
-  }
-
-  async function moveEmails(uuids: string[], folder: string) {
-    try {
-      await receivedInboxApi.move(uuids, folder)
-
-      // Remove from current view if moving to different folder
-      if (folder !== currentFolder.value) {
+      await action()
+      invalidate()
+      if (remove) {
         emails.value = emails.value.filter(e => !uuids.includes(e.uuid))
-        selectedEmailUuids.value = selectedEmailUuids.value.filter(u => !uuids.includes(u))
+        selectedEmailUuids.value = selectedEmailUuids.value.filter(id => !uuids.includes(id))
+        if (currentEmail.value && uuids.includes(currentEmail.value.uuid)) closeEmail()
+      } else {
+        emails.value = emails.value.map(e => uuids.includes(e.uuid) ? { ...e, ...patch } : e)
+        if (currentEmail.value && uuids.includes(currentEmail.value.uuid)) currentEmail.value = { ...currentEmail.value, ...patch }
       }
-
-      // Refresh counts
-      if (currentIdentityId.value) {
-        await fetchCounts(currentIdentityId.value)
-      }
+      if (remove && !emails.value.length && page.value > 1) filters.page = page.value - 1
+      await Promise.all([fetchEmails(currentIdentityId.value, { force: true }), fetchCounts(currentIdentityId.value, true)])
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to move emails'
+      error.value = e instanceof Error ? e.message : 'The change could not be saved. Try again.'
       throw e
+    } finally {
+      isMutating.value = false
     }
   }
 
-  async function trashEmails(uuids: string[], permanent = false) {
-    try {
-      await receivedInboxApi.trash(uuids, permanent)
+  const markAsRead = (uuids: string[], isRead: boolean) => mutate(() => receivedInboxApi.mark(uuids, isRead), uuids, { isRead })
+  const starEmails = (uuids: string[], isStarred: boolean) => mutate(() => receivedInboxApi.star(uuids, isStarred), uuids, { isStarred })
+  const moveEmails = (uuids: string[], folder: string) => mutate(() => receivedInboxApi.move(uuids, folder), uuids, undefined, true)
+  const trashEmails = (uuids: string[], permanent = false) => mutate(() => receivedInboxApi.trash(uuids, permanent), uuids, undefined, true)
 
-      // Remove from current view
-      emails.value = emails.value.filter(e => !uuids.includes(e.uuid))
-      selectedEmailUuids.value = selectedEmailUuids.value.filter(u => !uuids.includes(u))
-
-      if (currentEmail.value && uuids.includes(currentEmail.value.uuid)) {
-        currentEmail.value = null
-      }
-
-      // Refresh counts
-      if (currentIdentityId.value) {
-        await fetchCounts(currentIdentityId.value)
-      }
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to delete emails'
-      throw e
-    }
-  }
-
-  async function createLabel(name: string, color?: string) {
-    try {
-      const label = await labelApi.create({ name, color })
-      labels.value.push(label)
-      return label
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to create label'
-      throw e
-    }
-  }
-
-  async function deleteLabel(uuid: string) {
-    try {
-      await labelApi.delete(uuid)
-      labels.value = labels.value.filter(l => l.uuid !== uuid)
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to delete label'
-      throw e
-    }
-  }
-
-  // Selection
   function toggleSelect(uuid: string) {
-    const index = selectedEmailUuids.value.indexOf(uuid)
-    if (index === -1) {
-      selectedEmailUuids.value.push(uuid)
-    } else {
-      selectedEmailUuids.value.splice(index, 1)
-    }
+    selectedEmailUuids.value = selectedEmailUuids.value.includes(uuid) ? selectedEmailUuids.value.filter(id => id !== uuid) : [...selectedEmailUuids.value, uuid]
   }
+  function selectAll() { selectedEmailUuids.value = allSelected.value ? [] : emails.value.map(e => e.uuid) }
+  function clearSelection() { selectedEmailUuids.value = [] }
 
-  function selectAll() {
-    if (allSelected.value) {
-      selectedEmailUuids.value = []
-    } else {
-      selectedEmailUuids.value = emails.value.map(e => e.uuid)
-    }
+  function refreshSoon() {
+    invalidate()
+    clearTimeout(refreshTimer)
+    refreshTimer = setTimeout(() => {
+      void fetchEmails(currentIdentityId.value, { force: true })
+      void fetchCounts(currentIdentityId.value, true)
+    }, 300)
   }
-
-  function clearSelection() {
-    selectedEmailUuids.value = []
-  }
-
-  // SSE
   function connectSSE() {
+    if (connected) return
+    connected = true
     inboxSSE.connect({
-      onConnected: () => {
-        sseConnected.value = true
-        console.log('SSE connected')
-      },
-      onNewEmail: (email) => {
-        // Add to top of list if in current folder
-        if (email.identityId === currentIdentityId.value) {
-          if (
-            (currentFolder.value === 'inbox' && email.folder === 'inbox') ||
-            currentFolder.value === 'all'
-          ) {
-            emails.value = [email, ...emails.value]
-            total.value++
-          }
-
-          // Update counts
-          if (counts.value) {
-            counts.value.inbox++
-            counts.value.unread++
-          }
-        }
-      },
-      onEmailUpdate: (data) => {
-        const index = emails.value.findIndex(e => e.uuid === data.uuid)
-        if (index !== -1) {
-          emails.value[index] = { ...emails.value[index], ...data.updates }
-        }
-        if (currentEmail.value?.uuid === data.uuid) {
-          currentEmail.value = { ...currentEmail.value, ...data.updates } as ReceivedEmail
-        }
-      },
-      onEmailDeleted: (data) => {
-        emails.value = emails.value.filter(e => !data.uuids.includes(e.uuid))
-        selectedEmailUuids.value = selectedEmailUuids.value.filter(u => !data.uuids.includes(u))
-        if (currentEmail.value && data.uuids.includes(currentEmail.value.uuid)) {
-          currentEmail.value = null
-        }
-      },
-      onCountsUpdate: (data) => {
-        if (data.identityId === currentIdentityId.value) {
-          counts.value = data
-        }
-      },
-      onError: () => {
-        sseConnected.value = false
-      }
+      onConnected: () => { sseConnected.value = true },
+      onNewEmail: refreshSoon,
+      onEmailUpdate: refreshSoon,
+      onEmailDeleted: refreshSoon,
+      onCountsUpdate: refreshSoon,
+      onError: () => { sseConnected.value = false },
     })
   }
-
   function disconnectSSE() {
     inboxSSE.disconnect()
+    connected = false
     sseConnected.value = false
+    clearTimeout(refreshTimer)
   }
-
-  // Reset
   function reset() {
+    ++listSequence
+    ++countSequence
+    closeEmail()
+    listController?.abort()
+    disconnectSSE()
+    invalidate()
+    countRequests.clear()
+    activeListKey = ''
+    activeListPromise = null
     emails.value = []
-    currentEmail.value = null
     counts.value = null
     page.value = 1
     total.value = 0
     totalPages.value = 0
+    filters = {}
     currentFolder.value = 'inbox'
-    currentIdentityId.value = null
+    currentIdentityId.value = 0
     searchQuery.value = ''
-    selectedLabels.value = []
     selectedEmailUuids.value = []
     error.value = null
+    notice.value = ''
+    isLoading.value = false
   }
-
-  return {
-    // State
-    emails,
-    currentEmail,
-    counts,
-    labels,
-    isLoading,
-    error,
-    page,
-    pageSize,
-    total,
-    totalPages,
-    currentFolder,
-    currentIdentityId,
-    searchQuery,
-    selectedLabels,
-    selectedEmailUuids,
-    sseConnected,
-
-    // Computed
-    unreadCount,
-    hasMore,
-    allSelected,
-    someSelected,
-
-    // Actions
-    fetchEmails,
-    fetchEmail,
-    fetchCounts,
-    fetchLabels,
-    markAsRead,
-    starEmails,
-    moveEmails,
-    trashEmails,
-    createLabel,
-    deleteLabel,
-    toggleSelect,
-    selectAll,
-    clearSelection,
-    connectSSE,
-    disconnectSSE,
-    reset
-  }
+  return { emails, currentEmail, counts, isLoading, detailLoading, isMutating, error, page, pageSize, total, totalPages, currentFolder, currentIdentityId, searchQuery, selectedEmailUuids, sseConnected, notice, unreadCount, hasMore, allSelected, someSelected, fetchEmails, fetchEmail, closeEmail, fetchCounts, markAsRead, starEmails, moveEmails, trashEmails, toggleSelect, selectAll, clearSelection, connectSSE, disconnectSSE, invalidate, reset }
 })

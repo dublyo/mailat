@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api, authApi, type User } from '@/lib/api'
+import { useReceivedInboxStore } from './receivedInbox'
+import { useInboxStore } from './inbox'
+import { useDomainsStore } from './domains'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
@@ -35,6 +38,9 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function logout() {
+    useReceivedInboxStore().reset()
+    useInboxStore().closeCompose()
+    useDomainsStore().reset()
     user.value = null
     token.value = null
     api.setToken(null)

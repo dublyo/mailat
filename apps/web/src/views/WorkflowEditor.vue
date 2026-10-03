@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppLayout from '@/components/layout/AppLayout.vue'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { VueFlow, Handle, Position, MarkerType, useVueFlow } from '@vue-flow/core'
@@ -384,6 +385,7 @@ const edgeCount = computed(() => edges.value.length)
 </script>
 
 <template>
+  <AppLayout>
   <div class="workflow-editor">
     <!-- Header -->
     <header class="editor-header">
@@ -709,10 +711,14 @@ const edgeCount = computed(() => edges.value.length)
       </aside>
     </div>
   </div>
+  </AppLayout>
 </template>
 
 <style scoped>
 .workflow-editor {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   height: 100%;

@@ -6,32 +6,32 @@ import (
 
 // User represents a user in the system
 type User struct {
-	ID             int64      `json:"id"`
-	UUID           string     `json:"uuid"`
-	OrgID          int64      `json:"orgId"`
-	Email          string     `json:"email"`
-	PasswordHash   string     `json:"-"`
-	Name           string     `json:"name"`
-	Role           string     `json:"role"` // owner, admin, member
-	Status         string     `json:"status"`
-	EmailVerified  bool       `json:"emailVerified"`
-	LastLoginAt    *time.Time `json:"lastLoginAt,omitempty"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	UpdatedAt      time.Time  `json:"updatedAt"`
+	ID            int64      `json:"id"`
+	UUID          string     `json:"uuid"`
+	OrgID         int64      `json:"orgId"`
+	Email         string     `json:"email"`
+	PasswordHash  string     `json:"-"`
+	Name          string     `json:"name"`
+	Role          string     `json:"role"` // owner, admin, member
+	Status        string     `json:"status"`
+	EmailVerified bool       `json:"emailVerified"`
+	LastLoginAt   *time.Time `json:"lastLoginAt,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
 }
 
 // Organization represents an organization/tenant
 type Organization struct {
-	ID            int64     `json:"id"`
-	UUID          string    `json:"uuid"`
-	Name          string    `json:"name"`
-	Slug          string    `json:"slug"`
-	PlanType      string    `json:"planType"`
-	MonthlyQuota  int       `json:"monthlyQuota"`
-	DailyQuota    int       `json:"dailyQuota"`
-	Status        string    `json:"status"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	ID           int64     `json:"id"`
+	UUID         string    `json:"uuid"`
+	Name         string    `json:"name"`
+	Slug         string    `json:"slug"`
+	PlanType     string    `json:"planType"`
+	MonthlyQuota int       `json:"monthlyQuota"`
+	DailyQuota   int       `json:"dailyQuota"`
+	Status       string    `json:"status"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // ApiKey represents an API key for programmatic access
@@ -51,15 +51,15 @@ type ApiKey struct {
 
 // Domain represents an email domain
 type Domain struct {
-	ID                int64      `json:"id"`
-	UUID              string     `json:"uuid"`
-	OrgID             int64      `json:"orgId"`
-	Name              string     `json:"name"`
-	Status            string     `json:"status"` // pending, active, suspended
-	VerificationToken string     `json:"verificationToken,omitempty"`
-	DKIMSelector      string     `json:"dkimSelector"`
-	DKIMPublicKey     string     `json:"dkimPublicKey,omitempty"`
-	DKIMPrivateKey    string     `json:"-"`
+	ID                int64  `json:"id"`
+	UUID              string `json:"uuid"`
+	OrgID             int64  `json:"orgId"`
+	Name              string `json:"name"`
+	Status            string `json:"status"` // pending, active, suspended
+	VerificationToken string `json:"verificationToken,omitempty"`
+	DKIMSelector      string `json:"dkimSelector"`
+	DKIMPublicKey     string `json:"dkimPublicKey,omitempty"`
+	DKIMPrivateKey    string `json:"-"`
 	// SES Integration fields
 	EmailProvider  string   `json:"emailProvider"`            // ses, smtp
 	SESVerified    bool     `json:"sesVerified"`              // SES domain verification status
@@ -99,25 +99,25 @@ type DomainDNSRecord struct {
 
 // Identity represents an email identity/mailbox
 type Identity struct {
-	ID                int64      `json:"id"`
-	UUID              string     `json:"uuid"`
-	UserID            int64      `json:"userId"`
-	DomainID          int64      `json:"domainId"`
-	Email             string     `json:"email"`
-	DisplayName       string     `json:"displayName"`
-	IsDefault         bool       `json:"isDefault"`
-	IsCatchAll        bool       `json:"isCatchAll"`
-	Color             string     `json:"color"`     // Hex color for UI display
-	CanSend           bool       `json:"canSend"`
-	CanReceive        bool       `json:"canReceive"`
-	StalwartAcctID    string     `json:"stalwartAcctId,omitempty"`
-	PasswordHash      string     `json:"-"`
-	EncryptedPassword string     `json:"-"` // AES-encrypted password for JMAP auth
-	QuotaBytes        int64      `json:"quotaBytes"`
-	UsedBytes         int64      `json:"usedBytes"`
-	Status            string     `json:"status"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
+	ID                int64     `json:"id"`
+	UUID              string    `json:"uuid"`
+	UserID            int64     `json:"userId"`
+	DomainID          int64     `json:"domainId"`
+	Email             string    `json:"email"`
+	DisplayName       string    `json:"displayName"`
+	IsDefault         bool      `json:"isDefault"`
+	IsCatchAll        bool      `json:"isCatchAll"`
+	Color             string    `json:"color"` // Hex color for UI display
+	CanSend           bool      `json:"canSend"`
+	CanReceive        bool      `json:"canReceive"`
+	StalwartAcctID    string    `json:"stalwartAcctId,omitempty"`
+	PasswordHash      string    `json:"-"`
+	EncryptedPassword string    `json:"-"` // AES-encrypted password for JMAP auth
+	QuotaBytes        int64     `json:"quotaBytes"`
+	UsedBytes         int64     `json:"usedBytes"`
+	Status            string    `json:"status"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
 // JWT Claims
@@ -152,13 +152,20 @@ type CreateDomainRequest struct {
 }
 
 type CreateIdentityRequest struct {
-	DomainId    string `json:"domainId"`    // UUID of the domain
+	DomainId    string `json:"domainId"` // UUID of the domain
 	Email       string `json:"email"`
 	DisplayName string `json:"displayName"`
 	Password    string `json:"password"`
 	QuotaBytes  int64  `json:"quotaBytes"`
 	IsDefault   bool   `json:"isDefault"`
-	IsCatchAll  bool   `json:"isCatchAll"`  // Only one catch-all per domain allowed
+	IsCatchAll  bool   `json:"isCatchAll"` // Only one catch-all per domain allowed
+}
+
+type UpdateIdentityRequest struct {
+	DisplayName *string `json:"displayName"`
+	IsDefault   *bool   `json:"isDefault"`
+	IsCatchAll  *bool   `json:"isCatchAll"`
+	Color       *string `json:"color"`
 }
 
 type CreateApiKeyRequest struct {
@@ -220,17 +227,20 @@ type DeleteEmailRequest struct {
 // Compose Request/Response DTOs
 
 type ComposeEmailRequest struct {
-	IdentityID  int64              `json:"identityId" v:"required"`
-	To          []EmailAddressDTO  `json:"to" v:"required"`
-	Cc          []EmailAddressDTO  `json:"cc"`
-	Bcc         []EmailAddressDTO  `json:"bcc"`
-	ReplyTo     []EmailAddressDTO  `json:"replyTo"`
-	Subject     string             `json:"subject" v:"required"`
-	TextBody    string             `json:"textBody"`
-	HTMLBody    string             `json:"htmlBody"`
-	InReplyTo   string             `json:"inReplyTo"`
-	References  []string           `json:"references"`
-	Attachments []AttachmentDTO    `json:"attachments"`
+	FromEmail    string            `json:"fromEmail"`
+	DraftID      string            `json:"draftId"`
+	DraftVersion int               `json:"draftVersion"`
+	IdentityID   int64             `json:"identityId" v:"required"`
+	To           []EmailAddressDTO `json:"to" v:"required"`
+	Cc           []EmailAddressDTO `json:"cc"`
+	Bcc          []EmailAddressDTO `json:"bcc"`
+	ReplyTo      []EmailAddressDTO `json:"replyTo"`
+	Subject      string            `json:"subject" v:"required"`
+	TextBody     string            `json:"textBody"`
+	HTMLBody     string            `json:"htmlBody"`
+	InReplyTo    string            `json:"inReplyTo"`
+	References   []string          `json:"references"`
+	Attachments  []AttachmentDTO   `json:"attachments"`
 }
 
 type EmailAddressDTO struct {
@@ -239,25 +249,29 @@ type EmailAddressDTO struct {
 }
 
 type AttachmentDTO struct {
-	BlobID      string `json:"blobId" v:"required"`
-	Name        string `json:"name" v:"required"`
-	Type        string `json:"type" v:"required"`
+	BlobID      string `json:"blobId"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Content     string `json:"content"`
 	Size        int    `json:"size"`
 	Disposition string `json:"disposition"`
 	CID         string `json:"cid"`
 }
 
 type SaveDraftRequest struct {
-	IdentityID  int64              `json:"identityId" v:"required"`
-	To          []EmailAddressDTO  `json:"to"`
-	Cc          []EmailAddressDTO  `json:"cc"`
-	Bcc         []EmailAddressDTO  `json:"bcc"`
-	Subject     string             `json:"subject"`
-	TextBody    string             `json:"textBody"`
-	HTMLBody    string             `json:"htmlBody"`
-	InReplyTo   string             `json:"inReplyTo"`
-	References  []string           `json:"references"`
-	Attachments []AttachmentDTO    `json:"attachments"`
+	ReplyTo     []EmailAddressDTO `json:"replyTo"`
+	FromEmail   string            `json:"fromEmail"`
+	Version     int               `json:"version"`
+	IdentityID  int64             `json:"identityId" v:"required"`
+	To          []EmailAddressDTO `json:"to"`
+	Cc          []EmailAddressDTO `json:"cc"`
+	Bcc         []EmailAddressDTO `json:"bcc"`
+	Subject     string            `json:"subject"`
+	TextBody    string            `json:"textBody"`
+	HTMLBody    string            `json:"htmlBody"`
+	InReplyTo   string            `json:"inReplyTo"`
+	References  []string          `json:"references"`
+	Attachments []AttachmentDTO   `json:"attachments"`
 }
 
 type ReplyContextRequest struct {
@@ -273,51 +287,51 @@ type ForwardContextRequest struct {
 
 // TransactionalEmail represents an outbound transactional email
 type TransactionalEmail struct {
-	ID              int64              `json:"id"`
-	UUID            string             `json:"uuid"`
-	OrgID           int64              `json:"orgId"`
-	IdentityID      int64              `json:"identityId"`
-	MessageID       string             `json:"messageId"`       // RFC 5322 Message-ID
-	From            string             `json:"from"`
-	To              []string           `json:"to"`
-	Cc              []string           `json:"cc,omitempty"`
-	Bcc             []string           `json:"bcc,omitempty"`
-	ReplyTo         string             `json:"replyTo,omitempty"`
-	Subject         string             `json:"subject"`
-	HTMLBody        string             `json:"htmlBody,omitempty"`
-	TextBody        string             `json:"textBody,omitempty"`
-	TemplateID      *int64             `json:"templateId,omitempty"`
-	Variables       map[string]string  `json:"variables,omitempty"`
-	Tags            []string           `json:"tags,omitempty"`
-	Metadata        map[string]string  `json:"metadata,omitempty"`
-	Status          string             `json:"status"` // queued, sending, sent, delivered, bounced, failed
-	ScheduledFor    *time.Time         `json:"scheduledFor,omitempty"`
-	SentAt          *time.Time         `json:"sentAt,omitempty"`
-	DeliveredAt     *time.Time         `json:"deliveredAt,omitempty"`
-	OpenedAt        *time.Time         `json:"openedAt,omitempty"`
-	ClickedAt       *time.Time         `json:"clickedAt,omitempty"`
-	BouncedAt       *time.Time         `json:"bouncedAt,omitempty"`
-	BounceType      string             `json:"bounceType,omitempty"` // hard, soft
-	BounceReason    string             `json:"bounceReason,omitempty"`
-	IdempotencyKey  string             `json:"idempotencyKey,omitempty"`
-	CreatedAt       time.Time          `json:"createdAt"`
-	UpdatedAt       time.Time          `json:"updatedAt"`
+	ID             int64             `json:"id"`
+	UUID           string            `json:"uuid"`
+	OrgID          int64             `json:"orgId"`
+	IdentityID     int64             `json:"identityId"`
+	MessageID      string            `json:"messageId"` // RFC 5322 Message-ID
+	From           string            `json:"from"`
+	To             []string          `json:"to"`
+	Cc             []string          `json:"cc,omitempty"`
+	Bcc            []string          `json:"bcc,omitempty"`
+	ReplyTo        string            `json:"replyTo,omitempty"`
+	Subject        string            `json:"subject"`
+	HTMLBody       string            `json:"htmlBody,omitempty"`
+	TextBody       string            `json:"textBody,omitempty"`
+	TemplateID     *int64            `json:"templateId,omitempty"`
+	Variables      map[string]string `json:"variables,omitempty"`
+	Tags           []string          `json:"tags,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	Status         string            `json:"status"` // queued, sending, sent, delivered, bounced, failed
+	ScheduledFor   *time.Time        `json:"scheduledFor,omitempty"`
+	SentAt         *time.Time        `json:"sentAt,omitempty"`
+	DeliveredAt    *time.Time        `json:"deliveredAt,omitempty"`
+	OpenedAt       *time.Time        `json:"openedAt,omitempty"`
+	ClickedAt      *time.Time        `json:"clickedAt,omitempty"`
+	BouncedAt      *time.Time        `json:"bouncedAt,omitempty"`
+	BounceType     string            `json:"bounceType,omitempty"` // hard, soft
+	BounceReason   string            `json:"bounceReason,omitempty"`
+	IdempotencyKey string            `json:"idempotencyKey,omitempty"`
+	CreatedAt      time.Time         `json:"createdAt"`
+	UpdatedAt      time.Time         `json:"updatedAt"`
 }
 
 // EmailTemplate represents a reusable email template
 type EmailTemplate struct {
-	ID          int64             `json:"id"`
-	UUID        string            `json:"uuid"`
-	OrgID       int64             `json:"orgId"`
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	Subject     string            `json:"subject"`
-	HTMLBody    string            `json:"htmlBody"`
-	TextBody    string            `json:"textBody,omitempty"`
-	Variables   []string          `json:"variables,omitempty"` // List of variable names
-	IsActive    bool              `json:"isActive"`
-	CreatedAt   time.Time         `json:"createdAt"`
-	UpdatedAt   time.Time         `json:"updatedAt"`
+	ID          int64     `json:"id"`
+	UUID        string    `json:"uuid"`
+	OrgID       int64     `json:"orgId"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	Subject     string    `json:"subject"`
+	HTMLBody    string    `json:"htmlBody"`
+	TextBody    string    `json:"textBody,omitempty"`
+	Variables   []string  `json:"variables,omitempty"` // List of variable names
+	IsActive    bool      `json:"isActive"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 // DeliveryEvent represents a delivery event for tracking
@@ -365,10 +379,10 @@ type SendEmailRequest struct {
 }
 
 type SendEmailResponse struct {
-	ID         string     `json:"id"`
-	MessageID  string     `json:"messageId"`
-	Status     string     `json:"status"`
-	AcceptedAt time.Time  `json:"acceptedAt"`
+	ID         string    `json:"id"`
+	MessageID  string    `json:"messageId"`
+	Status     string    `json:"status"`
+	AcceptedAt time.Time `json:"acceptedAt"`
 }
 
 type BatchSendRequest struct {
@@ -388,16 +402,16 @@ type BatchEmailResult struct {
 }
 
 type GetEmailStatusResponse struct {
-	ID          string     `json:"id"`
-	MessageID   string     `json:"messageId"`
-	From        string     `json:"from"`
-	To          []string   `json:"to"`
-	Subject     string     `json:"subject"`
-	Status      string     `json:"status"`
+	ID          string          `json:"id"`
+	MessageID   string          `json:"messageId"`
+	From        string          `json:"from"`
+	To          []string        `json:"to"`
+	Subject     string          `json:"subject"`
+	Status      string          `json:"status"`
 	Events      []DeliveryEvent `json:"events"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	SentAt      *time.Time `json:"sentAt,omitempty"`
-	DeliveredAt *time.Time `json:"deliveredAt,omitempty"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	SentAt      *time.Time      `json:"sentAt,omitempty"`
+	DeliveredAt *time.Time      `json:"deliveredAt,omitempty"`
 }
 
 // Template API Request DTOs
@@ -485,29 +499,29 @@ type RotateSecretResponse struct {
 
 // Contact represents a marketing contact
 type Contact struct {
-	ID               int64             `json:"id"`
-	UUID             string            `json:"uuid"`
-	OrgID            int64             `json:"orgId"`
-	Email            string            `json:"email"`
-	FirstName        string            `json:"firstName,omitempty"`
-	LastName         string            `json:"lastName,omitempty"`
-	Attributes       map[string]any    `json:"attributes,omitempty"`
-	Status           string            `json:"status"` // active, unsubscribed, bounced, complained
-	ConsentSource    string            `json:"consentSource,omitempty"`
-	ConsentTimestamp *time.Time        `json:"consentTimestamp,omitempty"`
-	ConsentIP        string            `json:"consentIp,omitempty"`
-	LastEngagedAt    *time.Time        `json:"lastEngagedAt,omitempty"`
-	EngagementScore  float64           `json:"engagementScore"`
-	CreatedAt        time.Time         `json:"createdAt"`
-	UpdatedAt        time.Time         `json:"updatedAt"`
-	Lists            []ListMembership  `json:"lists,omitempty"`
+	ID               int64            `json:"id"`
+	UUID             string           `json:"uuid"`
+	OrgID            int64            `json:"orgId"`
+	Email            string           `json:"email"`
+	FirstName        string           `json:"firstName,omitempty"`
+	LastName         string           `json:"lastName,omitempty"`
+	Attributes       map[string]any   `json:"attributes,omitempty"`
+	Status           string           `json:"status"` // active, unsubscribed, bounced, complained
+	ConsentSource    string           `json:"consentSource,omitempty"`
+	ConsentTimestamp *time.Time       `json:"consentTimestamp,omitempty"`
+	ConsentIP        string           `json:"consentIp,omitempty"`
+	LastEngagedAt    *time.Time       `json:"lastEngagedAt,omitempty"`
+	EngagementScore  float64          `json:"engagementScore"`
+	CreatedAt        time.Time        `json:"createdAt"`
+	UpdatedAt        time.Time        `json:"updatedAt"`
+	Lists            []ListMembership `json:"lists,omitempty"`
 }
 
 // ListMembership represents a contact's membership in a list
 type ListMembership struct {
-	ListID    int    `json:"listId"`
-	ListName  string `json:"listName"`
-	JoinedAt  time.Time `json:"joinedAt"`
+	ListID   int       `json:"listId"`
+	ListName string    `json:"listName"`
+	JoinedAt time.Time `json:"joinedAt"`
 }
 
 // List represents a contact list
@@ -568,10 +582,10 @@ type ImportContactRow struct {
 }
 
 type ImportContactsResponse struct {
-	Imported    int      `json:"imported"`
-	Updated     int      `json:"updated"`
-	Skipped     int      `json:"skipped"`
-	Errors      []string `json:"errors,omitempty"`
+	Imported int      `json:"imported"`
+	Updated  int      `json:"updated"`
+	Skipped  int      `json:"skipped"`
+	Errors   []string `json:"errors,omitempty"`
 }
 
 type ExportContactsRequest struct {
@@ -581,13 +595,13 @@ type ExportContactsRequest struct {
 }
 
 type ContactSearchRequest struct {
-	Query      string   `json:"query"`
-	Status     []string `json:"status"`
-	ListIDs    []int    `json:"listIds"`
-	Page       int      `json:"page" d:"1"`
-	PageSize   int      `json:"pageSize" d:"50"`
-	SortBy     string   `json:"sortBy" d:"createdAt"`
-	SortOrder  string   `json:"sortOrder" d:"desc"`
+	Query     string   `json:"query"`
+	Status    []string `json:"status"`
+	ListIDs   []int    `json:"listIds"`
+	Page      int      `json:"page" d:"1"`
+	PageSize  int      `json:"pageSize" d:"50"`
+	SortBy    string   `json:"sortBy" d:"createdAt"`
+	SortOrder string   `json:"sortOrder" d:"desc"`
 }
 
 // List API Request DTOs
@@ -705,14 +719,14 @@ type ScheduleCampaignRequest struct {
 }
 
 type CampaignStatsResponse struct {
-	Campaign         *Campaign `json:"campaign"`
-	OpenRate         float64   `json:"openRate"`
-	ClickRate        float64   `json:"clickRate"`
-	BounceRate       float64   `json:"bounceRate"`
-	UnsubscribeRate  float64   `json:"unsubscribeRate"`
-	ComplaintRate    float64   `json:"complaintRate"`
-	ClicksByLink     map[string]int `json:"clicksByLink,omitempty"`
-	OpensByHour      map[int]int    `json:"opensByHour,omitempty"`
+	Campaign        *Campaign      `json:"campaign"`
+	OpenRate        float64        `json:"openRate"`
+	ClickRate       float64        `json:"clickRate"`
+	BounceRate      float64        `json:"bounceRate"`
+	UnsubscribeRate float64        `json:"unsubscribeRate"`
+	ComplaintRate   float64        `json:"complaintRate"`
+	ClicksByLink    map[string]int `json:"clicksByLink,omitempty"`
+	OpensByHour     map[int]int    `json:"opensByHour,omitempty"`
 }
 
 type CampaignListResponse struct {
@@ -726,15 +740,15 @@ type CampaignListResponse struct {
 // A/B Test DTOs
 
 type CreateAbTestRequest struct {
-	Name       string              `json:"name" v:"required"`
-	ListID     int                 `json:"listId" v:"required"`
-	FromName   string              `json:"fromName" v:"required"`
-	FromEmail  string              `json:"fromEmail" v:"required|email"`
-	ReplyTo    string              `json:"replyTo"`
-	Variants   []AbTestVariant     `json:"variants" v:"required|min-length:2"`
-	TestSize   int                 `json:"testSize" d:"20"` // Percentage
-	WinnerBy   string              `json:"winnerBy" d:"openRate"` // openRate, clickRate
-	WaitHours  int                 `json:"waitHours" d:"4"`
+	Name      string          `json:"name" v:"required"`
+	ListID    int             `json:"listId" v:"required"`
+	FromName  string          `json:"fromName" v:"required"`
+	FromEmail string          `json:"fromEmail" v:"required|email"`
+	ReplyTo   string          `json:"replyTo"`
+	Variants  []AbTestVariant `json:"variants" v:"required|min-length:2"`
+	TestSize  int             `json:"testSize" d:"20"`       // Percentage
+	WinnerBy  string          `json:"winnerBy" d:"openRate"` // openRate, clickRate
+	WaitHours int             `json:"waitHours" d:"4"`
 }
 
 type AbTestVariant struct {
@@ -791,10 +805,10 @@ type Workflow struct {
 
 // WorkflowNode represents a node in the workflow
 type WorkflowNode struct {
-	ID       string              `json:"id"`
-	Type     string              `json:"type"` // trigger, email, delay, condition, action
-	Position WorkflowPosition    `json:"position"`
-	Data     WorkflowNodeData    `json:"data"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"` // trigger, email, delay, condition, action
+	Position WorkflowPosition `json:"position"`
+	Data     WorkflowNodeData `json:"data"`
 }
 
 // WorkflowPosition represents a node's position
@@ -878,59 +892,65 @@ type AutomationEnrollment struct {
 
 // ReceivedEmail represents an incoming email
 type ReceivedEmail struct {
-	ID                int64      `json:"id"`
-	UUID              string     `json:"uuid"`
-	OrgID             int64      `json:"orgId"`
-	DomainID          int64      `json:"domainId"`
-	IdentityID        int64      `json:"identityId"`
-	MessageID         string     `json:"messageId"`
-	InReplyTo         string     `json:"inReplyTo,omitempty"`
-	References        []string   `json:"references,omitempty"`
-	ThreadID          string     `json:"threadId,omitempty"`
-	FromEmail         string     `json:"fromEmail"`
-	FromName          string     `json:"fromName,omitempty"`
-	ToEmails          []string   `json:"toEmails"`
-	CcEmails          []string   `json:"ccEmails,omitempty"`
-	BccEmails         []string   `json:"bccEmails,omitempty"`
-	ReplyTo           string     `json:"replyTo,omitempty"`
-	Subject           string     `json:"subject"`
-	TextBody          string     `json:"textBody,omitempty"`
-	HTMLBody          string     `json:"htmlBody,omitempty"`
-	Snippet           string     `json:"snippet,omitempty"`
-	RawS3Key          string     `json:"rawS3Key,omitempty"`
-	RawS3Bucket       string     `json:"rawS3Bucket,omitempty"`
-	SizeBytes         int        `json:"sizeBytes"`
-	HasAttachments    bool       `json:"hasAttachments"`
+	EnvelopeRecipients []string   `json:"envelopeRecipients,omitempty"`
+	Direction          string     `json:"direction"`
+	SendStatus         string     `json:"sendStatus"`
+	SendError          string     `json:"sendError,omitempty"`
+	DraftVersion       int        `json:"draftVersion"`
+	SentAt             *time.Time `json:"sentAt,omitempty"`
+	ID                 int64      `json:"id"`
+	UUID               string     `json:"uuid"`
+	OrgID              int64      `json:"orgId"`
+	DomainID           int64      `json:"domainId"`
+	IdentityID         int64      `json:"identityId"`
+	MessageID          string     `json:"messageId"`
+	InReplyTo          string     `json:"inReplyTo,omitempty"`
+	References         []string   `json:"references,omitempty"`
+	ThreadID           string     `json:"threadId,omitempty"`
+	FromEmail          string     `json:"fromEmail"`
+	FromName           string     `json:"fromName,omitempty"`
+	ToEmails           []string   `json:"toEmails"`
+	CcEmails           []string   `json:"ccEmails,omitempty"`
+	BccEmails          []string   `json:"bccEmails,omitempty"`
+	ReplyTo            string     `json:"replyTo,omitempty"`
+	Subject            string     `json:"subject"`
+	TextBody           string     `json:"textBody,omitempty"`
+	HTMLBody           string     `json:"htmlBody,omitempty"`
+	Snippet            string     `json:"snippet,omitempty"`
+	RawS3Key           string     `json:"rawS3Key,omitempty"`
+	RawS3Bucket        string     `json:"rawS3Bucket,omitempty"`
+	SizeBytes          int        `json:"sizeBytes"`
+	HasAttachments     bool       `json:"hasAttachments"`
 	// Mailbox state
-	Folder            string     `json:"folder"`
-	IsRead            bool       `json:"isRead"`
-	IsStarred         bool       `json:"isStarred"`
-	IsArchived        bool       `json:"isArchived"`
-	IsTrashed         bool       `json:"isTrashed"`
-	IsSpam            bool       `json:"isSpam"`
-	Labels            []string   `json:"labels,omitempty"`
+	Folder     string   `json:"folder"`
+	IsRead     bool     `json:"isRead"`
+	IsStarred  bool     `json:"isStarred"`
+	IsArchived bool     `json:"isArchived"`
+	IsTrashed  bool     `json:"isTrashed"`
+	IsSpam     bool     `json:"isSpam"`
+	Labels     []string `json:"labels,omitempty"`
 	// Spam detection
-	SpamScore         *float64   `json:"spamScore,omitempty"`
-	SpamVerdict       string     `json:"spamVerdict,omitempty"`
-	VirusVerdict      string     `json:"virusVerdict,omitempty"`
-	SPFVerdict        string     `json:"spfVerdict,omitempty"`
-	DKIMVerdict       string     `json:"dkimVerdict,omitempty"`
-	DMARCVerdict      string     `json:"dmarcVerdict,omitempty"`
+	SpamScore    *float64 `json:"spamScore,omitempty"`
+	SpamVerdict  string   `json:"spamVerdict,omitempty"`
+	VirusVerdict string   `json:"virusVerdict,omitempty"`
+	SPFVerdict   string   `json:"spfVerdict,omitempty"`
+	DKIMVerdict  string   `json:"dkimVerdict,omitempty"`
+	DMARCVerdict string   `json:"dmarcVerdict,omitempty"`
 	// AWS metadata
-	SESMessageID      string     `json:"sesMessageId,omitempty"`
-	SNSNotificationID string     `json:"snsNotificationId,omitempty"`
+	SESMessageID      string `json:"sesMessageId,omitempty"`
+	SNSNotificationID string `json:"snsNotificationId,omitempty"`
 	// Timestamps
-	ReceivedAt        time.Time  `json:"receivedAt"`
-	ReadAt            *time.Time `json:"readAt,omitempty"`
-	TrashedAt         *time.Time `json:"trashedAt,omitempty"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
+	ReceivedAt time.Time  `json:"receivedAt"`
+	ReadAt     *time.Time `json:"readAt,omitempty"`
+	TrashedAt  *time.Time `json:"trashedAt,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
 	// Identity info (for unified inbox display)
-	IdentityEmail     string     `json:"identityEmail,omitempty"`
-	IdentityDisplayName string   `json:"identityDisplayName,omitempty"`
-	IdentityColor     string     `json:"identityColor,omitempty"`
+	IdentityEmail       string `json:"identityEmail,omitempty"`
+	IdentityDisplayName string `json:"identityDisplayName,omitempty"`
+	IdentityColor       string `json:"identityColor,omitempty"`
 	// Relations (loaded on demand)
-	Attachments       []EmailAttachment `json:"attachments,omitempty"`
+	Attachments []EmailAttachment `json:"attachments,omitempty"`
 }
 
 // EmailAttachment represents a file attached to an email
@@ -948,7 +968,7 @@ type EmailAttachment struct {
 	Checksum        string    `json:"checksum,omitempty"`
 	CreatedAt       time.Time `json:"createdAt"`
 	// Presigned URL (generated on demand)
-	DownloadURL     string    `json:"downloadUrl,omitempty"`
+	DownloadURL string `json:"downloadUrl,omitempty"`
 }
 
 // EmailLabel represents a user-defined label for organizing emails
@@ -965,29 +985,29 @@ type EmailLabel struct {
 
 // InboxFilter represents a filter rule for incoming emails
 type InboxFilter struct {
-	ID             int        `json:"id"`
-	UUID           string     `json:"uuid"`
-	OrgID          int64      `json:"orgId"`
-	UserID         int64      `json:"userId"`
-	IdentityID     *int64     `json:"identityId,omitempty"`
-	Name           string     `json:"name"`
-	Priority       int        `json:"priority"`
-	Active         bool       `json:"active"`
+	ID             int               `json:"id"`
+	UUID           string            `json:"uuid"`
+	OrgID          int64             `json:"orgId"`
+	UserID         int64             `json:"userId"`
+	IdentityID     *int64            `json:"identityId,omitempty"`
+	Name           string            `json:"name"`
+	Priority       int               `json:"priority"`
+	Active         bool              `json:"active"`
 	Conditions     []FilterCondition `json:"conditions"`
-	ConditionLogic string     `json:"conditionLogic"` // all, any
+	ConditionLogic string            `json:"conditionLogic"` // all, any
 	// Actions
-	ActionLabels   []string   `json:"actionLabels,omitempty"`
-	ActionFolder   string     `json:"actionFolder,omitempty"`
-	ActionStar     bool       `json:"actionStar"`
-	ActionMarkRead bool       `json:"actionMarkRead"`
-	ActionArchive  bool       `json:"actionArchive"`
-	ActionTrash    bool       `json:"actionTrash"`
-	ActionForward  string     `json:"actionForward,omitempty"`
+	ActionLabels   []string `json:"actionLabels,omitempty"`
+	ActionFolder   string   `json:"actionFolder,omitempty"`
+	ActionStar     bool     `json:"actionStar"`
+	ActionMarkRead bool     `json:"actionMarkRead"`
+	ActionArchive  bool     `json:"actionArchive"`
+	ActionTrash    bool     `json:"actionTrash"`
+	ActionForward  string   `json:"actionForward,omitempty"`
 	// Stats
-	MatchCount     int        `json:"matchCount"`
-	LastMatchedAt  *time.Time `json:"lastMatchedAt,omitempty"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	UpdatedAt      time.Time  `json:"updatedAt"`
+	MatchCount    int        `json:"matchCount"`
+	LastMatchedAt *time.Time `json:"lastMatchedAt,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
 }
 
 // FilterCondition represents a single condition in a filter
@@ -1020,16 +1040,21 @@ type ReceivingConfig struct {
 
 // InboxListRequest for listing emails in inbox
 type InboxListRequest struct {
-	IdentityID int64    `json:"identityId"`
-	Folder     string   `json:"folder" d:"inbox"`
-	Labels     []string `json:"labels"`
-	IsRead     *bool    `json:"isRead"`
-	IsStarred  *bool    `json:"isStarred"`
-	Search     string   `json:"search"`
-	Page       int      `json:"page" d:"1"`
-	PageSize   int      `json:"pageSize" d:"50"`
-	SortBy     string   `json:"sortBy" d:"receivedAt"`
-	SortOrder  string   `json:"sortOrder" d:"desc"`
+	DomainID       int64    `json:"domainId"`
+	HasAttachments *bool    `json:"hasAttachments"`
+	Sender         string   `json:"sender"`
+	DateFrom       string   `json:"dateFrom"`
+	DateTo         string   `json:"dateTo"`
+	IdentityID     int64    `json:"identityId"`
+	Folder         string   `json:"folder" d:"inbox"`
+	Labels         []string `json:"labels"`
+	IsRead         *bool    `json:"isRead"`
+	IsStarred      *bool    `json:"isStarred"`
+	Search         string   `json:"search"`
+	Page           int      `json:"page" d:"1"`
+	PageSize       int      `json:"pageSize" d:"50"`
+	SortBy         string   `json:"sortBy" d:"receivedAt"`
+	SortOrder      string   `json:"sortOrder" d:"desc"`
 }
 
 // InboxListResponse for paginated email list
@@ -1044,14 +1069,14 @@ type InboxListResponse struct {
 
 // InboxCountsResponse for folder/label counts
 type InboxCountsResponse struct {
-	Inbox    int            `json:"inbox"`
-	Unread   int            `json:"unread"`
-	Starred  int            `json:"starred"`
-	Sent     int            `json:"sent"`
-	Drafts   int            `json:"drafts"`
-	Spam     int            `json:"spam"`
-	Trash    int            `json:"trash"`
-	Labels   map[string]int `json:"labels,omitempty"`
+	Inbox   int            `json:"inbox"`
+	Unread  int            `json:"unread"`
+	Starred int            `json:"starred"`
+	Sent    int            `json:"sent"`
+	Drafts  int            `json:"drafts"`
+	Spam    int            `json:"spam"`
+	Trash   int            `json:"trash"`
+	Labels  map[string]int `json:"labels,omitempty"`
 }
 
 // MarkEmailsRequest for marking emails as read/unread
@@ -1136,13 +1161,13 @@ type SetupReceivingRequest struct {
 
 // SetupReceivingResponse contains the setup result
 type SetupReceivingResponse struct {
-	Success       bool              `json:"success"`
-	S3Bucket      string            `json:"s3Bucket"`
-	SNSTopicArn   string            `json:"snsTopicArn"`
-	RuleSetName   string            `json:"ruleSetName"`
-	RuleName      string            `json:"ruleName"`
-	WebhookURL    string            `json:"webhookUrl"`
-	RequiredDNS   []DomainDNSRecord `json:"requiredDns,omitempty"`
+	Success     bool              `json:"success"`
+	S3Bucket    string            `json:"s3Bucket"`
+	SNSTopicArn string            `json:"snsTopicArn"`
+	RuleSetName string            `json:"ruleSetName"`
+	RuleName    string            `json:"ruleName"`
+	WebhookURL  string            `json:"webhookUrl"`
+	RequiredDNS []DomainDNSRecord `json:"requiredDns,omitempty"`
 }
 
 // SNSNotification represents an incoming SNS notification
@@ -1163,23 +1188,23 @@ type SNSNotification struct {
 
 // SESNotification represents the SES notification inside SNS message
 type SESNotification struct {
-	NotificationType string          `json:"notificationType"`
-	Mail             SESMail         `json:"mail"`
-	Receipt          *SESReceipt     `json:"receipt,omitempty"`
-	Bounce           *SESBounce      `json:"bounce,omitempty"`
-	Complaint        *SESComplaint   `json:"complaint,omitempty"`
-	Delivery         *SESDelivery    `json:"delivery,omitempty"`
+	NotificationType string        `json:"notificationType"`
+	Mail             SESMail       `json:"mail"`
+	Receipt          *SESReceipt   `json:"receipt,omitempty"`
+	Bounce           *SESBounce    `json:"bounce,omitempty"`
+	Complaint        *SESComplaint `json:"complaint,omitempty"`
+	Delivery         *SESDelivery  `json:"delivery,omitempty"`
 }
 
 // SESMail contains common mail information
 type SESMail struct {
-	Timestamp        string              `json:"timestamp"`
-	Source           string              `json:"source"`
-	MessageId        string              `json:"messageId"`
-	Destination      []string            `json:"destination"`
-	HeadersTruncated bool                `json:"headersTruncated"`
-	Headers          []SESHeader         `json:"headers,omitempty"`
-	CommonHeaders    SESCommonHeaders    `json:"commonHeaders,omitempty"`
+	Timestamp        string           `json:"timestamp"`
+	Source           string           `json:"source"`
+	MessageId        string           `json:"messageId"`
+	Destination      []string         `json:"destination"`
+	HeadersTruncated bool             `json:"headersTruncated"`
+	Headers          []SESHeader      `json:"headers,omitempty"`
+	CommonHeaders    SESCommonHeaders `json:"commonHeaders,omitempty"`
 }
 
 // SESHeader represents an email header
@@ -1201,15 +1226,15 @@ type SESCommonHeaders struct {
 
 // SESReceipt contains receipt information for incoming emails
 type SESReceipt struct {
-	Timestamp            string        `json:"timestamp"`
-	ProcessingTimeMillis int           `json:"processingTimeMillis"`
-	Recipients           []string      `json:"recipients"`
-	SpamVerdict          SESVerdict    `json:"spamVerdict"`
-	VirusVerdict         SESVerdict    `json:"virusVerdict"`
-	SPFVerdict           SESVerdict    `json:"spfVerdict"`
-	DKIMVerdict          SESVerdict    `json:"dkimVerdict"`
-	DMARCVerdict         SESVerdict    `json:"dmarcVerdict"`
-	Action               SESAction     `json:"action"`
+	Timestamp            string     `json:"timestamp"`
+	ProcessingTimeMillis int        `json:"processingTimeMillis"`
+	Recipients           []string   `json:"recipients"`
+	SpamVerdict          SESVerdict `json:"spamVerdict"`
+	VirusVerdict         SESVerdict `json:"virusVerdict"`
+	SPFVerdict           SESVerdict `json:"spfVerdict"`
+	DKIMVerdict          SESVerdict `json:"dkimVerdict"`
+	DMARCVerdict         SESVerdict `json:"dmarcVerdict"`
+	Action               SESAction  `json:"action"`
 }
 
 // SESVerdict represents a spam/virus verdict
@@ -1228,11 +1253,11 @@ type SESAction struct {
 
 // SESBounce contains bounce information
 type SESBounce struct {
-	BounceType        string              `json:"bounceType"`
-	BounceSubType     string              `json:"bounceSubType"`
+	BounceType        string                `json:"bounceType"`
+	BounceSubType     string                `json:"bounceSubType"`
 	BouncedRecipients []SESBouncedRecipient `json:"bouncedRecipients"`
-	Timestamp         string              `json:"timestamp"`
-	FeedbackId        string              `json:"feedbackId"`
+	Timestamp         string                `json:"timestamp"`
+	FeedbackId        string                `json:"feedbackId"`
 }
 
 // SESBouncedRecipient contains bounced recipient info
@@ -1245,10 +1270,10 @@ type SESBouncedRecipient struct {
 
 // SESComplaint contains complaint information
 type SESComplaint struct {
-	ComplainedRecipients []SESComplainedRecipient `json:"complainedRecipients"`
-	Timestamp            string                   `json:"timestamp"`
-	FeedbackId           string                   `json:"feedbackId"`
-	ComplaintFeedbackType string                  `json:"complaintFeedbackType,omitempty"`
+	ComplainedRecipients  []SESComplainedRecipient `json:"complainedRecipients"`
+	Timestamp             string                   `json:"timestamp"`
+	FeedbackId            string                   `json:"feedbackId"`
+	ComplaintFeedbackType string                   `json:"complaintFeedbackType,omitempty"`
 }
 
 // SESComplainedRecipient contains complained recipient info

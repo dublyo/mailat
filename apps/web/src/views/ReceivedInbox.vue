@@ -1,816 +1,242 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import DOMPurify from 'dompurify'
-import {
-  Archive, Trash2, Mail, MailOpen, MoreVertical, RefreshCw,
-  ChevronLeft, ChevronRight, Star, Filter, Search, X,
-  Reply, ReplyAll, Forward, Printer, MoreHorizontal, ArrowLeft,
-  Clock, Tag, FolderOpen, ChevronDown, Users
-} from 'lucide-vue-next'
+import { Archive, Trash2, Mail, MailOpen, RefreshCw, ChevronLeft, ChevronRight, Star, Filter, X, Reply, ReplyAll, Forward, ArrowLeft, Inbox, AlertTriangle, Paperclip, Send, FileText } from 'lucide-vue-next'
 import AppLayout from '@/components/layout/AppLayout.vue'
-import Spinner from '@/components/common/Spinner.vue'
 import { useReceivedInboxStore } from '@/stores/receivedInbox'
 import { useInboxStore } from '@/stores/inbox'
-import { useAuthStore } from '@/stores/auth'
 import { useDomainsStore } from '@/stores/domains'
-import type { ReceivedEmail, Email, Identity } from '@/lib/api'
-
-// Sanitize email HTML content to prevent XSS attacks
-const sanitizedEmailHtml = computed(() => {
-  if (!receivedInboxStore.currentEmail?.htmlBody) return ''
-  return DOMPurify.sanitize(receivedInboxStore.currentEmail.htmlBody, {
-    ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'u', 'a', 'strong', 'em', 'ul', 'ol', 'li',
-                   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'code',
-                   'img', 'table', 'tr', 'td', 'th', 'thead', 'tbody', 'div', 'span',
-                   'hr', 'sup', 'sub', 'small', 'font', 'center'],
-    ALLOWED_ATTR: ['href', 'src', 'alt', 'style', 'class', 'target', 'width', 'height',
-                   'border', 'cellpadding', 'cellspacing', 'align', 'valign', 'bgcolor',
-                   'color', 'size', 'face'],
-    ALLOW_DATA_ATTR: false,
-    ADD_ATTR: ['target'],
-    FORCE_BODY: true
-  })
-})
+import { api, type ReceivedEmail, type Email, type InboxListOptions, type ReceivedEmailAttachment } from '@/lib/api'
+import { escapeHtml } from '@/lib/compose'
 
 const route = useRoute()
 const router = useRouter()
-const receivedInboxStore = useReceivedInboxStore()
-const inboxStore = useInboxStore()
-const authStore = useAuthStore()
-const domainsStore = useDomainsStore()
-
-// Helper to convert ReceivedEmail to Email format for ComposeModal
-function convertToEmail(received: ReceivedEmail): Email {
-  return {
-    id: String(received.id),
-    uuid: received.uuid,
-    messageId: received.messageId,
-    subject: received.subject,
-    from: {
-      name: received.fromName || '',
-      email: received.fromEmail
-    },
-    to: (received.toEmails || []).map(email => ({ name: '', email })),
-    cc: (received.ccEmails || []).map(email => ({ name: '', email })),
-    body: received.textBody || '',
-    htmlBody: received.htmlBody,
-    snippet: received.snippet || '',
-    folder: received.folder,
-    isRead: received.isRead,
-    isStarred: received.isStarred,
-    hasAttachments: received.hasAttachments,
-    receivedAt: received.receivedAt,
-    createdAt: received.createdAt,
-    // Include identityId so reply knows which identity to use
-    identityId: received.identityId
-  }
-}
-
-const searchInput = ref('')
+const mailbox = useReceivedInboxStore()
+const composer = useInboxStore()
+const domains = useDomainsStore()
 const showFilters = ref(false)
-const selectedEmail = ref<ReceivedEmail | null>(null)
-const showMoreActions = ref(false)
-const showIdentityDropdown = ref(false)
-
-// Get current identity ID (0 = all identities / unified inbox)
-const currentIdentityId = ref<number>(0)
-
-// Available identities for filter dropdown
-const identities = computed(() => domainsStore.identities || [])
-
-const currentFolder = computed(() => {
-  return (route.query.folder as string) || 'inbox'
-})
-
-// Current email index for navigation
-const currentEmailIndex = computed(() => {
-  if (!selectedEmail.value) return -1
-  return receivedInboxStore.emails?.findIndex(e => e.uuid === selectedEmail.value?.uuid) ?? -1
-})
-
-const hasPreviousEmail = computed(() => currentEmailIndex.value > 0)
-const hasNextEmail = computed(() => currentEmailIndex.value < (receivedInboxStore.emails?.length ?? 0) - 1)
-
-onMounted(async () => {
-  receivedInboxStore.connectSSE()
-
-  // Fetch identities for the filter dropdown
-  await domainsStore.fetchIdentities()
-
-  // Check if specific identity requested via query param
-  const identityId = route.query.identity ? Number(route.query.identity) : 0
-  currentIdentityId.value = identityId  // 0 = all identities (unified inbox)
-
-  // Load emails (will fetch all if identityId is 0)
-  await loadEmails()
-})
-
-onUnmounted(() => {
-  receivedInboxStore.disconnectSSE()
-})
-
-watch(() => route.query.folder, async () => {
-  await loadEmails()
-})
-
-watch(() => route.query.identity, async (newId) => {
-  if (newId) {
-    currentIdentityId.value = Number(newId)
-    await loadEmails()
+const selectedUuid = ref('')
+const inlineUrls = ref<Record<string, string>>({})
+const downloading = ref('')
+let inlineSequence = 0
+const filterForm = ref({ identity: '', domain: '', read: '', starred: '', attachments: '', sender: '', after: '', before: '' })
+const folder = computed(() => String(route.query.folder || route.params.folder || 'inbox'))
+const identityId = computed(() => Number(route.query.identity) || 0)
+const current = computed(() => mailbox.currentEmail)
+const selectedIndex = computed(() => mailbox.emails.findIndex(e => e.uuid === selectedUuid.value))
+const actionIds = computed(() => selectedUuid.value ? [selectedUuid.value] : mailbox.selectedEmailUuids)
+const allActionStarred = computed(() => actionIds.value.length > 0 && actionIds.value.every(id => (current.value?.uuid === id ? current.value : mailbox.emails.find(e => e.uuid === id))?.isStarred))
+const queryOptions = computed<InboxListOptions>(() => ({
+  folder: folder.value, domainId: Number(route.query.domain) || undefined,
+  search: String(route.query.q || ''), sender: String(route.query.sender || ''),
+  isRead: route.query.read === 'read' ? true : route.query.read === 'unread' ? false : undefined,
+  isStarred: route.query.starred === 'true' ? true : undefined,
+  hasAttachments: route.query.attachments === 'true' ? true : route.query.attachments === 'false' ? false : undefined,
+  dateFrom: String(route.query.after || ''), dateTo: String(route.query.before || ''),
+  page: Number(route.query.page) || 1,
+}))
+const chips = computed(() => Object.entries(route.query).filter(([key, value]) => ['q', 'identity', 'domain', 'read', 'starred', 'attachments', 'sender', 'after', 'before'].includes(key) && value).map(([key, value]) => ({ key, label: key === 'identity' ? domains.identities.find(i => String(i.id) === value)?.email || String(value) : key === 'domain' ? domains.domains.find(d => String(d.id) === value)?.name || String(value) : key === 'q' ? `Search: ${value}` : key === 'starred' ? 'Starred' : key === 'attachments' ? (value === 'true' ? 'With attachments' : 'Without attachments') : `${key}: ${value}` })))
+const range = computed(() => mailbox.total ? `${(mailbox.page - 1) * mailbox.pageSize + 1}–${Math.min(mailbox.page * mailbox.pageSize, mailbox.total)} of ${mailbox.total}` : '0 messages')
+const sanitizedHtml = computed(() => {
+  if (!current.value?.htmlBody) return ''
+  let html = current.value.htmlBody
+  for (const attachment of current.value.attachments || []) {
+    if (attachment.contentId && inlineUrls.value[attachment.uuid]) html = html.split(`cid:${attachment.contentId.replace(/[<>]/g, '')}`).join(escapeHtml(inlineUrls.value[attachment.uuid]))
   }
+  const safe = DOMPurify.sanitize(html, { FORBID_TAGS: ['style', 'form', 'input', 'button'], FORBID_ATTR: ['srcset'], ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|cid|blob):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i })
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank"><style>body{font:14px/1.6 system-ui;color:#1f2937;margin:12px;overflow-wrap:anywhere}img,table{max-width:100%}img{height:auto}pre{white-space:pre-wrap}a{color:#2563eb}</style></head><body>${safe}</body></html>`
 })
-
-async function loadEmails() {
-  // currentIdentityId = 0 means all identities (unified inbox)
-  await receivedInboxStore.fetchEmails(currentIdentityId.value, {
-    folder: currentFolder.value,
-    reset: true
-  })
-  await receivedInboxStore.fetchCounts(currentIdentityId.value)
-}
-
-// Handle identity filter change
-async function changeIdentityFilter(identityId: number) {
-  currentIdentityId.value = identityId
-  showIdentityDropdown.value = false
-  selectedEmail.value = null
-  receivedInboxStore.currentEmail = null
-
-  // Update URL query param
-  const query = { ...route.query }
-  if (identityId > 0) {
-    query.identity = String(identityId)
-  } else {
-    delete query.identity
-  }
-  router.replace({ query })
-
-  await loadEmails()
-}
-
-// Get identity by ID
-function getIdentityById(id: number): Identity | undefined {
-  return identities.value.find(i => Number(i.id) === id)
-}
-
-// Get display name for current filter
-const currentFilterLabel = computed(() => {
-  if (currentIdentityId.value === 0) {
-    return 'All Identities'
-  }
-  const identity = getIdentityById(currentIdentityId.value)
-  return identity?.email || 'Unknown'
+watch(() => current.value?.uuid, async () => {
+  const sequence = ++inlineSequence
+  Object.values(inlineUrls.value).forEach(URL.revokeObjectURL)
+  inlineUrls.value = {}
+  await Promise.all((current.value?.attachments || []).filter(a => a.isInline && a.contentId && a.downloadUrl).map(async attachment => {
+    try {
+      const blob = await api.download(attachment.downloadUrl!)
+      if (sequence === inlineSequence) inlineUrls.value[attachment.uuid] = URL.createObjectURL(blob)
+    } catch { /* The attachment remains available for an explicit retry/download. */ }
+  }))
 })
-
-async function selectEmail(email: ReceivedEmail) {
-  selectedEmail.value = email
-  await receivedInboxStore.fetchEmail(email.uuid)
-  if (!email.isRead) {
-    receivedInboxStore.markAsRead([email.uuid], true)
-  }
+async function downloadAttachment(attachment: ReceivedEmailAttachment) {
+  if (!attachment.downloadUrl) { mailbox.error = 'Attachment is not available for download.'; return }
+  downloading.value = attachment.uuid
+  try {
+    const blob = await api.download(attachment.downloadUrl)
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url; anchor.download = attachment.filename; anchor.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (e) { mailbox.error = e instanceof Error ? e.message : 'Attachment download failed.' }
+  finally { downloading.value = '' }
 }
+let pollTimer: ReturnType<typeof setInterval> | undefined
 
-function closeEmail() {
-  selectedEmail.value = null
-  receivedInboxStore.currentEmail = null
+async function load(force = false) {
+  await Promise.all([mailbox.fetchEmails(identityId.value, { ...queryOptions.value, force }), mailbox.fetchCounts(identityId.value, force)])
 }
-
-// Navigation functions
-async function goToPreviousEmail() {
-  if (hasPreviousEmail.value) {
-    const prevEmail = receivedInboxStore.emails[currentEmailIndex.value - 1]
-    await selectEmail(prevEmail)
-  }
-}
-
-async function goToNextEmail() {
-  if (hasNextEmail.value) {
-    const nextEmail = receivedInboxStore.emails[currentEmailIndex.value + 1]
-    await selectEmail(nextEmail)
-  }
-}
-
-// Email actions
-function handleReply() {
-  if (!receivedInboxStore.currentEmail) return
-  const email = convertToEmail(receivedInboxStore.currentEmail)
-  inboxStore.openCompose('reply', email)
-}
-
-function handleReplyAll() {
-  if (!receivedInboxStore.currentEmail) return
-  const email = convertToEmail(receivedInboxStore.currentEmail)
-  inboxStore.openCompose('replyAll', email)
-}
-
-function handleForward() {
-  if (!receivedInboxStore.currentEmail) return
-  const email = convertToEmail(receivedInboxStore.currentEmail)
-  inboxStore.openCompose('forward', email)
-}
-
-async function handleArchiveEmail() {
-  if (!selectedEmail.value) return
-  await receivedInboxStore.moveEmails([selectedEmail.value.uuid], 'archive')
-  goToNextEmail() || closeEmail()
-}
-
-async function handleDeleteEmail() {
-  if (!selectedEmail.value) return
-  const permanent = currentFolder.value === 'trash'
-  await receivedInboxStore.trashEmails([selectedEmail.value.uuid], permanent)
-  if (hasNextEmail.value) {
-    goToNextEmail()
-  } else if (hasPreviousEmail.value) {
-    goToPreviousEmail()
-  } else {
-    closeEmail()
-  }
-}
-
-async function handleMarkEmailUnread() {
-  if (!selectedEmail.value) return
-  await receivedInboxStore.markAsRead([selectedEmail.value.uuid], false)
+watch(() => route.fullPath, () => {
   closeEmail()
-}
+  mailbox.clearSelection()
+  for (const key of Object.keys(filterForm.value) as (keyof typeof filterForm.value)[]) filterForm.value[key] = String(route.query[key] || '')
+  void load()
+}, { immediate: true })
+onMounted(() => {
+  void Promise.all([domains.fetchIdentities(), domains.fetchDomains()])
+  mailbox.connectSSE()
+  pollTimer = setInterval(() => { if (!document.hidden && !mailbox.sseConnected) void load(true) }, 60000)
+})
+onUnmounted(() => { ++inlineSequence; Object.values(inlineUrls.value).forEach(URL.revokeObjectURL); clearInterval(pollTimer); mailbox.disconnectSSE(); mailbox.closeEmail() })
 
-async function handleStarEmail() {
-  if (!receivedInboxStore.currentEmail) return
-  await receivedInboxStore.starEmails([receivedInboxStore.currentEmail.uuid], !receivedInboxStore.currentEmail.isStarred)
+function updateQuery(values: Record<string, string | undefined>) {
+  const query = { ...route.query, ...values, page: undefined }
+  for (const key of Object.keys(query)) if (query[key as keyof typeof query] === '') delete query[key as keyof typeof query]
+  void router.replace({ path: '/received', query })
 }
-
-async function handleSnooze() {
-  // TODO: Implement snooze functionality
-  alert('Snooze feature coming soon!')
+function clearFilters() { void router.replace({ path: '/received', query: folder.value === 'inbox' ? {} : { folder: folder.value } }) }
+function applyFilters() { updateQuery(filterForm.value); showFilters.value = false }
+function closeEmail() { selectedUuid.value = ''; mailbox.closeEmail() }
+function convert(email: ReceivedEmail): Email {
+  return { id: String(email.id), uuid: email.uuid, messageId: email.messageId, subject: email.subject,
+    from: { name: email.fromName, email: email.fromEmail }, to: (email.toEmails || []).map(email => ({ email })),
+    cc: (email.ccEmails || []).map(email => ({ email })), bcc: (email.bccEmails || []).map(email => ({ email })),
+    body: email.textBody || '', htmlBody: email.htmlBody, snippet: email.snippet || '', folder: email.folder,
+    isRead: email.isRead, isStarred: email.isStarred, hasAttachments: email.hasAttachments,
+    receivedAt: email.receivedAt, createdAt: email.createdAt, identityId: email.identityId,
+    replyToAddress: email.replyTo, inReplyTo: email.inReplyTo, references: email.references, envelopeRecipients: email.envelopeRecipients,
+    draftVersion: email.draftVersion ?? email.version, sourceAttachments: email.attachments }
 }
-
-function handlePrint() {
-  window.print()
-}
-
-// List toolbar actions
-async function handleSearch() {
-  if (!currentIdentityId.value) return
-  await receivedInboxStore.fetchEmails(currentIdentityId.value, {
-    search: searchInput.value,
-    reset: true
-  })
-}
-
-function clearSearch() {
-  searchInput.value = ''
-  loadEmails()
-}
-
-async function handleMarkRead() {
-  if (!receivedInboxStore.selectedEmailUuids?.length) return
-  await receivedInboxStore.markAsRead(receivedInboxStore.selectedEmailUuids, true)
-  receivedInboxStore.clearSelection()
-}
-
-async function handleMarkUnread() {
-  if (!receivedInboxStore.selectedEmailUuids?.length) return
-  await receivedInboxStore.markAsRead(receivedInboxStore.selectedEmailUuids, false)
-  receivedInboxStore.clearSelection()
-}
-
-async function handleStar() {
-  if (!receivedInboxStore.selectedEmailUuids?.length) return
-  await receivedInboxStore.starEmails(receivedInboxStore.selectedEmailUuids, true)
-  receivedInboxStore.clearSelection()
-}
-
-async function handleArchive() {
-  if (!receivedInboxStore.selectedEmailUuids?.length) return
-  await receivedInboxStore.moveEmails(receivedInboxStore.selectedEmailUuids, 'archive')
-  receivedInboxStore.clearSelection()
-}
-
-async function handleDelete() {
-  if (!receivedInboxStore.selectedEmailUuids?.length) return
-  const permanent = currentFolder.value === 'trash'
-  await receivedInboxStore.trashEmails(receivedInboxStore.selectedEmailUuids, permanent)
-  receivedInboxStore.clearSelection()
-}
-
-async function toggleEmailStar(email: ReceivedEmail) {
-  await receivedInboxStore.starEmails([email.uuid], !email.isStarred)
-}
-
-function prevPage() {
-  if (receivedInboxStore.page > 1) {
-    receivedInboxStore.fetchEmails(currentIdentityId.value, {
-      page: receivedInboxStore.page - 1
-    })
+async function openEmail(email: ReceivedEmail) {
+  selectedUuid.value = email.uuid
+  const detail = await mailbox.fetchEmail(email.uuid)
+  if (!detail || selectedUuid.value !== email.uuid) return
+  if (detail.folder === 'drafts') {
+    if (composer.isComposeOpen) { mailbox.notice = 'Close or save your current composition before opening another draft.'; return }
+    composer.openCompose('draft', convert(detail))
+  } else if (!detail.isRead) {
+    try { await mailbox.markAsRead([detail.uuid], true) } catch { /* Store exposes the error without hiding the message. */ }
   }
 }
-
-function nextPage() {
-  if (receivedInboxStore.hasMore) {
-    receivedInboxStore.fetchEmails(currentIdentityId.value, {
-      page: receivedInboxStore.page + 1
-    })
-  }
+function compose(mode: 'reply' | 'replyAll' | 'forward' | 'draft') {
+  if (!current.value) return
+  if (composer.isComposeOpen) { mailbox.notice = 'Close or save your current composition first.'; return }
+  composer.openCompose(mode, convert(current.value))
 }
-
-function formatDate(dateStr: string): string {
-  const date = new Date(dateStr)
-  const now = new Date()
-  const isToday = date.toDateString() === now.toDateString()
-
-  if (isToday) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  }
-
-  const isThisYear = date.getFullYear() === now.getFullYear()
-  if (isThisYear) {
-    return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
-  }
-
-  return date.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })
+async function perform(action: 'read' | 'unread' | 'star' | 'unstar' | 'archive' | 'spam' | 'restore' | 'trash') {
+  const ids = [...actionIds.value]
+  if (!ids.length || mailbox.isMutating) return
+  const permanent = action === 'trash' && folder.value === 'trash'
+  if (permanent && !confirm(`Permanently delete ${ids.length} message${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return
+  const index = selectedIndex.value
+  const next = mailbox.emails[index + 1] || mailbox.emails[index - 1]
+  try {
+    if (action === 'read' || action === 'unread') await mailbox.markAsRead(ids, action === 'read')
+    else if (action === 'star' || action === 'unstar') await mailbox.starEmails(ids, action === 'star')
+    else if (action === 'trash') await mailbox.trashEmails(ids, permanent)
+    else await mailbox.moveEmails(ids, action === 'restore' ? 'inbox' : action)
+    mailbox.clearSelection()
+    if (mailbox.page !== (Number(route.query.page) || 1)) void router.replace({ query: { ...route.query, page: String(mailbox.page) } })
+    if (['archive', 'spam', 'restore', 'trash'].includes(action)) {
+      if (selectedUuid.value && next && mailbox.emails.some(e => e.uuid === next.uuid)) await openEmail(next)
+      else closeEmail()
+      mailbox.notice = permanent ? 'Messages permanently deleted.' : action === 'restore' ? 'Messages restored to Inbox.' : `Messages moved to ${action === 'trash' ? 'Trash' : action}.`
+    } else if (action === 'unread') closeEmail()
+  } catch { /* Keep selection so a failed operation is easy to retry. */ }
 }
-
-function formatFullDate(dateStr: string): string {
-  const date = new Date(dateStr)
-  return date.toLocaleDateString([], {
-    weekday: 'short',
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
+async function toggleStar(email: ReceivedEmail) { try { await mailbox.starEmails([email.uuid], !email.isStarred) } catch {} }
+function navigate(direction: number) {
+  if (selectedUuid.value) {
+    const email = mailbox.emails[selectedIndex.value + direction]
+    if (email) void openEmail(email)
+  } else void router.replace({ query: { ...route.query, page: String(mailbox.page + direction) } })
+}
+function formatDate(value: string, full = false) {
+  return new Intl.DateTimeFormat(undefined, full ? { dateStyle: 'medium', timeStyle: 'short' } : { month: 'short', day: 'numeric' }).format(new Date(value))
 }
 </script>
 
 <template>
   <AppLayout>
-    <div class="flex h-full bg-gray-50">
-      <!-- Main content -->
-      <div class="flex-1 flex flex-col">
-        <!-- Toolbar -->
-        <div class="flex items-center gap-2 px-4 py-2 border-b border-gray-200 bg-white shadow-sm">
-          <!-- Back button when email is selected -->
-          <button
-            v-if="selectedEmail"
-            @click="closeEmail"
-            class="p-2 hover:bg-gray-100 rounded-full mr-2"
-            title="Back to inbox"
-          >
-            <ArrowLeft class="w-5 h-5 text-gray-600" />
-          </button>
-
-          <!-- Select all (only when no email selected) -->
-          <div v-if="!selectedEmail" class="flex items-center gap-1">
-            <input
-              type="checkbox"
-              :checked="receivedInboxStore.allSelected"
-              :indeterminate="receivedInboxStore.someSelected"
-              @change="receivedInboxStore.selectAll()"
-              class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-          </div>
-
-          <!-- Actions when emails selected in list -->
-          <template v-if="!selectedEmail && receivedInboxStore.selectedEmailUuids?.length > 0">
-            <button @click="handleArchive" class="p-2 hover:bg-gray-100 rounded-full" title="Archive">
-              <Archive class="w-5 h-5 text-gray-600" />
-            </button>
-            <button @click="handleDelete" class="p-2 hover:bg-gray-100 rounded-full" title="Delete">
-              <Trash2 class="w-5 h-5 text-gray-600" />
-            </button>
-            <button @click="handleMarkRead" class="p-2 hover:bg-gray-100 rounded-full" title="Mark as read">
-              <MailOpen class="w-5 h-5 text-gray-600" />
-            </button>
-            <button @click="handleMarkUnread" class="p-2 hover:bg-gray-100 rounded-full" title="Mark as unread">
-              <Mail class="w-5 h-5 text-gray-600" />
-            </button>
-            <button @click="handleStar" class="p-2 hover:bg-gray-100 rounded-full" title="Star">
-              <Star class="w-5 h-5 text-gray-600" />
-            </button>
-          </template>
-
-          <!-- Email view actions -->
-          <template v-else-if="selectedEmail && receivedInboxStore.currentEmail">
-            <button @click="handleArchiveEmail" class="p-2 hover:bg-gray-100 rounded-full" title="Archive">
-              <Archive class="w-5 h-5 text-gray-600" />
-            </button>
-            <button @click="handleDeleteEmail" class="p-2 hover:bg-gray-100 rounded-full" title="Delete">
-              <Trash2 class="w-5 h-5 text-gray-600" />
-            </button>
-            <button @click="handleMarkEmailUnread" class="p-2 hover:bg-gray-100 rounded-full" title="Mark as unread">
-              <Mail class="w-5 h-5 text-gray-600" />
-            </button>
-            <button @click="handleSnooze" class="p-2 hover:bg-gray-100 rounded-full" title="Snooze">
-              <Clock class="w-5 h-5 text-gray-600" />
-            </button>
-            <div class="w-px h-6 bg-gray-300 mx-1"></div>
-            <button @click="handleStarEmail" class="p-2 hover:bg-gray-100 rounded-full" title="Star">
-              <Star :class="['w-5 h-5', receivedInboxStore.currentEmail.isStarred ? 'fill-yellow-400 text-yellow-400' : 'text-gray-600']" />
-            </button>
-          </template>
-
-          <!-- Default actions (refresh) -->
-          <template v-else>
-            <button @click="loadEmails" class="p-2 hover:bg-gray-100 rounded-full" title="Refresh">
-              <RefreshCw class="w-5 h-5 text-gray-600" />
-            </button>
-          </template>
-
-          <!-- Identity Filter Dropdown -->
-          <div class="relative" v-if="!selectedEmail">
-            <button
-              @click="showIdentityDropdown = !showIdentityDropdown"
-              class="flex items-center gap-2 px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 bg-white min-w-[180px]"
-            >
-              <Users class="w-4 h-4 text-gray-500" />
-              <span
-                v-if="currentIdentityId > 0 && getIdentityById(currentIdentityId)?.color"
-                class="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                :style="{ backgroundColor: getIdentityById(currentIdentityId)?.color }"
-              ></span>
-              <span class="truncate flex-1 text-left">{{ currentFilterLabel }}</span>
-              <ChevronDown class="w-4 h-4 text-gray-400 flex-shrink-0" />
-            </button>
-            <!-- Dropdown -->
-            <div
-              v-if="showIdentityDropdown"
-              class="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg z-20"
-            >
-              <!-- All Identities option -->
-              <button
-                @click="changeIdentityFilter(0)"
-                :class="[
-                  'w-full px-3 py-2.5 text-left text-sm flex items-center gap-2 hover:bg-gray-50',
-                  currentIdentityId === 0 ? 'bg-blue-50 text-blue-700' : ''
-                ]"
-              >
-                <Users class="w-4 h-4 text-gray-400" />
-                <span class="font-medium">All Identities</span>
-                <span class="ml-auto text-xs text-gray-500">Unified inbox</span>
-              </button>
-              <div class="border-t border-gray-100"></div>
-              <!-- Individual identities -->
-              <button
-                v-for="identity in identities"
-                :key="identity.id"
-                @click="changeIdentityFilter(Number(identity.id))"
-                :class="[
-                  'w-full px-3 py-2.5 text-left text-sm flex items-center gap-2 hover:bg-gray-50',
-                  currentIdentityId === Number(identity.id) ? 'bg-blue-50 text-blue-700' : ''
-                ]"
-              >
-                <span
-                  class="w-3 h-3 rounded-full flex-shrink-0"
-                  :style="{ backgroundColor: identity.color || '#9CA3AF' }"
-                ></span>
-                <div class="flex-1 min-w-0">
-                  <div class="font-medium truncate">{{ identity.displayName }}</div>
-                  <div class="text-xs text-gray-500 truncate">{{ identity.email }}</div>
-                </div>
-              </button>
-            </div>
-            <!-- Click outside to close -->
-            <div
-              v-if="showIdentityDropdown"
-              class="fixed inset-0 z-10"
-              @click="showIdentityDropdown = false"
-            ></div>
-          </div>
-
-          <!-- Search -->
-          <div class="flex-1 max-w-xl mx-4">
-            <div class="relative">
-              <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-              <input
-                v-model="searchInput"
-                @keyup.enter="handleSearch"
-                type="text"
-                placeholder="Search emails..."
-                class="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-full focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50 focus:bg-white transition-colors"
-              />
-              <button
-                v-if="searchInput"
-                @click="clearSearch"
-                class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-              >
-                <X class="w-5 h-5" />
-              </button>
-            </div>
-          </div>
-
-          <!-- Filters -->
-          <button
-            @click="showFilters = !showFilters"
-            :class="[
-              'p-2 rounded-full',
-              showFilters ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'
-            ]"
-            title="Filters"
-          >
-            <Filter class="w-5 h-5" />
-          </button>
-
-          <!-- Pagination / Navigation -->
-          <div class="flex items-center gap-1 text-sm text-gray-600">
-            <template v-if="selectedEmail">
-              <span class="px-2">
-                {{ currentEmailIndex + 1 }} of {{ receivedInboxStore.emails?.length ?? 0 }}
-              </span>
-            </template>
-            <template v-else>
-              <span class="px-2">
-                {{ (receivedInboxStore.page - 1) * receivedInboxStore.pageSize + 1 }}-{{ Math.min(receivedInboxStore.page * receivedInboxStore.pageSize, receivedInboxStore.total) }}
-                of {{ receivedInboxStore.total }}
-              </span>
-            </template>
-            <button
-              @click="selectedEmail ? goToPreviousEmail() : prevPage()"
-              :disabled="selectedEmail ? !hasPreviousEmail : receivedInboxStore.page === 1"
-              class="p-1.5 hover:bg-gray-100 rounded-full disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              <ChevronLeft class="w-5 h-5" />
-            </button>
-            <button
-              @click="selectedEmail ? goToNextEmail() : nextPage()"
-              :disabled="selectedEmail ? !hasNextEmail : !receivedInboxStore.hasMore"
-              class="p-1.5 hover:bg-gray-100 rounded-full disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              <ChevronRight class="w-5 h-5" />
-            </button>
-          </div>
+    <section class="flex-1 min-w-0 flex flex-col h-full bg-white" :aria-busy="mailbox.isLoading || mailbox.isMutating" aria-label="Email mailbox">
+      <div class="flex flex-wrap items-center gap-2 px-3 py-2 border-b bg-white">
+        <button v-if="selectedUuid" @click="closeEmail" class="mail-action" title="Back to message list"><ArrowLeft class="w-5 h-5" /></button>
+        <label v-else class="flex items-center gap-2 p-2 text-xs"><input type="checkbox" :checked="mailbox.allSelected" :indeterminate="mailbox.someSelected" @change="mailbox.selectAll" aria-label="Select all messages on this page" class="w-4 h-4" /><span v-if="mailbox.selectedEmailUuids.length">{{ mailbox.selectedEmailUuids.length }} selected</span></label>
+        <h1 v-if="!actionIds.length" class="text-base font-medium capitalize mr-1">{{ folder === 'all' ? 'All mail' : folder }}</h1>
+        <div v-if="actionIds.length" class="flex items-center gap-1 flex-wrap">
+          <button v-if="['archive', 'trash', 'spam'].includes(folder)" @click="perform('restore')" :disabled="mailbox.isMutating" class="mail-action" title="Restore to Inbox"><Inbox class="w-4 h-4" /></button>
+          <button v-else-if="!['drafts', 'outbox'].includes(folder)" @click="perform('archive')" :disabled="mailbox.isMutating" class="mail-action" title="Archive"><Archive class="w-4 h-4" /></button>
+          <button @click="perform('trash')" :disabled="mailbox.isMutating" class="mail-action" :title="folder === 'trash' ? 'Delete permanently' : 'Move to Trash'"><Trash2 class="w-4 h-4" /></button>
+          <button @click="perform('read')" :disabled="mailbox.isMutating" class="mail-action" title="Mark as read"><MailOpen class="w-4 h-4" /></button>
+          <button @click="perform('unread')" :disabled="mailbox.isMutating" class="mail-action" title="Mark as unread"><Mail class="w-4 h-4" /></button>
+          <button @click="perform(allActionStarred ? 'unstar' : 'star')" :disabled="mailbox.isMutating" class="mail-action" :title="allActionStarred ? 'Remove star' : 'Star'"><Star :class="['w-4 h-4', allActionStarred ? 'fill-yellow-400 text-yellow-500' : '']" /></button>
+          <button v-if="folder !== 'spam'" @click="perform('spam')" :disabled="mailbox.isMutating" class="mail-action" title="Move to Spam"><AlertTriangle class="w-4 h-4" /></button>
         </div>
-
-        <!-- Email list / view -->
-        <div class="flex-1 flex overflow-hidden">
-          <!-- Email list -->
-          <div
-            :class="[
-              'overflow-y-auto bg-white transition-all duration-200',
-              selectedEmail ? 'w-80 border-r border-gray-200 hidden lg:block' : 'flex-1'
-            ]"
-          >
-            <!-- Loading -->
-            <div v-if="receivedInboxStore.isLoading && !receivedInboxStore.emails?.length" class="flex items-center justify-center h-64">
-              <Spinner size="lg" />
-            </div>
-
-            <!-- Empty state -->
-            <div
-              v-else-if="!receivedInboxStore.emails?.length"
-              class="flex flex-col items-center justify-center h-full text-gray-500 py-16"
-            >
-              <div class="w-24 h-24 rounded-full bg-gray-100 flex items-center justify-center mb-6">
-                <Mail class="w-12 h-12 text-gray-400" />
-              </div>
-              <p class="text-xl font-medium text-gray-700">No emails in {{ currentFolder }}</p>
-              <p class="text-sm text-gray-500 mt-2">Emails sent to your identity will appear here</p>
-            </div>
-
-            <!-- Email rows -->
-            <ul v-else class="divide-y divide-gray-100">
-              <li
-                v-for="email in receivedInboxStore.emails"
-                :key="email.uuid"
-                @click="selectEmail(email)"
-                :class="[
-                  'flex items-center gap-3 px-3 py-3 cursor-pointer transition-all duration-100',
-                  email.isRead ? 'bg-white' : 'bg-blue-50/60',
-                  selectedEmail?.uuid === email.uuid ? 'bg-blue-100 border-l-4 border-l-blue-600' : 'hover:bg-gray-50 border-l-4 border-l-transparent',
-                  receivedInboxStore.selectedEmailUuids.includes(email.uuid) ? 'bg-blue-50' : ''
-                ]"
-              >
-                <!-- Checkbox (only show when no email selected) -->
-                <input
-                  v-if="!selectedEmail"
-                  type="checkbox"
-                  :checked="receivedInboxStore.selectedEmailUuids.includes(email.uuid)"
-                  @click.stop="receivedInboxStore.toggleSelect(email.uuid)"
-                  class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 flex-shrink-0"
-                />
-
-                <!-- Star -->
-                <button
-                  @click.stop="toggleEmailStar(email)"
-                  class="p-1 hover:bg-gray-200 rounded-full transition-colors flex-shrink-0"
-                >
-                  <Star
-                    :class="[
-                      'w-4 h-4 transition-colors',
-                      email.isStarred ? 'fill-yellow-400 text-yellow-400' : 'text-gray-300 hover:text-gray-400'
-                    ]"
-                  />
-                </button>
-
-                <!-- Identity color dot (shows which identity received this email) -->
-                <span
-                  v-if="email.identityColor || currentIdentityId === 0"
-                  class="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                  :style="{ backgroundColor: email.identityColor || '#9CA3AF' }"
-                  :title="email.identityEmail || 'Unknown identity'"
-                ></span>
-
-                <!-- Avatar -->
-                <div
-                  :class="[
-                    'w-9 h-9 rounded-full flex items-center justify-center text-white font-medium text-sm flex-shrink-0',
-                    email.isRead ? 'bg-gray-400' : 'bg-blue-600'
-                  ]"
-                >
-                  {{ (email.fromName || email.fromEmail).charAt(0).toUpperCase() }}
-                </div>
-
-                <!-- Content -->
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-center justify-between gap-2">
-                    <span
-                      :class="[
-                        'truncate text-sm',
-                        email.isRead ? 'font-normal text-gray-600' : 'font-semibold text-gray-900'
-                      ]"
-                    >
-                      {{ email.fromName || email.fromEmail }}
-                    </span>
-                    <span
-                      :class="[
-                        'text-xs whitespace-nowrap flex-shrink-0',
-                        email.isRead ? 'text-gray-500' : 'text-blue-600 font-medium'
-                      ]"
-                    >
-                      {{ formatDate(email.receivedAt) }}
-                    </span>
-                  </div>
-                  <div class="flex items-center gap-1">
-                    <span
-                      :class="[
-                        'text-sm truncate',
-                        email.isRead ? 'text-gray-600' : 'font-medium text-gray-900'
-                      ]"
-                    >
-                      {{ email.subject || '(no subject)' }}
-                    </span>
-                    <span v-if="email.hasAttachments" class="text-gray-400 flex-shrink-0">
-                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                      </svg>
-                    </span>
-                  </div>
-                  <div class="text-xs text-gray-500 truncate mt-0.5">
-                    {{ email.snippet }}
-                  </div>
-                </div>
-              </li>
-            </ul>
-          </div>
-
-          <!-- Email view -->
-          <div v-if="selectedEmail" class="flex-1 flex flex-col overflow-hidden bg-white">
-            <!-- Loading state -->
-            <div v-if="receivedInboxStore.isLoading && !receivedInboxStore.currentEmail" class="flex-1 flex items-center justify-center">
-              <Spinner size="lg" />
-            </div>
-
-            <template v-else-if="receivedInboxStore.currentEmail">
-              <!-- Email header -->
-              <div class="px-6 py-4 border-b border-gray-200">
-                <!-- Subject -->
-                <h1 class="text-xl font-normal text-gray-900 mb-4">
-                  {{ receivedInboxStore.currentEmail.subject || '(no subject)' }}
-                </h1>
-
-                <!-- Sender info -->
-                <div class="flex items-start gap-4">
-                  <div class="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-semibold flex-shrink-0">
-                    {{ (receivedInboxStore.currentEmail.fromName || receivedInboxStore.currentEmail.fromEmail).charAt(0).toUpperCase() }}
-                  </div>
-
-                  <div class="flex-1 min-w-0">
-                    <div class="flex items-center gap-2 flex-wrap">
-                      <span class="font-semibold text-gray-900">
-                        {{ receivedInboxStore.currentEmail.fromName || receivedInboxStore.currentEmail.fromEmail }}
-                      </span>
-                      <span class="text-sm text-gray-500">
-                        &lt;{{ receivedInboxStore.currentEmail.fromEmail }}&gt;
-                      </span>
-                    </div>
-                    <div class="text-sm text-gray-500 mt-0.5">
-                      to {{ receivedInboxStore.currentEmail.toEmails?.join(', ') }}
-                      <span v-if="receivedInboxStore.currentEmail.ccEmails?.length">
-                        , cc: {{ receivedInboxStore.currentEmail.ccEmails.join(', ') }}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div class="flex items-center gap-2 flex-shrink-0">
-                    <span class="text-sm text-gray-500">
-                      {{ formatFullDate(receivedInboxStore.currentEmail.receivedAt) }}
-                    </span>
-                    <button @click="handleStarEmail" class="p-1.5 hover:bg-gray-100 rounded-full">
-                      <Star :class="['w-5 h-5', receivedInboxStore.currentEmail.isStarred ? 'fill-yellow-400 text-yellow-400' : 'text-gray-400']" />
-                    </button>
-                    <button @click="handleReply" class="p-1.5 hover:bg-gray-100 rounded-full" title="Reply">
-                      <Reply class="w-5 h-5 text-gray-500" />
-                    </button>
-                    <div class="relative">
-                      <button @click="showMoreActions = !showMoreActions" class="p-1.5 hover:bg-gray-100 rounded-full">
-                        <MoreVertical class="w-5 h-5 text-gray-500" />
-                      </button>
-                      <!-- Dropdown -->
-                      <div
-                        v-if="showMoreActions"
-                        class="absolute right-0 top-full mt-1 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10"
-                        @click="showMoreActions = false"
-                      >
-                        <button @click="handleReplyAll" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 flex items-center gap-3">
-                          <ReplyAll class="w-4 h-4 text-gray-500" />
-                          Reply all
-                        </button>
-                        <button @click="handleForward" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 flex items-center gap-3">
-                          <Forward class="w-4 h-4 text-gray-500" />
-                          Forward
-                        </button>
-                        <hr class="my-1 border-gray-200" />
-                        <button @click="handlePrint" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 flex items-center gap-3">
-                          <Printer class="w-4 h-4 text-gray-500" />
-                          Print
-                        </button>
-                        <button @click="handleDeleteEmail" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 flex items-center gap-3 text-red-600">
-                          <Trash2 class="w-4 h-4" />
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Email body -->
-              <div class="flex-1 overflow-y-auto">
-                <div class="px-6 py-4 max-w-4xl">
-                  <div
-                    v-if="sanitizedEmailHtml"
-                    v-html="sanitizedEmailHtml"
-                    class="prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-a:text-blue-600"
-                  ></div>
-                  <div
-                    v-else-if="receivedInboxStore.currentEmail.textBody"
-                    class="whitespace-pre-wrap font-sans text-gray-800 leading-relaxed text-sm"
-                  >{{ receivedInboxStore.currentEmail.textBody }}</div>
-                  <div v-else class="text-gray-500 italic">
-                    No message content available
-                  </div>
-                </div>
-
-                <!-- Attachments -->
-                <div
-                  v-if="receivedInboxStore.currentEmail.attachments?.length"
-                  class="px-6 py-4 border-t border-gray-100"
-                >
-                  <h3 class="text-sm font-medium text-gray-700 mb-3">
-                    {{ receivedInboxStore.currentEmail.attachments?.length }} Attachment{{ receivedInboxStore.currentEmail.attachments?.length > 1 ? 's' : '' }}
-                  </h3>
-                  <div class="flex flex-wrap gap-2">
-                    <a
-                      v-for="att in receivedInboxStore.currentEmail.attachments"
-                      :key="att.uuid"
-                      :href="att.downloadUrl"
-                      target="_blank"
-                      class="flex items-center gap-2 px-3 py-2 bg-gray-100 border border-gray-200 rounded-lg hover:bg-gray-200 transition-colors text-sm"
-                    >
-                      <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                      </svg>
-                      <span class="font-medium">{{ att.filename }}</span>
-                      <span class="text-gray-500">({{ Math.round(att.sizeBytes / 1024) }} KB)</span>
-                    </a>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Reply box -->
-              <div class="px-6 py-4 border-t border-gray-200 bg-gray-50">
-                <div class="flex gap-2">
-                  <button
-                    @click="handleReply"
-                    class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-full hover:bg-gray-50 transition-colors text-sm font-medium"
-                  >
-                    <Reply class="w-4 h-4" />
-                    Reply
-                  </button>
-                  <button
-                    @click="handleForward"
-                    class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-full hover:bg-gray-50 transition-colors text-sm font-medium"
-                  >
-                    <Forward class="w-4 h-4" />
-                    Forward
-                  </button>
-                </div>
-              </div>
-            </template>
-          </div>
-        </div>
+        <button v-else @click="load(true)" :disabled="mailbox.isLoading" class="mail-action" title="Refresh messages"><RefreshCw :class="['w-4 h-4', mailbox.isLoading ? 'animate-spin' : '']" /></button>
+        <div class="flex-1" />
+        <button v-if="!selectedUuid" @click="showFilters = !showFilters" :aria-expanded="showFilters" aria-controls="mail-filters" class="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm hover:bg-gray-50"><Filter class="w-4 h-4" />Filters<span v-if="chips.length" class="rounded-full bg-blue-100 text-blue-700 px-1.5 text-xs">{{ chips.length }}</span></button>
+        <div class="flex items-center text-xs text-gray-500 gap-1"><span class="hidden sm:inline mr-1">{{ selectedUuid ? `${selectedIndex + 1} of ${mailbox.emails.length}` : range }}</span><button @click="navigate(-1)" :disabled="selectedUuid ? selectedIndex <= 0 : mailbox.page <= 1" class="mail-action" aria-label="Previous"><ChevronLeft class="w-4 h-4" /></button><button @click="navigate(1)" :disabled="selectedUuid ? selectedIndex >= mailbox.emails.length - 1 : !mailbox.hasMore" class="mail-action" aria-label="Next"><ChevronRight class="w-4 h-4" /></button></div>
       </div>
-    </div>
+      <form v-if="showFilters && !selectedUuid" id="mail-filters" @submit.prevent="applyFilters" class="p-4 border-b bg-gray-50 grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+        <label>Identity<select v-model="filterForm.identity" class="mail-filter"><option value="">All identities</option><option v-for="identity in domains.identities" :key="identity.id" :value="String(identity.id)">{{ identity.email }}</option></select></label>
+        <label>Domain<select v-model="filterForm.domain" class="mail-filter"><option value="">All domains</option><option v-for="domain in domains.domains" :key="domain.id" :value="String(domain.id)">{{ domain.name }}</option></select></label>
+        <label>Read status<select v-model="filterForm.read" class="mail-filter"><option value="">Any</option><option value="unread">Unread</option><option value="read">Read</option></select></label>
+        <label>Attachments<select v-model="filterForm.attachments" class="mail-filter"><option value="">Any</option><option value="true">Has attachments</option><option value="false">No attachments</option></select></label>
+        <label>Sender<input v-model="filterForm.sender" placeholder="name@example.com" class="mail-filter" /></label>
+        <label>From date<input v-model="filterForm.after" type="date" class="mail-filter" /></label>
+        <label>Through date<input v-model="filterForm.before" type="date" class="mail-filter" /></label>
+        <label class="flex items-center gap-2 self-center"><input v-model="filterForm.starred" type="checkbox" true-value="true" false-value="" />Starred only</label>
+        <div class="col-span-2 lg:col-span-4 flex gap-3"><button type="submit" class="px-4 py-2 rounded-full bg-gmail-blue text-white">Apply filters</button><button type="button" @click="clearFilters" class="px-3 py-2 text-gray-600">Clear all</button></div>
+      </form>
+      <div v-if="chips.length && !selectedUuid" class="flex flex-wrap gap-2 px-3 py-2 border-b" aria-label="Active filters"><button v-for="chip in chips" :key="chip.key" @click="updateQuery({ [chip.key]: undefined })" class="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 text-xs px-3 py-1" :aria-label="`Remove ${chip.label}`">{{ chip.label }}<X class="w-3 h-3" /></button><button @click="clearFilters" class="text-xs text-gray-500 underline">Clear all</button></div>
+      <div v-if="mailbox.error" role="alert" class="px-4 py-3 text-sm bg-red-50 text-red-700 flex gap-3"><span class="flex-1">{{ mailbox.error }}</span><button @click="selectedUuid ? mailbox.fetchEmail(selectedUuid) : load(true)" class="underline">Retry</button></div>
+      <div v-if="mailbox.notice" role="status" class="px-4 py-2 text-sm bg-blue-50 text-blue-800 flex gap-3"><span class="flex-1">{{ mailbox.notice }}</span><button @click="mailbox.notice = ''" aria-label="Dismiss message"><X class="w-4 h-4" /></button></div>
+      <div v-if="mailbox.isLoading" class="h-0.5 bg-blue-100 overflow-hidden"><div class="w-1/3 h-full bg-blue-500 animate-pulse" /></div>
+      <div class="flex-1 flex min-h-0 overflow-hidden">
+        <div :class="['overflow-y-auto min-w-0', selectedUuid ? 'hidden lg:block w-80 shrink-0 border-r' : 'flex-1']">
+          <div v-if="mailbox.isLoading && !mailbox.emails.length" class="p-4 space-y-4" role="status" aria-label="Loading messages"><div v-for="n in 8" :key="n" class="h-12 bg-gray-100 rounded animate-pulse" /></div>
+          <div v-else-if="!mailbox.emails.length" class="h-full min-h-60 flex flex-col items-center justify-center p-6 text-center"><Mail class="w-12 h-12 text-gray-300 mb-4" /><h2 class="text-lg font-medium">{{ chips.length ? 'No messages match these filters' : `No messages in ${folder}` }}</h2><p class="text-sm text-gray-500 mt-2">{{ chips.length ? 'Try a different search or clear your filters.' : folder === 'drafts' ? 'Saved drafts appear here when you compose a message.' : folder === 'sent' ? 'Messages accepted by SES are saved here.' : 'Mail for all your identities appears together here.' }}</p><button v-if="chips.length" @click="clearFilters" class="text-blue-600 text-sm mt-4">Clear filters</button></div>
+          <ul v-else class="divide-y divide-gray-100">
+            <li v-for="email in mailbox.emails" :key="email.uuid" :class="['group flex items-center gap-2 px-3 py-3 sm:py-2.5 border-l-4', selectedUuid === email.uuid ? 'bg-blue-100 border-blue-500' : email.isRead ? 'bg-white border-transparent hover:bg-gray-50' : 'bg-blue-50/60 border-transparent']">
+              <input v-if="!selectedUuid" type="checkbox" :checked="mailbox.selectedEmailUuids.includes(email.uuid)" @change="mailbox.toggleSelect(email.uuid)" :aria-label="`Select ${email.subject || 'message'}`" class="w-4 h-4 shrink-0" />
+              <button @click="toggleStar(email)" :disabled="mailbox.isMutating" class="p-1 shrink-0" :aria-label="email.isStarred ? 'Remove star' : 'Star message'"><Star :class="['w-4 h-4', email.isStarred ? 'fill-yellow-400 text-yellow-500' : 'text-gray-300']" /></button>
+              <button @click="openEmail(email)" class="flex-1 min-w-0 text-left focus-visible:outline-blue-500 rounded">
+                <div class="flex items-center gap-2 leading-5">
+                  <span :class="['truncate flex-1 text-sm', !email.isRead ? 'font-semibold' : 'text-gray-600']">{{ ['sent', 'drafts', 'outbox'].includes(folder) ? `To: ${(email.toEmails || []).join(', ') || '(no recipients)'}` : email.fromName || email.fromEmail }}</span>
+                  <span v-if="identityId === 0" class="hidden sm:inline-flex items-center gap-1 max-w-[30%] text-[10px] text-gray-500 rounded bg-gray-100 px-1.5 leading-4" :title="email.identityEmail"><span class="w-1.5 h-1.5 rounded-full shrink-0" :style="{ backgroundColor: email.identityColor || '#9ca3af' }" /><span class="truncate">{{ email.identityEmail }}</span></span>
+                  <span class="text-xs text-gray-500 shrink-0">{{ formatDate(email.receivedAt || email.createdAt) }}</span>
+                </div>
+                <div class="flex gap-2 items-center mt-0.5 leading-5 min-w-0">
+                  <span :class="['text-sm truncate', !selectedUuid ? 'sm:max-w-[55%] sm:shrink-0' : '', !email.isRead ? 'font-medium' : 'text-gray-700']">{{ email.subject || '(no subject)' }}</span>
+                  <Paperclip v-if="email.hasAttachments" class="w-3 h-3 shrink-0 text-gray-400" />
+                  <span v-if="email.sendStatus && email.sendStatus !== 'received'" class="text-[10px] text-gray-500 shrink-0">{{ email.sendStatus }}</span>
+                  <span v-if="!selectedUuid" class="hidden sm:block text-xs text-gray-500 truncate min-w-0">— {{ email.snippet }}</span>
+                </div>
+                <p class="sm:hidden text-xs text-gray-500 truncate mt-1">{{ email.snippet }}</p>
+                <p v-if="identityId === 0" class="sm:hidden text-[10px] text-gray-400 truncate mt-1"><span class="inline-block w-1.5 h-1.5 rounded-full mr-1" :style="{ backgroundColor: email.identityColor || '#9ca3af' }" />{{ email.identityEmail }}</p>
+              </button>
+            </li>
+          </ul>
+        </div>
+        <article v-if="selectedUuid" class="flex-1 min-w-0 flex flex-col overflow-hidden">
+          <div v-if="mailbox.detailLoading && !current" role="status" class="p-6 animate-pulse space-y-4"><div class="h-7 w-2/3 bg-gray-100 rounded" /><div class="h-40 bg-gray-100 rounded" /></div>
+          <template v-else-if="current">
+            <header class="px-4 sm:px-6 py-4 border-b break-words"><h2 class="text-xl mb-3">{{ current.subject || '(no subject)' }}</h2><div class="flex flex-wrap items-start justify-between gap-2 text-sm"><div class="min-w-0"><p class="font-medium break-all">{{ current.fromName }} &lt;{{ current.fromEmail }}&gt;</p><p class="text-gray-500 break-all mt-1">To: {{ current.toEmails?.join(', ') }}</p><p v-if="current.ccEmails?.length" class="text-gray-500 break-all">Cc: {{ current.ccEmails.join(', ') }}</p><p v-if="current.replyTo" class="text-gray-500 break-all">Reply to: {{ current.replyTo }}</p></div><time class="text-xs text-gray-500">{{ formatDate(current.receivedAt || current.createdAt, true) }}</time></div><p v-if="current.sendStatus !== 'received' && (current.sendStatus || current.deliveryStatus)" class="text-xs text-gray-500 mt-3">Send: {{ current.sendStatus || 'accepted' }}<span v-if="current.deliveryStatus"> · Delivery: {{ current.deliveryStatus }}</span></p></header>
+            <div class="flex-1 min-h-0 overflow-y-auto">
+              <iframe v-if="sanitizedHtml" :srcdoc="sanitizedHtml" sandbox="allow-popups allow-popups-to-escape-sandbox" title="Email message" class="w-full min-h-[50vh] border-0 bg-white" referrerpolicy="no-referrer" />
+              <div v-else class="p-4 sm:p-6 text-sm whitespace-pre-wrap break-words leading-relaxed">{{ current.textBody || 'No message content available.' }}</div>
+              <div v-if="current.attachments?.length" class="p-4 border-t"><h3 class="text-sm font-medium mb-2">Attachments</h3><div class="flex flex-wrap gap-2"><button v-for="attachment in current.attachments" :key="attachment.uuid" @click="downloadAttachment(attachment)" :disabled="downloading === attachment.uuid" class="max-w-full flex items-center gap-2 text-sm border rounded-lg p-2 hover:bg-gray-50"><Paperclip class="w-4 h-4 shrink-0" /><span class="truncate">{{ attachment.filename }}</span><span class="text-xs text-gray-500 shrink-0">{{ downloading === attachment.uuid ? 'Downloading…' : `${Math.ceil(attachment.sizeBytes / 1024)} KB` }}</span></button></div></div>
+            </div>
+            <footer class="flex flex-wrap gap-2 px-4 py-3 border-t bg-gray-50"><template v-if="current.folder !== 'drafts'"><button @click="compose('reply')" class="mail-reply"><Reply class="w-4 h-4" />Reply</button><button @click="compose('replyAll')" class="mail-reply"><ReplyAll class="w-4 h-4" />Reply all</button><button @click="compose('forward')" class="mail-reply"><Forward class="w-4 h-4" />Forward</button></template><button v-else @click="compose('draft')" class="mail-reply"><FileText class="w-4 h-4" />Edit draft</button></footer>
+          </template>
+        </article>
+      </div>
+      <p class="sm:hidden text-xs text-gray-500 py-1 px-3 border-t">{{ range }}</p>
+    </section>
   </AppLayout>
 </template>
+
+<style scoped>
+.mail-action { @apply p-2 rounded-full hover:bg-gray-100 text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed focus-visible:outline-blue-500; }
+.mail-filter { @apply block w-full min-w-0 mt-1 px-2 py-2 rounded-lg border border-gray-300 bg-white; }
+.mail-reply { @apply inline-flex items-center gap-2 px-4 py-2 rounded-full border bg-white text-sm hover:bg-gray-100; }
+</style>

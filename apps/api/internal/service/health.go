@@ -12,7 +12,7 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/ses"
+	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	"github.com/dublyo/mailat/api/internal/config"
 )
 
@@ -97,7 +97,7 @@ type WarmupStatus struct {
 type Alert struct {
 	ID           int64     `json:"id"`
 	OrgID        int64     `json:"orgId"`
-	Type         string    `json:"type"` // blacklist, bounce_rate, complaint_rate, quota, warmup
+	Type         string    `json:"type"`     // blacklist, bounce_rate, complaint_rate, quota, warmup
 	Severity     string    `json:"severity"` // info, warning, critical
 	Title        string    `json:"title"`
 	Message      string    `json:"message"`
@@ -326,132 +326,71 @@ func (s *HealthService) CheckBlacklists(ctx context.Context, ipAddress string) (
 
 // GetReputationMetrics retrieves sender reputation metrics
 func (s *HealthService) GetReputationMetrics(ctx context.Context, orgID int64, period string) (*ReputationMetrics, error) {
-	var startDate time.Time
+	days := 30
 	switch period {
 	case "day":
-		startDate = time.Now().AddDate(0, 0, -1)
+		days = 1
 	case "week":
-		startDate = time.Now().AddDate(0, 0, -7)
-	case "month":
-		startDate = time.Now().AddDate(0, -1, 0)
+		days = 7
+	case "month", "30days":
 	default:
-		startDate = time.Now().AddDate(0, 0, -30)
 		period = "30days"
 	}
-
-	metrics := &ReputationMetrics{
-		OrgID:    orgID,
-		Period:   period,
-		ByDomain: make(map[string]DomainMetrics),
+	start := time.Now().AddDate(0, 0, -days)
+	metrics := &ReputationMetrics{OrgID: orgID, Period: period, ByDomain: make(map[string]DomainMetrics)}
+	// SES acceptance is "sent"; only a delivery notification confirms delivery.
+	err := s.db.QueryRowContext(ctx, `WITH outgoing AS (
+ SELECT status,created_at FROM transactional_emails WHERE org_id=$1
+ UNION ALL SELECT send_status,created_at FROM received_emails WHERE org_id=$1 AND direction='outbound'
+ ) SELECT COUNT(*) FILTER(WHERE status IN ('sent','delivered','bounced','complained')),
+ COUNT(*) FILTER(WHERE status='delivered'),COUNT(*) FILTER(WHERE status='bounced'),
+ COUNT(*) FILTER(WHERE status='failed'),COUNT(*) FILTER(WHERE status='complained')
+ FROM outgoing WHERE created_at >= $2`, orgID, start).Scan(&metrics.TotalSent, &metrics.TotalDelivered, &metrics.TotalBounced, &metrics.TotalFailed, &metrics.TotalComplaints)
+	if err != nil {
+		return nil, fmt.Errorf("query sending metrics: %w", err)
 	}
-
-	// Get transactional email metrics (sending)
-	// status values: queued, sending, sent, failed, bounced, complained
-	err := s.db.QueryRowContext(ctx, `
-		SELECT
-			COUNT(*) as total_sent,
-			COALESCE(SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END), 0) as delivered,
-			COALESCE(SUM(CASE WHEN status = 'bounced' THEN 1 ELSE 0 END), 0) as bounced,
-			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
-			COALESCE(SUM(CASE WHEN status = 'complained' THEN 1 ELSE 0 END), 0) as complaints
-		FROM transactional_emails
-		WHERE org_id = $1 AND created_at >= $2
-	`, orgID, startDate).Scan(&metrics.TotalSent, &metrics.TotalDelivered, &metrics.TotalBounced, &metrics.TotalFailed, &metrics.TotalComplaints)
-	if err != nil && err != sql.ErrNoRows {
-		// Table might not exist or be empty, return zero metrics
-		metrics.TotalSent = 0
-		metrics.TotalDelivered = 0
-		metrics.TotalBounced = 0
-		metrics.TotalFailed = 0
-		metrics.TotalComplaints = 0
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER(WHERE is_spam) FROM received_emails WHERE org_id=$1 AND direction='inbound' AND received_at >= $2`, orgID, start).Scan(&metrics.TotalReceived, &metrics.TotalSpam)
+	if err != nil {
+		return nil, fmt.Errorf("query receiving metrics: %w", err)
 	}
-
-	// Get received email metrics
-	var totalReceived, spamCount, readCount int
-	err = s.db.QueryRowContext(ctx, `
-		SELECT
-			COUNT(*) as total_received,
-			COALESCE(SUM(CASE WHEN is_spam = true THEN 1 ELSE 0 END), 0) as spam,
-			COALESCE(SUM(CASE WHEN is_read = true THEN 1 ELSE 0 END), 0) as read_count
-		FROM received_emails
-		WHERE org_id = $1 AND created_at >= $2
-	`, orgID, startDate).Scan(&totalReceived, &spamCount, &readCount)
-	if err == nil {
-		metrics.TotalReceived = totalReceived
-		metrics.TotalSpam = spamCount
-	}
-
-	// Calculate rates
 	if metrics.TotalSent > 0 {
 		metrics.DeliveryRate = float64(metrics.TotalDelivered) / float64(metrics.TotalSent) * 100
 		metrics.BounceRate = float64(metrics.TotalBounced) / float64(metrics.TotalSent) * 100
 		metrics.ComplaintRate = float64(metrics.TotalComplaints) / float64(metrics.TotalSent) * 100
-	} else {
-		// Default to 100% delivery rate when no emails sent
-		metrics.DeliveryRate = 100
 	}
 	if metrics.TotalReceived > 0 {
 		metrics.SpamRate = float64(metrics.TotalSpam) / float64(metrics.TotalReceived) * 100
 	}
-
-	// Calculate reputation score (0-100)
 	metrics.Score = calculateReputationScore(metrics)
-
-	// Get metrics by recipient domain (top 20)
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			SPLIT_PART(to_addresses[1], '@', 2) as domain,
-			COUNT(*) as sent,
-			COALESCE(SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END), 0) as delivered,
-			COALESCE(SUM(CASE WHEN status = 'bounced' THEN 1 ELSE 0 END), 0) as bounced,
-			COALESCE(SUM(CASE WHEN status = 'complained' THEN 1 ELSE 0 END), 0) as complaints
-		FROM transactional_emails
-		WHERE org_id = $1 AND created_at >= $2 AND ARRAY_LENGTH(to_addresses, 1) > 0
-		GROUP BY domain
-		HAVING SPLIT_PART(to_addresses[1], '@', 2) IS NOT NULL AND SPLIT_PART(to_addresses[1], '@', 2) != ''
-		ORDER BY sent DESC
-		LIMIT 20
-	`, orgID, startDate)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var dm DomainMetrics
-			if err := rows.Scan(&dm.Domain, &dm.Sent, &dm.Delivered, &dm.Bounced, &dm.Complaints); err == nil {
-				if dm.Sent > 0 && dm.Domain != "" {
-					dm.DeliveryRate = float64(dm.Delivered) / float64(dm.Sent) * 100
-					dm.BounceRate = float64(dm.Bounced) / float64(dm.Sent) * 100
-					dm.ComplaintRate = float64(dm.Complaints) / float64(dm.Sent) * 100
-					metrics.ByDomain[dm.Domain] = dm
-				}
-			}
-		}
+	rows, err := s.db.QueryContext(ctx, `WITH outgoing AS (
+ SELECT from_address AS sender,status,created_at FROM transactional_emails WHERE org_id=$1
+ UNION ALL SELECT from_email,send_status,created_at FROM received_emails WHERE org_id=$1 AND direction='outbound'
+ ) SELECT split_part(sender,'@',2),COUNT(*) FILTER(WHERE status IN ('sent','delivered','bounced','complained')),
+ COUNT(*) FILTER(WHERE status='delivered'),COUNT(*) FILTER(WHERE status='bounced'),COUNT(*) FILTER(WHERE status='complained')
+ FROM outgoing WHERE created_at >= $2 GROUP BY 1 ORDER BY 2 DESC LIMIT 20`, orgID, start)
+	if err != nil {
+		return nil, err
 	}
-
-	// Check for high bounce/complaint rates and create alerts
-	if metrics.TotalSent >= 100 {
-		if metrics.BounceRate > 5 {
-			s.createAlert(ctx, orgID, "bounce_rate", "warning",
-				"High Bounce Rate Detected",
-				fmt.Sprintf("Your bounce rate is %.2f%% which exceeds the recommended 5%%. This may affect deliverability.", metrics.BounceRate),
-				metrics,
-			)
+	defer rows.Close()
+	for rows.Next() {
+		var dm DomainMetrics
+		if err = rows.Scan(&dm.Domain, &dm.Sent, &dm.Delivered, &dm.Bounced, &dm.Complaints); err != nil {
+			return nil, err
 		}
-		if metrics.ComplaintRate > 0.1 {
-			s.createAlert(ctx, orgID, "complaint_rate", "critical",
-				"High Complaint Rate Detected",
-				fmt.Sprintf("Your complaint rate is %.3f%% which exceeds the recommended 0.1%%. This is a serious deliverability concern.", metrics.ComplaintRate),
-				metrics,
-			)
+		if dm.Sent > 0 {
+			dm.DeliveryRate = float64(dm.Delivered) / float64(dm.Sent) * 100
+			dm.BounceRate = float64(dm.Bounced) / float64(dm.Sent) * 100
+			dm.ComplaintRate = float64(dm.Complaints) / float64(dm.Sent) * 100
 		}
+		metrics.ByDomain[dm.Domain] = dm
 	}
-
-	return metrics, nil
+	return metrics, rows.Err()
 }
 
 // calculateReputationScore calculates a reputation score from 0-100
 func calculateReputationScore(metrics *ReputationMetrics) int {
 	if metrics.TotalSent == 0 && metrics.TotalReceived == 0 {
-		return 100 // No data, assume good
+		return 0 // The UI presents no-data as unknown, not a perfect score.
 	}
 
 	score := 100.0
@@ -519,20 +458,24 @@ func (s *HealthService) GetSESAccountLimits(ctx context.Context) (*SESAccountLim
 	}
 
 	// Create SES client
-	sesClient := ses.NewFromConfig(awsCfg)
+	sesClient := sesv2.NewFromConfig(awsCfg)
 
 	// Get account sending quota
-	quotaResp, err := sesClient.GetSendQuota(ctx, &ses.GetSendQuotaInput{})
+	account, err := sesClient.GetAccount(ctx, &sesv2.GetAccountInput{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get SES quota: %w", err)
 	}
 
+	if account.SendQuota == nil {
+		return nil, fmt.Errorf("SES did not return sending quotas")
+	}
+	quotaResp := account.SendQuota
 	limits := &SESAccountLimits{
 		Max24HourSend:   quotaResp.Max24HourSend,
 		MaxSendRate:     quotaResp.MaxSendRate,
 		SentLast24Hours: quotaResp.SentLast24Hours,
-		SendingEnabled:  true, // Assume enabled if we can query
-		SandboxMode:     quotaResp.Max24HourSend <= 200, // Sandbox typically has 200/day limit
+		SendingEnabled:  account.SendingEnabled,
+		SandboxMode:     !account.ProductionAccessEnabled,
 	}
 
 	limits.Remaining24Hour = limits.Max24HourSend - limits.SentLast24Hours
@@ -555,12 +498,16 @@ func (s *HealthService) GetEmailHealthSummary(ctx context.Context, orgID int64) 
 
 	// Get sending metrics
 	metrics, err := s.GetReputationMetrics(ctx, orgID, "30days")
-	if err == nil {
-		summary.SendingMetrics = *metrics
+	if err != nil {
+		return nil, err
 	}
+	summary.SendingMetrics = *metrics
 
 	// Get SES limits
 	sesLimits, err := s.GetSESAccountLimits(ctx)
+	if err != nil {
+		summary.Warnings = append(summary.Warnings, HealthWarning{Type: "ses_unavailable", Severity: "info", Title: "SES account status unavailable", Message: "Could not verify current AWS sending quotas or account status.", Action: "Check AWS configuration and ses:GetAccount permission"})
+	}
 	if err == nil {
 		summary.SESLimits = sesLimits
 
@@ -595,7 +542,7 @@ func (s *HealthService) GetEmailHealthSummary(ctx context.Context, orgID int64) 
 			COALESCE(SUM(CASE WHEN is_spam = true THEN 1 ELSE 0 END), 0) as spam,
 			COALESCE(SUM(CASE WHEN is_read = true THEN 1 ELSE 0 END), 0) as read_count
 		FROM received_emails
-		WHERE org_id = $1 AND created_at >= NOW() - INTERVAL '30 days'
+		WHERE org_id = $1 AND direction = 'inbound' AND received_at >= NOW() - INTERVAL '30 days'
 	`, orgID).Scan(&receivedTotal, &spamTotal, &readTotal)
 	if err == nil {
 		summary.ReceivingMetrics = ReceivingMetrics{
@@ -712,7 +659,9 @@ func (s *HealthService) GetEmailHealthSummary(ctx context.Context, orgID int64) 
 	}
 
 	// Determine health status
-	if summary.HealthScore >= 90 {
+	if summary.SendingMetrics.TotalSent == 0 {
+		summary.HealthStatus = "unknown"
+	} else if summary.HealthScore >= 90 {
 		summary.HealthStatus = "excellent"
 	} else if summary.HealthScore >= 70 {
 		summary.HealthStatus = "good"
@@ -822,64 +771,21 @@ func (s *HealthService) GetWarmupSchedules() []WarmupSchedule {
 
 // GetQuotaStatus returns quota usage for an organization
 func (s *HealthService) GetQuotaStatus(ctx context.Context, orgID int64) (*QuotaStatus, error) {
-	var status QuotaStatus
-	status.OrgID = orgID
-
-	// Get org limits
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(monthly_email_limit, 10000) FROM organizations WHERE id = $1
-	`, orgID).Scan(&status.MonthlyLimit)
-	if err != nil {
-		// Use default if org not found
-		status.MonthlyLimit = 10000
+	status := &QuotaStatus{OrgID: orgID}
+	if !s.cfg.DisableAppLimits {
+		if err := s.db.QueryRowContext(ctx, `SELECT monthly_email_limit FROM organizations WHERE id=$1`, orgID).Scan(&status.MonthlyLimit); err != nil {
+			return nil, err
+		}
 	}
-
-	// Set daily limit as 1/30 of monthly or minimum 100
-	status.DailyLimit = status.MonthlyLimit / 30
-	if status.DailyLimit < 100 {
-		status.DailyLimit = 100
+	// Zero explicitly means unlimited; AWS rolling quotas are reported separately.
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT attempts FROM organization_send_usage WHERE org_id=$1 AND month=date_trunc('month',now() AT TIME ZONE 'UTC')::date),0)`, orgID).Scan(&status.MonthlyUsed); err != nil {
+		return nil, err
 	}
-
-	// Get monthly usage
-	s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM transactional_emails
-		WHERE org_id = $1 AND created_at >= DATE_TRUNC('month', CURRENT_DATE)
-	`, orgID).Scan(&status.MonthlyUsed)
-
-	// Get daily usage
-	s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM transactional_emails
-		WHERE org_id = $1 AND created_at >= CURRENT_DATE
-	`, orgID).Scan(&status.DailyUsed)
-
-	// Calculate remaining
-	status.MonthlyRemaining = status.MonthlyLimit - status.MonthlyUsed
-	if status.MonthlyRemaining < 0 {
-		status.MonthlyRemaining = 0
-	}
-	status.DailyRemaining = status.DailyLimit - status.DailyUsed
-	if status.DailyRemaining < 0 {
-		status.DailyRemaining = 0
-	}
-
-	// Calculate percentages
 	if status.MonthlyLimit > 0 {
+		status.MonthlyRemaining = max(0, status.MonthlyLimit-status.MonthlyUsed)
 		status.MonthlyPercentage = float64(status.MonthlyUsed) / float64(status.MonthlyLimit) * 100
 	}
-	if status.DailyLimit > 0 {
-		status.DailyPercentage = float64(status.DailyUsed) / float64(status.DailyLimit) * 100
-	}
-
-	// Create alert if approaching limits
-	if status.MonthlyPercentage >= 80 {
-		s.createAlert(ctx, orgID, "quota", "warning",
-			"Approaching Monthly Quota",
-			fmt.Sprintf("You've used %.1f%% of your monthly email quota (%d/%d).", status.MonthlyPercentage, status.MonthlyUsed, status.MonthlyLimit),
-			status,
-		)
-	}
-
-	return &status, nil
+	return status, nil
 }
 
 // GetAlerts returns alerts for an organization

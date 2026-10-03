@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/mail"
+	"regexp"
 	"strings"
 	"time"
 
@@ -55,14 +57,16 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 	var domainID int64
 	var domainOrgID int64
 	var domainStatus string
+	var domainName string
+	var sesVerified bool
 	var userOrgID int64
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT d.id, d.org_id, d.status, u.org_id
+		SELECT d.id, d.org_id, d.status, u.org_id, d.name, COALESCE(d.ses_verified,false)
 		FROM domains d
 		JOIN users u ON u.id = $1
 		WHERE d.uuid = $2
-	`, userID, req.DomainId).Scan(&domainID, &domainOrgID, &domainStatus, &userOrgID)
+	`, userID, req.DomainId).Scan(&domainID, &domainOrgID, &domainStatus, &userOrgID, &domainName, &sesVerified)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("domain not found")
 	}
@@ -76,6 +80,17 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 
 	if domainStatus != "active" {
 		return nil, fmt.Errorf("domain is not active")
+	}
+	if s.cfg.EmailProvider == "ses" && !sesVerified {
+		return nil, fmt.Errorf("verify the domain with SES before creating an address")
+	}
+	address, err := identityAddressForDomain(req.Email, domainName)
+	if err != nil {
+		return nil, err
+	}
+	req.Email = address
+	if s.cfg.EmailProvider != "ses" && len(req.Password) < 8 {
+		return nil, fmt.Errorf("password must be at least 8 characters for an SMTP mailbox")
 	}
 
 	// Check if identity already exists
@@ -115,16 +130,18 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 	colors := []string{"#3B82F6", "#10B981", "#8B5CF6", "#F59E0B", "#EF4444", "#EC4899", "#06B6D4", "#84CC16"}
 	assignedColor := colors[identityCount%len(colors)]
 
-	// Hash password for local storage
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, fmt.Errorf("failed to hash password: %w", err)
-	}
-
-	// Encrypt password for JMAP authentication
-	encryptedPassword, err := crypto.Encrypt(req.Password, s.cfg.EncryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt password: %w", err)
+	// SES addresses have no mailbox password; only legacy JMAP needs it.
+	var passwordHash []byte
+	var encryptedPassword string
+	if s.cfg.EmailProvider != "ses" {
+		passwordHash, err = bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			return nil, fmt.Errorf("failed to hash password: %w", err)
+		}
+		encryptedPassword, err = crypto.Encrypt(req.Password, s.cfg.EncryptionKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt password: %w", err)
+		}
 	}
 
 	// Default quota: 1GB
@@ -139,6 +156,33 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.Rollback()
+	// Lock the user then domain in a consistent order so concurrent creates and
+	// updates cannot produce two defaults or catch-alls.
+	if _, err = tx.ExecContext(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID); err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `SELECT id FROM domains WHERE id=$1 FOR UPDATE`, domainID); err != nil {
+		return nil, err
+	}
+	if !s.cfg.DisableAppLimits {
+		var limit, count int
+		if err = tx.QueryRowContext(ctx, `SELECT max_identities FROM organizations WHERE id=$1 FOR UPDATE`, userOrgID).Scan(&limit); err != nil {
+			return nil, err
+		}
+		// Count after acquiring the lock so a waiting transaction sees the
+		// previous creator's committed identity in a fresh READ COMMITTED snapshot.
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM identities i JOIN users u ON u.id=i.user_id WHERE u.org_id=$1`, userOrgID).Scan(&count); err != nil {
+			return nil, err
+		}
+		if limit > 0 && count >= limit {
+			return nil, fmt.Errorf("organization identity limit reached")
+		}
+	}
+	if req.IsDefault {
+		if _, err = tx.ExecContext(ctx, `UPDATE identities SET is_default=false, updated_at=now() WHERE user_id=$1 AND is_default`, userID); err != nil {
+			return nil, err
+		}
+	}
 
 	// Create identity in our database (matching Prisma schema - no status column)
 	var identity model.Identity
@@ -179,25 +223,27 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 		}
 	}
 
-	// Create account in Stalwart
-	stalwartID, err := s.stalwart.CreateAccount(ctx, StalwartAccountRequest{
-		Email:       req.Email,
-		Password:    req.Password,
-		DisplayName: req.DisplayName,
-		QuotaBytes:  quotaBytes,
-	})
-	if err != nil {
-		// Log error but don't fail - we can sync later
-		fmt.Printf("Warning: Failed to create Stalwart account: %v\n", err)
-	} else {
-		// Update with Stalwart account ID
-		_, err = tx.ExecContext(ctx, `
+	// SES never needs a second mailbox server.
+	if s.cfg.EmailProvider != "ses" {
+		stalwartID, err := s.stalwart.CreateAccount(ctx, StalwartAccountRequest{
+			Email:       req.Email,
+			Password:    req.Password,
+			DisplayName: req.DisplayName,
+			QuotaBytes:  quotaBytes,
+		})
+		if err != nil {
+			// Log error but don't fail - we can sync later
+			fmt.Printf("Warning: Failed to create Stalwart account: %v\n", err)
+		} else {
+			// Update with Stalwart account ID
+			_, err = tx.ExecContext(ctx, `
 			UPDATE identities SET stalwart_account_id = $1, updated_at = NOW() WHERE id = $2
 		`, stalwartID, identity.ID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to update Stalwart account ID: %w", err)
+			if err != nil {
+				return nil, fmt.Errorf("failed to update Stalwart account ID: %w", err)
+			}
+			identity.StalwartAcctID = stalwartID
 		}
-		identity.StalwartAcctID = stalwartID
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -205,8 +251,68 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 	}
 
 	identity.Status = "active" // Virtual field
+	identity.CanSend, identity.CanReceive = true, true
 
 	return &identity, nil
+}
+
+func identityAddressForDomain(value, domain string) (string, error) {
+	value = strings.TrimSpace(value)
+	parsed, err := mail.ParseAddress(value)
+	if err != nil || parsed.Address != value || strings.ContainsAny(value, "\r\n") || len(value) > 255 {
+		return "", fmt.Errorf("enter a valid email address without a display name")
+	}
+	parts := strings.Split(value, "@")
+	if len(parts) != 2 || !strings.EqualFold(parts[1], domain) {
+		return "", fmt.Errorf("email address must belong to the selected domain")
+	}
+	return strings.ToLower(value), nil
+}
+
+func (s *IdentityService) UpdateIdentity(ctx context.Context, userID int64, identityUUID string, req *model.UpdateIdentityRequest) (*model.Identity, error) {
+	if req.DisplayName != nil && (len(*req.DisplayName) > 255 || strings.ContainsAny(*req.DisplayName, "\r\n")) {
+		return nil, fmt.Errorf("invalid display name")
+	}
+	if req.Color != nil && !regexp.MustCompile(`^#[0-9a-fA-F]{6}$`).MatchString(*req.Color) {
+		return nil, fmt.Errorf("invalid identity color")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID); err != nil {
+		return nil, err
+	}
+	var id, domainID int64
+	if err = tx.QueryRowContext(ctx, `SELECT id,domain_id FROM identities WHERE uuid=$1 AND user_id=$2 FOR UPDATE`, identityUUID, userID).Scan(&id, &domainID); err != nil {
+		return nil, fmt.Errorf("identity not found")
+	}
+	if _, err = tx.ExecContext(ctx, `SELECT id FROM domains WHERE id=$1 FOR UPDATE`, domainID); err != nil {
+		return nil, err
+	}
+	if req.IsCatchAll != nil && *req.IsCatchAll {
+		var exists bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE domain_id=$1 AND is_catch_all AND id<>$2)`, domainID, id).Scan(&exists); err != nil {
+			return nil, err
+		}
+		if exists {
+			return nil, fmt.Errorf("this domain already has a catch-all address")
+		}
+	}
+	if req.IsDefault != nil && *req.IsDefault {
+		if _, err = tx.ExecContext(ctx, `UPDATE identities SET is_default=false,updated_at=now() WHERE user_id=$1 AND id<>$2 AND is_default`, userID, id); err != nil {
+			return nil, err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE identities SET display_name=COALESCE($1,display_name),is_default=COALESCE($2,is_default),is_catch_all=COALESCE($3,is_catch_all),color=COALESCE($4,color),updated_at=now() WHERE id=$5`, req.DisplayName, req.IsDefault, req.IsCatchAll, req.Color, id)
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetIdentity(ctx, userID, identityUUID)
 }
 
 // GetIdentity retrieves an identity by UUID
@@ -217,14 +323,14 @@ func (s *IdentityService) GetIdentity(ctx context.Context, userID int64, identit
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, uuid, user_id, domain_id, email, display_name, is_default, is_catch_all, color,
-		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at
+		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive
 		FROM identities
 		WHERE uuid = $1 AND user_id = $2
 	`, identityUUID, userID).Scan(
 		&identity.ID, &identity.UUID, &identity.UserID, &identity.DomainID,
 		&identity.Email, &identity.DisplayName, &identity.IsDefault, &identity.IsCatchAll, &colorNull,
 		&stalwartAcctID, &identity.QuotaBytes, &identity.UsedBytes,
-		&identity.CreatedAt, &identity.UpdatedAt,
+		&identity.CreatedAt, &identity.UpdatedAt, &identity.CanSend, &identity.CanReceive,
 	)
 
 	if err == sql.ErrNoRows {
@@ -249,7 +355,7 @@ func (s *IdentityService) GetIdentity(ctx context.Context, userID int64, identit
 func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*model.Identity, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, uuid, user_id, domain_id, email, display_name, is_default, is_catch_all, color,
-		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at
+		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive
 		FROM identities
 		WHERE user_id = $1
 		ORDER BY is_default DESC, email ASC
@@ -259,7 +365,7 @@ func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*
 	}
 	defer rows.Close()
 
-	var identities []*model.Identity
+	identities := make([]*model.Identity, 0)
 	for rows.Next() {
 		var identity model.Identity
 		var stalwartAcctID sql.NullString
@@ -267,7 +373,7 @@ func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*
 		if err := rows.Scan(&identity.ID, &identity.UUID, &identity.UserID, &identity.DomainID,
 			&identity.Email, &identity.DisplayName, &identity.IsDefault, &identity.IsCatchAll, &colorNull,
 			&stalwartAcctID, &identity.QuotaBytes, &identity.UsedBytes,
-			&identity.CreatedAt, &identity.UpdatedAt); err != nil {
+			&identity.CreatedAt, &identity.UpdatedAt, &identity.CanSend, &identity.CanReceive); err != nil {
 			return nil, fmt.Errorf("failed to scan identity: %w", err)
 		}
 		if stalwartAcctID.Valid {
@@ -280,7 +386,7 @@ func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*
 		identities = append(identities, &identity)
 	}
 
-	return identities, nil
+	return identities, rows.Err()
 }
 
 // UpdateIdentityPassword updates the password for an identity

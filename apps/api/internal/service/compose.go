@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -21,6 +20,7 @@ type ComposeService struct {
 	jmap          *JMAPClient
 	identity      *IdentityService
 	emailProvider provider.EmailProvider
+	attachments   provider.AttachmentStorage
 }
 
 // NewComposeService creates a new compose service
@@ -47,6 +47,7 @@ func NewComposeService(db *sql.DB, cfg *config.Config, identityService *Identity
 			fmt.Println("ComposeService: Using SES for email sending")
 		}
 	}
+	svc.attachments, _ = provider.NewAttachmentStorage(context.Background(), cfg.AWSRegion, cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey)
 
 	return svc
 }
@@ -67,6 +68,9 @@ type ComposeEmail struct {
 	References    []string        `json:"references,omitempty"`
 	Attachments   []AttachmentRef `json:"attachments,omitempty"`
 	IsDraft       bool            `json:"isDraft"`
+	SubmissionKey string          `json:"-"`
+	DraftID       string          `json:"draftId,omitempty"`
+	DraftVersion  int             `json:"draftVersion,omitempty"`
 }
 
 // AttachmentRef represents an attachment reference
@@ -77,14 +81,17 @@ type AttachmentRef struct {
 	Size        int    `json:"size"`
 	Disposition string `json:"disposition,omitempty"` // attachment or inline
 	CID         string `json:"cid,omitempty"`         // Content-ID for inline
+	Content     string `json:"content,omitempty"`     // Base64 for a newly attached file
 }
 
 // SendEmailResult represents the result of sending an email
 type SendEmailResult struct {
-	EmailID    string    `json:"emailId"`
-	ThreadID   string    `json:"threadId"`
-	SentAt     time.Time `json:"sentAt"`
-	MessageID  string    `json:"messageId"`
+	EmailID   string    `json:"emailId"`
+	ThreadID  string    `json:"threadId"`
+	SentAt    time.Time `json:"sentAt"`
+	MessageID string    `json:"messageId"`
+	Status    string    `json:"status"`
+	SendError string    `json:"sendError,omitempty"`
 }
 
 // DraftResult represents a saved draft
@@ -93,10 +100,14 @@ type DraftResult struct {
 	IdentityID int64     `json:"identityId"`
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
+	Version    int       `json:"version"`
 }
 
 // SendEmail sends an email via SES (or falls back to JMAP if SES not configured)
 func (s *ComposeService) SendEmail(ctx context.Context, userID int64, email *ComposeEmail) (*SendEmailResult, error) {
+	if s.cfg.EmailProvider == "ses" {
+		return s.sendMailboxEmail(ctx, userID, email)
+	}
 	// Validate identity belongs to user
 	identity, err := s.getIdentityByID(ctx, userID, email.IdentityID)
 	if err != nil {
@@ -195,6 +206,7 @@ func (s *ComposeService) sendViaSES(ctx context.Context, identity *model.Identit
 		EmailID:   sendResult.MessageID,
 		MessageID: sendResult.MessageID,
 		SentAt:    time.Now(),
+		Status:    "sent",
 	}
 
 	return result, nil
@@ -323,6 +335,9 @@ func (s *ComposeService) sendViaJMAP(ctx context.Context, identity *model.Identi
 
 // SaveDraft saves an email as a draft
 func (s *ComposeService) SaveDraft(ctx context.Context, userID int64, email *ComposeEmail) (*DraftResult, error) {
+	if s.cfg.EmailProvider == "ses" {
+		return s.saveMailboxDraft(ctx, userID, "", email)
+	}
 	identity, err := s.getIdentityByID(ctx, userID, email.IdentityID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid identity: %w", err)
@@ -416,6 +431,9 @@ func (s *ComposeService) SaveDraft(ctx context.Context, userID int64, email *Com
 
 // UpdateDraft updates an existing draft
 func (s *ComposeService) UpdateDraft(ctx context.Context, userID int64, draftID string, email *ComposeEmail) (*DraftResult, error) {
+	if s.cfg.EmailProvider == "ses" {
+		return s.saveMailboxDraft(ctx, userID, draftID, email)
+	}
 	identityID, jmapDraftID, err := parseUnifiedID(draftID)
 	if err != nil {
 		return nil, err
@@ -512,6 +530,9 @@ func (s *ComposeService) UpdateDraft(ctx context.Context, userID int64, draftID 
 
 // DeleteDraft deletes a draft
 func (s *ComposeService) DeleteDraft(ctx context.Context, userID int64, draftID string) error {
+	if s.cfg.EmailProvider == "ses" {
+		return s.deleteMailboxDraft(ctx, userID, draftID)
+	}
 	identityID, jmapDraftID, err := parseUnifiedID(draftID)
 	if err != nil {
 		return err
@@ -668,6 +689,9 @@ func (s *ComposeService) GetForwardContext(ctx context.Context, userID int64, em
 
 // UploadAttachment uploads an attachment and returns a blob reference
 func (s *ComposeService) UploadAttachment(ctx context.Context, userID int64, identityID int64, data []byte, filename, contentType string) (*AttachmentRef, error) {
+	if s.cfg.EmailProvider == "ses" {
+		return s.uploadMailboxAttachment(ctx, userID, identityID, data, filename, contentType)
+	}
 	identity, err := s.getIdentityByID(ctx, userID, identityID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid identity: %w", err)
@@ -850,18 +874,7 @@ func (s *ComposeService) buildReferences(refs, messageIDs []string) []string {
 }
 
 func (s *ComposeService) uploadBlob(ctx context.Context, uploadUrl, email, password, accountID string, data []byte, contentType string) (string, error) {
-	// Replace {accountId} placeholder in upload URL
-	_ = strings.Replace(uploadUrl, "{accountId}", accountID, 1)
-
-	// TODO: Implement actual HTTP upload
-	// For now, return a placeholder - this would need proper implementation
-	// with multipart form or direct PUT to the upload URL
-
-	// Encode data as base64 for now (simplified)
-	_ = base64.StdEncoding.EncodeToString(data)
-
-	// This is a placeholder - actual implementation would POST to upload URL
-	return "blob_placeholder_" + fmt.Sprintf("%d", len(data)), nil
+	return s.uploadJMAPBlob(ctx, uploadUrl, email, password, accountID, data, contentType)
 }
 
 func (s *ComposeService) getIdentityPassword(ctx context.Context, identityID int64) (string, error) {

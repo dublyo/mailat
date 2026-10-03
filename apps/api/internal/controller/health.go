@@ -12,6 +12,9 @@ import (
 
 type HealthController struct{}
 
+// BuildVersion is injected by the image build so a rollout can be verified.
+var BuildVersion = "development"
+
 func NewHealthController() *HealthController {
 	return &HealthController{}
 }
@@ -42,6 +45,7 @@ func (c *HealthController) Health(r *ghttp.Request) {
 	}
 
 	result := map[string]interface{}{
+		"version":   BuildVersion,
 		"status":    status,
 		"checks":    checks,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
 
@@ -94,13 +95,16 @@ func main() {
 	}
 	defer db.Close()
 	fmt.Println("Connected to PostgreSQL")
-
-	// Auto-migrate database schema
-	if err := database.InitSchema(db); err != nil {
-		fmt.Printf("Failed to initialize database schema: %v\n", err)
-		os.Exit(1)
+	if cfg.AutoMigrate {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		err := database.Migrate(ctx, db)
+		cancel()
+		if err != nil {
+			fmt.Printf("Database migration failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Database schema is up to date")
 	}
-	fmt.Println("Database schema initialized")
 
 	// Connect to Redis
 	redis, err := database.ConnectRedis(cfg)

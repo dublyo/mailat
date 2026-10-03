@@ -2,7 +2,6 @@ package controller
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/gogf/gf/v2/net/ghttp"
 
@@ -33,12 +32,9 @@ func (c *IdentityController) Create(r *ghttp.Request) {
 	var req model.CreateIdentityRequest
 	bodyBytes := r.GetBody()
 	if err := json.Unmarshal(bodyBytes, &req); err != nil {
-		fmt.Printf("JSON unmarshal error: %v, body: %s\n", err, string(bodyBytes))
 		response.BadRequest(r, "Invalid JSON: "+err.Error())
 		return
 	}
-	fmt.Printf("Parsed identity request: email=%s, domainId=%s, displayName=%s, password_len=%d\n",
-		req.Email, req.DomainId, req.DisplayName, len(req.Password))
 
 	// Manual validation
 	if req.DomainId == "" {
@@ -53,7 +49,7 @@ func (c *IdentityController) Create(r *ghttp.Request) {
 		response.BadRequest(r, "displayName is required")
 		return
 	}
-	if len(req.Password) < 8 {
+	if req.Password != "" && len(req.Password) < 8 {
 		response.BadRequest(r, "password must be at least 8 characters")
 		return
 	}
@@ -65,6 +61,25 @@ func (c *IdentityController) Create(r *ghttp.Request) {
 	}
 
 	response.SuccessWithMessage(r, "Identity created", identity)
+}
+
+func (c *IdentityController) Update(r *ghttp.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+	var req model.UpdateIdentityRequest
+	if err := r.Parse(&req); err != nil {
+		response.BadRequest(r, "Invalid identity update")
+		return
+	}
+	identity, err := c.identityService.UpdateIdentity(r.Context(), claims.UserID, r.Get("uuid").String(), &req)
+	if err != nil {
+		response.BadRequest(r, err.Error())
+		return
+	}
+	response.Success(r, identity)
 }
 
 // List returns all identities for the user

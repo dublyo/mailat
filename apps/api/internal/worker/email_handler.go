@@ -107,7 +107,7 @@ func NewEmailHandler(db *sql.DB, cfg *config.Config) *EmailHandler {
 
 	// Initialize email provider based on config
 	ctx := context.Background()
-	if cfg.EmailProvider == "ses" && cfg.AWSAccessKeyID != "" {
+	if cfg.EmailProvider == "ses" {
 		sesProvider, err := provider.NewSESProvider(ctx, &provider.SESConfig{
 			Region:           cfg.AWSRegion,
 			AccessKeyID:      cfg.AWSAccessKeyID,
@@ -115,15 +115,7 @@ func NewEmailHandler(db *sql.DB, cfg *config.Config) *EmailHandler {
 			ConfigurationSet: cfg.SESConfigurationSet,
 		})
 		if err != nil {
-			fmt.Printf("Warning: Failed to create SES provider: %v, falling back to SMTP\n", err)
-			handler.emailProvider = provider.NewSMTPProvider(&provider.SMTPConfig{
-				Host:          cfg.SMTPHost,
-				Port:          cfg.SMTPPort,
-				Username:      cfg.SMTPUser,
-				Password:      cfg.SMTPPassword,
-				UseTLS:        cfg.SMTPTLS,
-				SkipTLSVerify: !cfg.SMTPTLS,
-			})
+			fmt.Printf("Warning: SES sending is unavailable: %v\n", err)
 		} else {
 			handler.emailProvider = sesProvider
 			fmt.Println("Email handler initialized with AWS SES provider")
@@ -150,29 +142,26 @@ func (h *EmailHandler) SetWebhookTriggerService(svc webhookTriggerFirer) {
 
 // HandleEmailSend processes a single email send task
 func (h *EmailHandler) HandleEmailSend(ctx context.Context, t *asynq.Task) error {
+	if h.emailProvider == nil {
+		return fmt.Errorf("email provider is not configured; sending has not been attempted")
+	}
 	payload, err := UnmarshalEmailSendPayload(t.Payload())
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal payload: %w", err)
 	}
 
-	// Check if email was cancelled
-	var status string
-	err = h.db.QueryRowContext(ctx, `
-		SELECT status FROM transactional_emails WHERE id = $1
-	`, payload.EmailID).Scan(&status)
+	// Atomically claim only a queued message. Retried jobs must not submit an
+	// already accepted, sending, failed, or uncertain attempt to the provider again.
+	claimed, err := h.db.ExecContext(ctx, `UPDATE transactional_emails SET status='sending',updated_at=NOW() WHERE id=$1 AND status='queued'`, payload.EmailID)
 	if err != nil {
-		return fmt.Errorf("failed to get email status: %w", err)
+		return fmt.Errorf("claim email send: %w", err)
 	}
-	if status == "cancelled" {
-		return nil // Skip cancelled emails
-	}
-
-	// Update status to sending
-	_, err = h.db.ExecContext(ctx, `
-		UPDATE transactional_emails SET status = 'sending', updated_at = NOW() WHERE id = $1
-	`, payload.EmailID)
+	affected, err := claimed.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("failed to update email status: %w", err)
+		return err
+	}
+	if affected == 0 {
+		return nil
 	}
 
 	// Record sending event
@@ -191,29 +180,9 @@ func (h *EmailHandler) HandleEmailSend(ctx context.Context, t *asynq.Task) error
 		MessageID: payload.MessageID,
 	}
 
-	// Send via provider with retry logic
-	var sendErr error
-	var sendResult *provider.SendResult
-	for attempt := 0; attempt <= payload.MaxRetries; attempt++ {
-		if attempt > 0 {
-			// Exponential backoff: 1s, 2s, 4s, 8s...
-			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-			time.Sleep(backoff)
-			h.recordEvent(ctx, payload.EmailID, "retry", fmt.Sprintf("Retry attempt %d after backoff", attempt))
-		}
-
-		// Send via the configured email provider (SES or SMTP)
-		sendResult, sendErr = h.emailProvider.SendEmail(ctx, emailMsg)
-
-		if sendErr == nil {
-			break // Success
-		}
-
-		// Check if error is retryable
-		if !isRetryableError(sendErr) {
-			break // Don't retry non-retryable errors
-		}
-	}
+	// SES has no submission idempotency token. A network retry may send twice,
+	// so persist an unknown outcome instead of repeating an ambiguous submission.
+	sendResult, sendErr := h.emailProvider.SendEmail(ctx, emailMsg)
 
 	// Store provider message ID if available
 	if sendResult != nil && sendResult.MessageID != "" {
@@ -228,31 +197,28 @@ func (h *EmailHandler) HandleEmailSend(ctx context.Context, t *asynq.Task) error
 	}
 
 	if sendErr != nil {
-		// Update status to failed
-		_, err = h.db.ExecContext(ctx, `
-			UPDATE transactional_emails
-			SET status = 'failed', updated_at = NOW()
-			WHERE id = $1
-		`, payload.EmailID)
-		if err != nil {
-			fmt.Printf("Warning: failed to update email status: %v\n", err)
+		status := "unknown"
+		if provider.IsDefinitiveSendError(sendErr) {
+			status = "failed"
 		}
-
-		h.recordEvent(ctx, payload.EmailID, "failed", sendErr.Error())
-
-		// Check if we should add to suppression list (permanent failure)
-		if isPermanentFailure(sendErr) {
-			h.handlePermanentFailure(ctx, payload)
+		persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, persistErr := h.db.ExecContext(persistCtx, `UPDATE transactional_emails SET status=$2,updated_at=NOW() WHERE id=$1 AND status='sending'`, payload.EmailID, status)
+		if persistErr != nil {
+			fmt.Printf("Failed to persist send outcome for email %d: %v\n", payload.EmailID, persistErr)
 		}
-
-		return fmt.Errorf("failed to send email after %d retries: %w", payload.MaxRetries, sendErr)
+		h.recordEvent(persistCtx, payload.EmailID, status, sendErr.Error())
+		return nil // A queue retry cannot safely determine whether SES accepted the prior call.
 	}
 
-	// Update status to sent
+	// A fast SNS event may already report delivery/bounce after the provider-ID write.
+	// Acceptance persistence must not regress that more informative terminal result.
 	now := time.Now()
-	_, err = h.db.ExecContext(ctx, `
+	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = h.db.ExecContext(persistCtx, `
 		UPDATE transactional_emails
-		SET status = 'sent', sent_at = $2, updated_at = NOW()
+		SET status = CASE WHEN status IN ('delivered','bounced','complained','opened','clicked') THEN status ELSE 'sent' END, sent_at = COALESCE(sent_at,$2), updated_at = NOW()
 		WHERE id = $1
 	`, payload.EmailID, now)
 	if err != nil {

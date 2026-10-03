@@ -52,6 +52,9 @@ func NewDomainService(db *sql.DB, cfg *config.Config) *DomainService {
 // CreateDomain adds a new domain with verification records
 func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *model.CreateDomainRequest) (*model.Domain, error) {
 	domainName := strings.ToLower(req.Name)
+	if s.cfg.EmailProvider == "ses" && s.emailProvider == nil {
+		return nil, fmt.Errorf("SES is not configured; domain creation is unavailable")
+	}
 
 	// Check if domain already exists for this org
 	var exists bool
@@ -76,7 +79,7 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 	if err != nil {
 		return nil, fmt.Errorf("failed to check domain limit: %w", err)
 	}
-	if domainCount >= maxDomains {
+	if !s.cfg.DisableAppLimits && maxDomains > 0 && domainCount >= maxDomains {
 		return nil, fmt.Errorf("domain limit reached: organization can have a maximum of %d domains", maxDomains)
 	}
 
@@ -116,7 +119,7 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 		var err error
 		sesVerificationResult, err = s.emailProvider.VerifyDomain(ctx, domainName)
 		if err != nil {
-			fmt.Printf("Warning: Failed to register domain with SES: %v\n", err)
+			return nil, fmt.Errorf("failed to register domain with SES: %w", err)
 		} else {
 			// Extract DKIM tokens
 			for _, rec := range sesVerificationResult.DKIMRecords {
@@ -136,6 +139,19 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if !s.cfg.DisableAppLimits {
+		// Serialize optional operator caps, including concurrent requests from
+		// different users. A separate count sees commits made while waiting.
+		if err = tx.QueryRowContext(ctx, `SELECT max_domains FROM organizations WHERE id=$1 FOR UPDATE`, orgID).Scan(&maxDomains); err != nil {
+			return nil, fmt.Errorf("lock organization domain limit: %w", err)
+		}
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM domains WHERE org_id=$1`, orgID).Scan(&domainCount); err != nil {
+			return nil, err
+		}
+		if maxDomains > 0 && domainCount >= maxDomains {
+			return nil, fmt.Errorf("domain limit reached: organization can have a maximum of %d domains", maxDomains)
+		}
+	}
 
 	// Create domain (matching Prisma schema with SES fields)
 	var domain model.Domain

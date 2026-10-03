@@ -24,6 +24,8 @@ type Attachment struct {
 	Filename    string
 	ContentType string
 	Data        []byte
+	ContentID   string
+	Inline      bool
 }
 
 // SendResult contains the result of sending an email

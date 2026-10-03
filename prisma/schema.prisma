@@ -15,10 +15,11 @@ model Organization {
   name              String          @db.VarChar(255)
   slug              String          @unique @db.VarChar(100)
   settings          Json            @default("{}")
-  maxDomains        Int             @default(5) @map("max_domains")
+  maxDomains        Int             @default(0) @map("max_domains")
+  maxIdentities     Int             @default(0) @map("max_identities")
   maxUsers          Int             @default(10) @map("max_users")
-  maxContacts       Int             @default(1000) @map("max_contacts")
-  monthlyEmailLimit Int             @default(10000) @map("monthly_email_limit")
+  maxContacts       Int             @default(0) @map("max_contacts")
+  monthlyEmailLimit Int             @default(0) @map("monthly_email_limit")
   plan              String          @default("free") @db.VarChar(50)
   createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -32,6 +33,9 @@ model Organization {
   branding          TenantBranding?
   users             User[]
   webhooks          Webhook[]
+  composeUploads    ComposeUpload[]
+  submissionKeys    EmailSubmissionKey[]
+  sendUsage         OrganizationSendUsage[]
 
   @@map("organizations")
 }
@@ -64,6 +68,9 @@ model User {
   sessions                 UserSession[]
   organization             Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
   webauthnCredentials      WebAuthnCredential[]
+  submittedEmails          ReceivedEmail[] @relation("SubmissionUser")
+  composeUploads           ComposeUpload[]
+  composeSubmissionKeys    ComposeSubmissionKey[]
 
   @@map("users")
 }
@@ -985,7 +992,17 @@ model ReceivedEmail {
   orgId             Int               @map("org_id")
   domainId          Int               @map("domain_id")
   identityId        Int               @map("identity_id")
-  messageId         String            @unique @map("message_id") @db.VarChar(500)
+  messageId         String            @map("message_id") @db.VarChar(500)
+  envelopeRecipients String[]         @default([]) @map("envelope_recipients")
+  direction         String            @default("inbound")
+  sendStatus        String            @default("received") @map("send_status")
+  sendError         String?           @map("send_error")
+  sentAt            DateTime?         @map("sent_at") @db.Timestamptz(6)
+  draftVersion      Int               @default(1) @map("draft_version")
+  submissionKey     String?           @map("submission_key")
+  submissionHash    String?           @map("submission_hash")
+  submitterUserId   Int?              @map("submitter_user_id")
+  submitter         User?             @relation("SubmissionUser", fields: [submitterUserId], references: [id], onDelete: Cascade)
   inReplyTo         String?           @map("in_reply_to") @db.VarChar(500)
   references        String[]          @default([])
   threadId          String?           @map("thread_id") @db.VarChar(100)
@@ -1038,6 +1055,11 @@ model ReceivedEmail {
   @@index([identityId, isStarred])
   @@index([threadId])
   @@index([sesMessageId])
+  @@unique([identityId, sesMessageId], map: "received_emails_identity_ses_key")
+  @@index([messageId], map: "received_emails_message_id_idx")
+  @@index([identityId, receivedAt(sort: Desc), id(sort: Desc)], map: "received_emails_identity_time_id_idx")
+  @@index([identityId, folder, receivedAt(sort: Desc), id(sort: Desc)], map: "received_emails_identity_folder_time_id_idx")
+  @@index([rawS3Bucket, rawS3Key], map: "received_emails_raw_object_idx")
   @@map("received_emails")
 }
 
@@ -1057,6 +1079,7 @@ model EmailAttachment {
   receivedEmail   ReceivedEmail @relation(fields: [receivedEmailId], references: [id], onDelete: Cascade)
 
   @@index([receivedEmailId])
+  @@index([s3Bucket, s3Key], map: "email_attachments_object_idx")
   @@map("email_attachments")
 }
 
@@ -1122,4 +1145,88 @@ model ReceivingConfig {
   updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("receiving_configs")
+}
+
+// Versioned Go migrations are authoritative, including partial uniqueness for
+// identity defaults/catch-all and non-null mailbox submission keys.
+model ReceivedIngestion {
+ id BigInt @id @default(autoincrement())
+ orgId Int @map("org_id")
+ topicArn String @map("topic_arn")
+ sesMessageId String @map("ses_message_id")
+ identityId Int @map("identity_id")
+ createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+ @@unique([topicArn,sesMessageId,identityId])
+ @@map("received_ingestions")
+}
+model StorageCleanupJob {
+ id BigInt @id @default(autoincrement())
+ bucket String
+ objectKey String @map("object_key")
+ attempts Int @default(0)
+ nextAttemptAt DateTime @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+ lastError String? @map("last_error")
+ createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+ @@unique([bucket,objectKey])
+ @@index([nextAttemptAt], map: "storage_cleanup_jobs_due_idx")
+ @@map("storage_cleanup_jobs")
+}
+model SESDeliveryEvent {
+ topicArn String @map("topic_arn")
+ notificationId String @map("notification_id")
+ createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+ @@id([topicArn,notificationId])
+ @@map("ses_delivery_events")
+}
+model ComposeUpload {
+ uuid String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+ userId Int @map("user_id")
+ orgId Int @map("org_id")
+ filename String
+ contentType String @map("content_type")
+ sizeBytes Int @map("size_bytes")
+ s3Bucket String @map("s3_bucket")
+ s3Key String @map("s3_key")
+ checksum String
+ createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+ user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+ organization Organization @relation(fields:[orgId],references:[id],onDelete:Cascade)
+ @@index([userId,createdAt],map:"compose_uploads_owner_idx")
+ @@map("compose_uploads")
+}
+model EmailSubmissionKey {
+ orgId Int @map("org_id")
+ submissionKey String @map("submission_key")
+ requestHash String @map("request_hash")
+ emailUuid String? @map("email_uuid") @db.Uuid
+ status String @default("reserved")
+ createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+ organization Organization @relation(fields:[orgId],references:[id],onDelete:Cascade)
+ @@id([orgId,submissionKey])
+ @@map("email_submission_keys")
+}
+model ComposeSubmissionKey {
+ userId Int @map("user_id")
+ submissionKey String @map("submission_key")
+ requestHash String @map("request_hash")
+ emailUuid String @unique(map:"compose_submission_keys_email_uuid_idx") @map("email_uuid") @db.Uuid
+ messageId String @map("message_id")
+ sesMessageId String? @map("ses_message_id")
+ status String @default("sending")
+ sendError String? @map("send_error")
+ sentAt DateTime? @map("sent_at") @db.Timestamptz(6)
+ createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+ updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+ user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+ @@id([userId,submissionKey])
+ @@index([sesMessageId],map:"compose_submission_keys_ses_message_id_idx")
+ @@map("compose_submission_keys")
+}
+model OrganizationSendUsage {
+ orgId Int @map("org_id")
+ month DateTime @db.Date
+ attempts BigInt @default(0)
+ organization Organization @relation(fields:[orgId],references:[id],onDelete:Cascade)
+ @@id([orgId,month])
+ @@map("organization_send_usage")
 }

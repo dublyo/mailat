@@ -14,6 +14,10 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      - API_DOMAIN=${API_DOMAIN:-api.localhost}
+      - MAIL_DOMAIN=${MAIL_DOMAIN:-mail.localhost}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -54,26 +58,41 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
       - JWT_SECRET=${JWT_SECRET}
-      - STALWART_URL=http://stalwart:8080
-      - STALWART_ADMIN_TOKEN=${STALWART_ADMIN_TOKEN}
-      - SMTP_HOST=stalwart
-      - SMTP_PORT=587
-      - SMTP_TLS=false
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-7d}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - API_URL=${API_URL}
+      - WEB_URL=${WEB_URL}
+      - APP_DOMAIN=${APP_DOMAIN}
+      - APP_NAME=${APP_NAME:-Mailat}
+      - WORKER_ENABLED=${WORKER_ENABLED:-true}
+      - AUTO_MIGRATE=${AUTO_MIGRATE:-true}
+      - DISABLE_APP_LIMITS=${DISABLE_APP_LIMITS:-true}
+      - DEFAULT_MAX_DOMAINS=${DEFAULT_MAX_DOMAINS:-0}
+      - DEFAULT_MONTHLY_EMAIL_LIMIT=${DEFAULT_MONTHLY_EMAIL_LIMIT:-0}
+      - DEFAULT_MAX_IDENTITIES=${DEFAULT_MAX_IDENTITIES:-0}
+      - DEFAULT_MAX_CONTACTS=${DEFAULT_MAX_CONTACTS:-0}
+      - STALWART_URL=${STALWART_URL:-http://stalwart:8080}
+      - STALWART_ADMIN_TOKEN=${STALWART_ADMIN_TOKEN:-}
+      - SMTP_HOST=${SMTP_HOST:-stalwart}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_TLS=${SMTP_TLS:-false}
       - ENV=production
       - NODE_ENV=production
       - AWS_REGION=${AWS_REGION}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - EMAIL_PROVIDER=ses
-    depends_on:
-      - stalwart
+      - SES_CONFIGURATION_SET=${SES_CONFIGURATION_SET:-}
+      - EMAIL_PROVIDER=${EMAIL_PROVIDER:-ses}
     networks:
       - mailat-network
 
   # ===================
-  # MAIL SERVER
+  # OPTIONAL LEGACY MAIL SERVER: --profile stalwart
   # ===================
   stalwart:
+    profiles: [stalwart]
     image: stalwartlabs/stalwart:latest
     container_name: mailat-stalwart
     restart: unless-stopped
@@ -81,8 +100,8 @@ services:
       - "587:587"     # Submission
       - "993:993"     # IMAPS
     environment:
-      - STALWART_DATABASE_URL=${STALWART_DATABASE_URL}
-      - STALWART_ADMIN_TOKEN=${STALWART_ADMIN_TOKEN}
+      - STALWART_DATABASE_URL=${STALWART_DATABASE_URL:-}
+      - STALWART_ADMIN_TOKEN=${STALWART_ADMIN_TOKEN:-}
     volumes:
       - stalwart_data:/opt/stalwart
       - ./docker/stalwart/config.toml:/opt/stalwart/etc/config.toml:ro

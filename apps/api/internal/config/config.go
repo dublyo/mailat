@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -39,7 +40,9 @@ type Config struct {
 	EncryptionKey string
 
 	// Worker
-	WorkerEnabled bool
+	WorkerEnabled    bool
+	AutoMigrate      bool
+	DisableAppLimits bool
 
 	// Email Provider ("smtp" or "ses")
 	EmailProvider string
@@ -53,9 +56,9 @@ type Config struct {
 	SMTPTLS      bool
 
 	// AWS SES (used when EmailProvider is "ses")
-	AWSRegion          string
-	AWSAccessKeyID     string
-	AWSSecretAccessKey string
+	AWSRegion           string
+	AWSAccessKeyID      string
+	AWSSecretAccessKey  string
 	SESConfigurationSet string
 
 	// OAuth2 Providers (Phase 5.3)
@@ -83,13 +86,15 @@ func Load() (*Config, error) {
 	smtpPort, _ := strconv.Atoi(getEnv("SMTP_PORT", "587"))
 	smtpTLS, _ := strconv.ParseBool(getEnv("SMTP_TLS", "true"))
 
-	workerEnabled, _ := strconv.ParseBool(getEnv("WORKER_ENABLED", "false"))
+	workerEnabled, _ := strconv.ParseBool(getEnv("WORKER_ENABLED", "true"))
+	autoMigrate, _ := strconv.ParseBool(getEnv("AUTO_MIGRATE", "true"))
+	disableAppLimits, _ := strconv.ParseBool(getEnv("DISABLE_APP_LIMITS", "true"))
 
 	// Organization limits
-	defaultMaxDomains, _ := strconv.Atoi(getEnv("DEFAULT_MAX_DOMAINS", "10"))
-	defaultMonthlyEmailLimit, _ := strconv.Atoi(getEnv("DEFAULT_MONTHLY_EMAIL_LIMIT", "10000"))
-	defaultMaxIdentities, _ := strconv.Atoi(getEnv("DEFAULT_MAX_IDENTITIES", "50"))
-	defaultMaxContacts, _ := strconv.Atoi(getEnv("DEFAULT_MAX_CONTACTS", "10000"))
+	defaultMaxDomains, _ := strconv.Atoi(getEnv("DEFAULT_MAX_DOMAINS", "0"))
+	defaultMonthlyEmailLimit, _ := strconv.Atoi(getEnv("DEFAULT_MONTHLY_EMAIL_LIMIT", "0"))
+	defaultMaxIdentities, _ := strconv.Atoi(getEnv("DEFAULT_MAX_IDENTITIES", "0"))
+	defaultMaxContacts, _ := strconv.Atoi(getEnv("DEFAULT_MAX_CONTACTS", "0"))
 
 	Cfg = &Config{
 		// Server
@@ -123,7 +128,9 @@ func Load() (*Config, error) {
 		EncryptionKey: getEnv("ENCRYPTION_KEY", ""),
 
 		// Worker
-		WorkerEnabled: workerEnabled,
+		WorkerEnabled:    workerEnabled,
+		AutoMigrate:      autoMigrate,
+		DisableAppLimits: disableAppLimits,
 
 		// Email Provider
 		EmailProvider: getEnv("EMAIL_PROVIDER", "smtp"),
@@ -137,9 +144,9 @@ func Load() (*Config, error) {
 		SMTPTLS:      smtpTLS,
 
 		// AWS SES
-		AWSRegion:          getEnv("AWS_REGION", "us-east-1"),
-		AWSAccessKeyID:     getEnv("AWS_ACCESS_KEY_ID", ""),
-		AWSSecretAccessKey: getEnv("AWS_SECRET_ACCESS_KEY", ""),
+		AWSRegion:           getEnv("AWS_REGION", "us-east-1"),
+		AWSAccessKeyID:      getEnv("AWS_ACCESS_KEY_ID", ""),
+		AWSSecretAccessKey:  getEnv("AWS_SECRET_ACCESS_KEY", ""),
 		SESConfigurationSet: getEnv("SES_CONFIGURATION_SET", ""),
 
 		// OAuth2 Providers
@@ -171,7 +178,7 @@ func getEnv(key, fallback string) string {
 // Supports formats: redis://host:port, redis://:pass@host:port, host:port
 func normalizeRedisURL(url string) string {
 	// Already has proper prefix
-	if len(url) >= 8 && (url[:8] == "redis://" || url[:9] == "rediss://") {
+	if strings.HasPrefix(url, "redis://") || strings.HasPrefix(url, "rediss://") {
 		return url
 	}
 	// Add redis:// prefix if missing

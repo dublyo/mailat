@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/mail"
 	"regexp"
 	"strings"
 	"time"
@@ -46,7 +48,7 @@ func NewTransactionalService(db *sql.DB, cfg *config.Config, redisClient *redis.
 
 	// Initialize email provider based on config
 	ctx := context.Background()
-	if cfg.EmailProvider == "ses" && cfg.AWSAccessKeyID != "" {
+	if cfg.EmailProvider == "ses" {
 		sesProvider, err := provider.NewSESProvider(ctx, &provider.SESConfig{
 			Region:           cfg.AWSRegion,
 			AccessKeyID:      cfg.AWSAccessKeyID,
@@ -54,15 +56,7 @@ func NewTransactionalService(db *sql.DB, cfg *config.Config, redisClient *redis.
 			ConfigurationSet: cfg.SESConfigurationSet,
 		})
 		if err != nil {
-			fmt.Printf("Warning: Failed to create SES provider: %v, falling back to SMTP\n", err)
-			svc.emailProvider = provider.NewSMTPProvider(&provider.SMTPConfig{
-				Host:          cfg.SMTPHost,
-				Port:          cfg.SMTPPort,
-				Username:      cfg.SMTPUser,
-				Password:      cfg.SMTPPassword,
-				UseTLS:        cfg.SMTPTLS,
-				SkipTLSVerify: !cfg.SMTPTLS,
-			})
+			fmt.Printf("Warning: SES sending is unavailable: %v\n", err)
 		} else {
 			svc.emailProvider = sesProvider
 			fmt.Println("TransactionalService initialized with AWS SES provider")
@@ -84,52 +78,106 @@ func NewTransactionalService(db *sql.DB, cfg *config.Config, redisClient *redis.
 
 // SendEmail sends a single transactional email
 func (s *TransactionalService) SendEmail(ctx context.Context, orgID int64, req *model.SendEmailRequest) (*model.SendEmailResponse, error) {
-	// Check idempotency
+	return s.SendEmailForUser(ctx, orgID, 0, req)
+}
+
+// SendEmailForUser adds the actor boundary for HTTP users and user-bound API keys.
+func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID, userID int64, req *model.SendEmailRequest) (*model.SendEmailResponse, error) {
+	if s.emailProvider == nil {
+		return nil, fmt.Errorf("email provider is not configured; sending has not been attempted")
+	}
+
+	// A request key is scoped to its organization and the complete request body.
+	requestCopy := *req
+	requestCopy.IdempotencyKey = ""
+	requestBody, _ := json.Marshal(requestCopy)
+	requestSum := sha256.Sum256(requestBody)
+	requestHash := hex.EncodeToString(requestSum[:])
 	if req.IdempotencyKey != "" {
-		existing, err := s.checkIdempotency(ctx, req.IdempotencyKey)
-		if err == nil && existing != nil {
-			return existing, nil
+		if len(req.IdempotencyKey) > 128 {
+			return nil, fmt.Errorf("idempotency key is too long")
 		}
 	}
 
 	// Validate sender domain ownership
 	fromEmail := req.From
-	domainName := extractDomain(fromEmail)
+	fromAddress, err := mail.ParseAddress(fromEmail)
+	if err != nil || strings.ContainsAny(fromEmail, "\r\n") {
+		return nil, fmt.Errorf("invalid From address")
+	}
+	normalizedFrom := strings.ToLower(fromAddress.Address)
+	domainName := extractDomain(normalizedFrom)
+	if userID > 0 {
+		var foreign bool
+		if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE LOWER(email)=$1 AND user_id<>$2)`, normalizedFrom, userID).Scan(&foreign); err != nil {
+			return nil, err
+		}
+		if foreign {
+			return nil, fmt.Errorf("that From address belongs to another user")
+		}
+		var ownsDomain bool
+		if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.user_id=$1 AND i.can_send=true AND d.org_id=$2 AND LOWER(d.name)=$3)`, userID, orgID, domainName).Scan(&ownsDomain); err != nil {
+			return nil, err
+		}
+		if !ownsDomain {
+			return nil, fmt.Errorf("no authorized sending identity for this domain")
+		}
+	}
 
 	var domainID int64
 	var domainStatus string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, status FROM domains WHERE name = $1 AND org_id = $2
-	`, domainName, orgID).Scan(&domainID, &domainStatus)
+	var sesVerified bool
+	err = s.db.QueryRowContext(ctx, `
+		SELECT id, status, COALESCE(ses_verified,false) FROM domains WHERE LOWER(name) = $1 AND org_id = $2
+	`, domainName, orgID).Scan(&domainID, &domainStatus, &sesVerified)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("sender domain not verified for your organization")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify sender domain: %w", err)
 	}
-	if domainStatus != "active" {
+	if domainStatus != "active" || (s.cfg.EmailProvider == "ses" && !sesVerified) {
 		return nil, fmt.Errorf("sender domain is not active")
 	}
 
 	// Find identity for the sender
 	var identityID int64
+	var canSend bool
 	err = s.db.QueryRowContext(ctx, `
-		SELECT i.id FROM identities i
+		SELECT i.id, i.can_send FROM identities i
 		JOIN users u ON i.user_id = u.id
-		WHERE i.email = $1 AND u.org_id = $2
-	`, fromEmail, orgID).Scan(&identityID)
+		WHERE LOWER(i.email) = $1 AND u.org_id = $2
+	`, normalizedFrom, orgID).Scan(&identityID, &canSend)
 	if err == sql.ErrNoRows {
 		// Create a system identity or use default
-		identityID = 0 // Will use SMTP directly
+		identityID = 0 // Owned-domain aliases do not need a separate identity row.
+	} else if err != nil {
+		return nil, err
+	} else if !canSend {
+		return nil, fmt.Errorf("sending is disabled for this identity")
 	}
 
-	// Check rate limits
-	if err := s.checkRateLimits(ctx, orgID); err != nil {
-		return nil, err
+	if req.IdempotencyKey != "" {
+		existing, err := s.loadSubmission(ctx, orgID, req.IdempotencyKey, requestHash)
+		if err != nil || existing != nil {
+			return existing, err
+		}
+	}
+
+	var scheduledFor *time.Time
+	if req.ScheduledFor != nil {
+		scheduled, err := time.Parse(time.RFC3339, *req.ScheduledFor)
+		if err != nil || !scheduled.After(time.Now()) {
+			return nil, fmt.Errorf("scheduledFor must be a future RFC3339 timestamp")
+		}
+		if s.queueClient == nil {
+			return nil, fmt.Errorf("scheduled sending is unavailable without the job queue")
+		}
+		scheduledFor = &scheduled
 	}
 
 	// Check suppression list
-	for _, to := range req.To {
+	for _, to := range append(append(append([]string{}, req.To...), req.Cc...), req.Bcc...) {
 		suppressed, err := s.isEmailSuppressed(ctx, orgID, to)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check suppression list: %w", err)
@@ -159,6 +207,11 @@ func (s *TransactionalService) SendEmail(ctx context.Context, orgID int64, req *
 		textBody = s.renderTemplate(textBody, req.Variables)
 	}
 
+	// Validate headers/recipient limits before persisting or reserving quota.
+	if _, _, err = provider.BuildMailMIME(&provider.EmailMessage{From: fromEmail, To: req.To, Cc: req.Cc, Bcc: req.Bcc, ReplyTo: req.ReplyTo, Subject: subject, TextBody: textBody, HTMLBody: htmlBody}); err != nil {
+		return nil, err
+	}
+
 	// Generate Message-ID
 	messageID := s.generateMessageID(domainName)
 
@@ -169,29 +222,57 @@ func (s *TransactionalService) SendEmail(ctx context.Context, orgID int64, req *
 	tagsJSON, _ := json.Marshal(req.Tags)
 	metadataJSON, _ := json.Marshal(req.Metadata)
 
-	err = s.db.QueryRowContext(ctx, `
-		INSERT INTO transactional_emails (
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if req.IdempotencyKey != "" {
+		claim, err := tx.ExecContext(ctx, `INSERT INTO email_submission_keys(org_id,submission_key,request_hash) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, orgID, req.IdempotencyKey, requestHash)
+		if err != nil {
+			return nil, err
+		}
+		affected, _ := claim.RowsAffected()
+		if affected == 0 {
+			tx.Rollback()
+			return s.loadSubmission(ctx, orgID, req.IdempotencyKey, requestHash)
+		}
+	}
+	if err := s.checkRateLimits(ctx, orgID); err != nil {
+		return nil, err
+	}
+	err = tx.QueryRowContext(ctx, `
+  INSERT INTO transactional_emails (
 			uuid, org_id, identity_id, message_id, from_address, to_addresses,
 			cc_addresses, bcc_addresses, reply_to, subject, html_body, text_body,
-			tags, metadata, status, idempotency_key, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
+			tags, metadata, status, idempotency_key, scheduled_for, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
 		RETURNING id
 	`, emailUUID, orgID, identityID, messageID, fromEmail, strings.Join(req.To, ","),
 		strings.Join(req.Cc, ","), strings.Join(req.Bcc, ","), req.ReplyTo,
 		subject, htmlBody, textBody, string(tagsJSON), string(metadataJSON),
-		"queued", req.IdempotencyKey,
+		"queued", req.IdempotencyKey, scheduledFor,
 	).Scan(&emailID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create email record: %w", err)
 	}
 
 	// Create initial delivery event
-	_, err = s.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO transactional_delivery_events (email_id, event_type, details)
 		VALUES ($1, 'queued', 'Email accepted for delivery')
 	`, emailID)
 	if err != nil {
 		fmt.Printf("Warning: failed to create delivery event: %v\n", err)
+	}
+
+	if req.IdempotencyKey != "" {
+		if _, err = tx.ExecContext(ctx, `UPDATE email_submission_keys SET email_uuid=$3,status='ready' WHERE org_id=$1 AND submission_key=$2`, orgID, req.IdempotencyKey, emailUUID); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
 	}
 
 	// Queue for sending via asynq job queue
@@ -202,28 +283,24 @@ func (s *TransactionalService) SendEmail(ctx context.Context, orgID int64, req *
 		payload.ReplyTo = req.ReplyTo
 
 		// Check for scheduled sending
-		if req.ScheduledFor != nil {
-			scheduledTime, err := time.Parse(time.RFC3339, *req.ScheduledFor)
-			if err == nil && scheduledTime.After(time.Now()) {
-				_, err = s.queueClient.EnqueueEmailSendScheduled(payload, scheduledTime)
-				if err != nil {
-					fmt.Printf("Warning: failed to schedule email, sending immediately: %v\n", err)
-					_, _ = s.queueClient.EnqueueEmailSend(payload)
-				}
-			} else {
-				_, _ = s.queueClient.EnqueueEmailSend(payload)
+		if scheduledFor != nil {
+			_, err = s.queueClient.EnqueueEmailSendScheduled(payload, *scheduledFor)
+			if err != nil {
+				// Queue uncertainty must never change the requested delivery time.
+				_, _ = s.db.ExecContext(context.Background(), `UPDATE transactional_emails SET status='failed',updated_at=NOW() WHERE id=$1 AND status='queued'`, emailID)
+				return &model.SendEmailResponse{ID: emailUUID, MessageID: messageID, Status: "failed", AcceptedAt: time.Now()}, nil
 			}
 		} else {
 			_, err = s.queueClient.EnqueueEmailSend(payload)
 			if err != nil {
 				fmt.Printf("Warning: failed to enqueue email: %v\n", err)
 				// Fallback to sync sending
-				go s.processEmail(context.Background(), emailID, fromEmail, req.To, req.Cc, req.Bcc, subject, htmlBody, textBody, messageID)
+				go s.processEmail(context.Background(), emailID, fromEmail, req.To, req.Cc, req.Bcc, subject, htmlBody, textBody, messageID, req.ReplyTo)
 			}
 		}
 	} else {
 		// Fallback to goroutine if queue client not available
-		go s.processEmail(context.Background(), emailID, fromEmail, req.To, req.Cc, req.Bcc, subject, htmlBody, textBody, messageID)
+		go s.processEmail(context.Background(), emailID, fromEmail, req.To, req.Cc, req.Bcc, subject, htmlBody, textBody, messageID, req.ReplyTo)
 	}
 
 	response := &model.SendEmailResponse{
@@ -233,16 +310,14 @@ func (s *TransactionalService) SendEmail(ctx context.Context, orgID int64, req *
 		AcceptedAt: time.Now(),
 	}
 
-	// Store idempotency result
-	if req.IdempotencyKey != "" {
-		s.storeIdempotencyResult(ctx, req.IdempotencyKey, response)
-	}
-
 	return response, nil
 }
 
 // BatchSendEmail sends multiple emails in batch
 func (s *TransactionalService) BatchSendEmail(ctx context.Context, orgID int64, req *model.BatchSendRequest) (*model.BatchSendResponse, error) {
+	return s.BatchSendEmailForUser(ctx, orgID, 0, req)
+}
+func (s *TransactionalService) BatchSendEmailForUser(ctx context.Context, orgID, userID int64, req *model.BatchSendRequest) (*model.BatchSendResponse, error) {
 	if len(req.Emails) > 100 {
 		return nil, fmt.Errorf("batch size exceeds maximum of 100 emails")
 	}
@@ -250,7 +325,7 @@ func (s *TransactionalService) BatchSendEmail(ctx context.Context, orgID int64, 
 	results := make([]model.BatchEmailResult, len(req.Emails))
 
 	for i, emailReq := range req.Emails {
-		resp, err := s.SendEmail(ctx, orgID, &emailReq)
+		resp, err := s.SendEmailForUser(ctx, orgID, userID, &emailReq)
 		if err != nil {
 			results[i] = model.BatchEmailResult{
 				Index:  i,
@@ -597,49 +672,17 @@ func extractDomain(email string) string {
 }
 
 func (s *TransactionalService) checkRateLimits(ctx context.Context, orgID int64) error {
-	if s.redis == nil {
-		return nil // Skip if Redis not available
-	}
-
-	key := fmt.Sprintf("ratelimit:org:%d:emails", orgID)
-
-	// Check current count
-	count, err := s.redis.Get(ctx, key).Int64()
-	if err != nil && err != redis.Nil {
-		return nil // Don't block on Redis errors
-	}
-
-	// Get org monthly limit and calculate daily quota as monthly_email_limit / 30
-	var monthlyLimit int
-	err = s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(monthly_email_limit, 30000) FROM organizations WHERE id = $1
-	`, orgID).Scan(&monthlyLimit)
-	if err != nil {
-		monthlyLimit = 30000 // Default 30k monthly
-	}
-
-	// Daily quota is monthly limit / 30, minimum 100
-	dailyQuota := monthlyLimit / 30
-	if dailyQuota < 100 {
-		dailyQuota = 100
-	}
-
-	if count >= int64(dailyQuota) {
-		return fmt.Errorf("daily email quota exceeded")
-	}
-
-	// Increment counter
-	pipe := s.redis.Pipeline()
-	pipe.Incr(ctx, key)
-	pipe.Expire(ctx, key, 24*time.Hour)
-	pipe.Exec(ctx)
-
-	return nil
+	return reserveMonthlySend(ctx, s.db, s.cfg, orgID)
 }
 
 func (s *TransactionalService) isEmailSuppressed(ctx context.Context, orgID int64, email string) (bool, error) {
+	parsed, err := mail.ParseAddress(email)
+	if err != nil {
+		return false, fmt.Errorf("invalid recipient email address")
+	}
+	email = parsed.Address
 	var exists bool
-	err := s.db.QueryRowContext(ctx, `
+	err = s.db.QueryRowContext(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM suppression_list
 			WHERE org_id = $1 AND email = $2
@@ -651,42 +694,33 @@ func (s *TransactionalService) isEmailSuppressed(ctx context.Context, orgID int6
 	return exists, nil
 }
 
-func (s *TransactionalService) checkIdempotency(ctx context.Context, key string) (*model.SendEmailResponse, error) {
-	if s.redis == nil {
-		return nil, fmt.Errorf("redis not available")
+// loadSubmission cannot return another organization's cached response.
+func (s *TransactionalService) loadSubmission(ctx context.Context, orgID int64, key, hash string) (*model.SendEmailResponse, error) {
+	var result model.SendEmailResponse
+	var storedHash string
+	err := s.db.QueryRowContext(ctx, `SELECT k.request_hash,e.uuid,e.message_id,e.status,e.created_at FROM email_submission_keys k JOIN transactional_emails e ON e.uuid=k.email_uuid AND e.org_id=k.org_id WHERE k.org_id=$1 AND k.submission_key=$2`, orgID, key).Scan(&storedHash, &result.ID, &result.MessageID, &result.Status, &result.AcceptedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
 	}
-
-	data, err := s.redis.Get(ctx, "idempotency:"+key).Bytes()
 	if err != nil {
 		return nil, err
 	}
-
-	var response model.SendEmailResponse
-	if err := json.Unmarshal(data, &response); err != nil {
-		return nil, err
+	if storedHash != hash {
+		return nil, fmt.Errorf("idempotency key was used with different content")
 	}
-
-	return &response, nil
+	return &result, nil
 }
 
-func (s *TransactionalService) storeIdempotencyResult(ctx context.Context, key string, response *model.SendEmailResponse) {
-	if s.redis == nil {
-		return
-	}
-
-	data, err := json.Marshal(response)
+func (s *TransactionalService) processEmail(ctx context.Context, emailID int64, from string, to, cc, bcc []string, subject, htmlBody, textBody, messageID, replyTo string) {
+	// Claim once. A previous sending/unknown attempt must never be blindly repeated.
+	result, err := s.db.ExecContext(ctx, `UPDATE transactional_emails SET status='sending',updated_at=NOW() WHERE id=$1 AND status='queued'`, emailID)
 	if err != nil {
 		return
 	}
-
-	s.redis.Set(ctx, "idempotency:"+key, data, 24*time.Hour)
-}
-
-func (s *TransactionalService) processEmail(ctx context.Context, emailID int64, from string, to, cc, bcc []string, subject, htmlBody, textBody, messageID string) {
-	// Update status to sending
-	s.db.ExecContext(ctx, `
-		UPDATE transactional_emails SET status = 'sending', updated_at = NOW() WHERE id = $1
-	`, emailID)
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return
+	}
 
 	// Build email message for provider
 	emailMsg := &provider.EmailMessage{
@@ -698,16 +732,17 @@ func (s *TransactionalService) processEmail(ctx context.Context, emailID int64, 
 		HTMLBody:  htmlBody,
 		TextBody:  textBody,
 		MessageID: messageID,
+		ReplyTo:   replyTo,
 	}
 
 	// Send via email provider (SES or SMTP)
-	result, err := s.emailProvider.SendEmail(ctx, emailMsg)
+	sendResult, err := s.emailProvider.SendEmail(ctx, emailMsg)
 
 	if err != nil {
 		// Update status to failed
 		s.db.ExecContext(ctx, `
-			UPDATE transactional_emails SET status = 'failed', updated_at = NOW() WHERE id = $1
-		`, emailID)
+			UPDATE transactional_emails SET status = $2, updated_at = NOW() WHERE id = $1 AND status='sending'
+		`, emailID, sendFailureStatus(err))
 		s.db.ExecContext(ctx, `
 			INSERT INTO transactional_delivery_events (email_id, event_type, details) VALUES ($1, 'failed', $2)
 		`, emailID, err.Error())
@@ -720,12 +755,12 @@ func (s *TransactionalService) processEmail(ctx context.Context, emailID int64, 
 
 	// Update status to sent with provider info
 	providerMsgID := ""
-	if result != nil && result.MessageID != "" {
-		providerMsgID = result.MessageID
+	if sendResult != nil && sendResult.MessageID != "" {
+		providerMsgID = sendResult.MessageID
 	}
 	s.db.ExecContext(ctx, `
 		UPDATE transactional_emails
-		SET status = 'sent', sent_at = NOW(), provider_message_id = $2, email_provider = $3, updated_at = NOW()
+		SET status = CASE WHEN status IN ('delivered','bounced','complained','opened','clicked') THEN status ELSE 'sent' END, sent_at = COALESCE(sent_at,NOW()), provider_message_id = $2, email_provider = $3, updated_at = NOW()
 		WHERE id = $1
 	`, emailID, providerMsgID, s.emailProvider.Name())
 	s.db.ExecContext(ctx, `
@@ -780,4 +815,11 @@ func (s *TransactionalService) triggerWebhooks(ctx context.Context, emailID int6
 
 		s.queueClient.EnqueueWebhookDeliver(webhookPayload)
 	}
+}
+
+func sendFailureStatus(err error) string {
+	if provider.IsDefinitiveSendError(err) {
+		return "failed"
+	}
+	return "unknown"
 }

@@ -33,11 +33,13 @@ class ApiClient {
     this.client.interceptors.response.use(
       (response) => response,
       (error) => {
-        if (error.response?.status === 401) {
+        // Invalid credentials belong to the login form; a redirect would erase
+        // its error and the protected route the user was trying to open.
+        if (error.response?.status === 401 && error.config?.url !== '/api/v1/auth/login') {
           this.setToken(null)
           window.location.href = '/login'
         }
-        return Promise.reject(error)
+        return Promise.reject(Object.assign(new Error(error.response?.data?.message || error.message || 'Request failed'), { status: error.response?.status }))
       }
     )
   }
@@ -59,13 +61,18 @@ class ApiClient {
     return this.token
   }
 
-  async get<T>(endpoint: string): Promise<T> {
-    const response: AxiosResponse<ApiResponse<T>> = await this.client.get(endpoint)
+  async get<T>(endpoint: string, signal?: AbortSignal): Promise<T> {
+    const response: AxiosResponse<ApiResponse<T>> = await this.client.get(endpoint, { signal })
     return response.data.data
   }
 
-  async post<T>(endpoint: string, body?: unknown): Promise<T> {
-    const response: AxiosResponse<ApiResponse<T>> = await this.client.post(endpoint, body)
+  async download(endpoint: string): Promise<Blob> {
+    const response = await this.client.get(endpoint, { responseType: 'blob' })
+    return response.data
+  }
+
+  async post<T>(endpoint: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
+    const response: AxiosResponse<ApiResponse<T>> = await this.client.post(endpoint, body, { headers })
     return response.data.data
   }
 
@@ -115,6 +122,13 @@ export interface Email {
   threadId?: string
   receivedAt: string
   createdAt: string
+  envelopeRecipients?: string[]
+  replyToAddress?: string
+  inReplyTo?: string
+  references?: string[]
+  fromEmail?: string
+  draftVersion?: number
+  sourceAttachments?: ReceivedEmailAttachment[]
   // For received emails - identity that received/will send the email
   identityId?: number
 }
@@ -261,8 +275,7 @@ export const authApi = {
   register: (data: { email: string; password: string; name: string }) =>
     api.post<{ token: string; user: User }>('/api/v1/auth/register', data),
 
-  registerStatus: () =>
-    api.get<{ open: boolean }>('/api/v1/auth/register-status'),
+  registerStatus: () => api.get<{ open: boolean }>('/api/v1/auth/register-status'),
 
   me: () => api.get<User>('/api/v1/auth/me'),
 }
@@ -298,43 +311,53 @@ export const inboxApi = {
 
 // ============ Compose API ============
 
+export interface ComposeAttachment {
+  name: string
+  type: string
+  content?: string
+  blobId?: string
+  size?: number
+}
+
+export interface ComposeRequest {
+  identityId: number
+  fromEmail?: string
+  to: EmailAddress[]
+  cc?: EmailAddress[]
+  bcc?: EmailAddress[]
+  subject: string
+  textBody: string
+  htmlBody?: string
+  inReplyTo?: string
+  references?: string[]
+  attachments?: ComposeAttachment[]
+  draftId?: string
+  draftVersion?: number
+  version?: number
+}
+
+export interface DraftResult {
+  id: string
+  version: number
+  identityId: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SendResult {
+  emailId: string
+  messageId?: string
+  status: 'sent' | 'delivered' | 'bounced' | 'complained' | 'failed' | 'unknown' | 'sending'
+  sentAt?: string
+  sendError?: string
+}
+
 export const composeApi = {
-  send: (data: {
-    identityId: string | number
-    to: string[]
-    cc?: string[]
-    bcc?: string[]
-    subject: string
-    body: string
-    htmlBody?: string
-    replyTo?: string
-  }) => {
-    // Transform to backend format
-    const payload = {
-      identityId: typeof data.identityId === 'string' ? parseInt(data.identityId, 10) : data.identityId,
-      to: data.to.map(email => ({ name: '', email })),
-      cc: data.cc?.map(email => ({ name: '', email })),
-      bcc: data.bcc?.map(email => ({ name: '', email })),
-      subject: data.subject,
-      textBody: data.body,
-      htmlBody: data.htmlBody,
-      inReplyTo: data.replyTo
-    }
-    return api.post<Email>('/api/v1/compose/send', payload)
-  },
-
-  saveDraft: (data: {
-    identityId?: string
-    to?: string[]
-    subject?: string
-    body?: string
-  }) => api.post<Email>('/api/v1/compose/draft', data),
-
-  reply: (uuid: string, data: { body: string; replyAll?: boolean }) =>
-    api.post<Email>(`/api/v1/compose/${uuid}/reply`, data),
-
-  forward: (uuid: string, data: { to: string[]; body?: string }) =>
-    api.post<Email>(`/api/v1/compose/${uuid}/forward`, data),
+  send: (data: ComposeRequest, submissionKey: string) =>
+    api.post<SendResult>('/api/v1/compose/send', data, { 'Idempotency-Key': submissionKey }),
+  saveDraft: (data: ComposeRequest) => api.post<DraftResult>('/api/v1/compose/drafts', data),
+  updateDraft: (id: string, data: ComposeRequest) => api.put<DraftResult>(`/api/v1/compose/drafts/${id}`, data),
+  deleteDraft: (id: string) => api.delete(`/api/v1/compose/drafts/${id}`),
 }
 
 // ============ Domains API ============
@@ -395,7 +418,7 @@ export const domainApi = {
 export const identityApi = {
   list: () => api.get<Identity[]>('/api/v1/identities'),
 
-  create: (data: { displayName: string; email: string; domainId: string; password: string; isCatchAll?: boolean }) =>
+  create: (data: { displayName: string; email: string; domainId: string; password?: string; isCatchAll?: boolean }) =>
     api.post<Identity>('/api/v1/identities', data),
 
   update: (uuid: string, data: { displayName?: string; isDefault?: boolean; isCatchAll?: boolean }) =>
@@ -623,7 +646,7 @@ export interface EmailHealthSummary {
   authStatus: AuthenticationStatus
   warnings: HealthWarning[]
   healthScore: number
-  healthStatus: 'excellent' | 'good' | 'fair' | 'poor' | 'critical'
+  healthStatus: 'excellent' | 'good' | 'fair' | 'poor' | 'critical' | 'unknown'
 }
 
 export const healthApi = {
@@ -848,6 +871,11 @@ export interface ReceivedEmail {
   orgId: number
   domainId: number
   identityId: number
+  envelopeRecipients?: string[]
+  draftVersion?: number
+  version?: number
+  sendStatus?: string
+  deliveryStatus?: string
   messageId: string
   inReplyTo?: string
   references?: string[]
@@ -921,6 +949,8 @@ export interface InboxCounts {
   starred: number
   sent: number
   drafts: number
+  archive?: number
+  outbox?: number
   spam: number
   trash: number
   labels?: Record<string, number>
@@ -964,39 +994,37 @@ export interface FilterCondition {
 
 // ============ Received Inbox API ============
 
+export interface InboxListOptions {
+  folder?: string
+  domainId?: number
+  isRead?: boolean
+  isStarred?: boolean
+  hasAttachments?: boolean
+  search?: string
+  sender?: string
+  dateFrom?: string
+  dateTo?: string
+  labels?: string[]
+  page?: number
+  pageSize?: number
+}
+
 export const receivedInboxApi = {
   // List emails
   // If identityId is 0 or omitted, returns emails from all identities (unified inbox)
-  list: (identityId: number, options?: {
-    folder?: string
-    isRead?: boolean
-    isStarred?: boolean
-    search?: string
-    labels?: string[]
-    page?: number
-    pageSize?: number
-    sortBy?: string
-    sortOrder?: 'asc' | 'desc'
-  }) => {
+  list: (identityId: number, options: InboxListOptions = {}, signal?: AbortSignal) => {
     const params = new URLSearchParams()
-    // Only set identityId if > 0, otherwise API returns all identities
-    if (identityId > 0) {
-      params.set('identityId', identityId.toString())
+    if (identityId > 0) params.set('identityId', String(identityId))
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined && value !== null && value !== '') {
+        params.set(key, Array.isArray(value) ? value.join(',') : String(value))
+      }
     }
-    if (options?.folder) params.set('folder', options.folder)
-    if (options?.isRead !== undefined) params.set('isRead', options.isRead.toString())
-    if (options?.isStarred !== undefined) params.set('isStarred', options.isStarred.toString())
-    if (options?.search) params.set('search', options.search)
-    if (options?.labels?.length) params.set('labels', options.labels.join(','))
-    if (options?.page) params.set('page', options.page.toString())
-    if (options?.pageSize) params.set('pageSize', options.pageSize.toString())
-    if (options?.sortBy) params.set('sortBy', options.sortBy)
-    if (options?.sortOrder) params.set('sortOrder', options.sortOrder)
-    return api.get<InboxListResponse>(`/api/v1/inbox/received?${params}`)
+    return api.get<InboxListResponse>(`/api/v1/inbox/received?${params}`, signal)
   },
 
   // Get single email
-  get: (uuid: string) => api.get<ReceivedEmail>(`/api/v1/inbox/received/${uuid}`),
+  get: (uuid: string, signal?: AbortSignal) => api.get<ReceivedEmail>(`/api/v1/inbox/received/${uuid}`, signal),
 
   // Mark emails as read/unread
   mark: (emailUuids: string[], isRead: boolean) =>

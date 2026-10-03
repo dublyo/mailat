@@ -1,10 +1,15 @@
 package controller
 
 import (
+	"errors"
+	"io"
+	"net/http"
+
 	"github.com/gogf/gf/v2/net/ghttp"
 
 	"github.com/dublyo/mailat/api/internal/middleware"
 	"github.com/dublyo/mailat/api/internal/model"
+	"github.com/dublyo/mailat/api/internal/provider"
 	"github.com/dublyo/mailat/api/internal/service"
 	"github.com/dublyo/mailat/api/pkg/response"
 )
@@ -20,6 +25,7 @@ func NewComposeController(composeService *service.ComposeService) *ComposeContro
 // SendEmail sends a new email
 // POST /api/v1/compose/send
 func (c *ComposeController) SendEmail(r *ghttp.Request) {
+	r.Request.Body = http.MaxBytesReader(r.Response.Writer, r.Request.Body, 18*1024*1024)
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
@@ -32,19 +38,23 @@ func (c *ComposeController) SendEmail(r *ghttp.Request) {
 		return
 	}
 
-	if len(req.To) == 0 {
+	if len(req.To)+len(req.Cc)+len(req.Bcc) == 0 {
 		response.BadRequest(r, "At least one recipient required")
 		return
 	}
 
 	// Convert request to service model
 	email := &service.ComposeEmail{
-		IdentityID: req.IdentityID,
-		Subject:    req.Subject,
-		TextBody:   req.TextBody,
-		HTMLBody:   req.HTMLBody,
-		InReplyTo:  req.InReplyTo,
-		References: req.References,
+		IdentityID:    req.IdentityID,
+		Subject:       req.Subject,
+		TextBody:      req.TextBody,
+		HTMLBody:      req.HTMLBody,
+		InReplyTo:     req.InReplyTo,
+		References:    req.References,
+		From:          service.EmailAddress{Email: req.FromEmail},
+		DraftID:       req.DraftID,
+		DraftVersion:  req.DraftVersion,
+		SubmissionKey: r.Header.Get("Idempotency-Key"),
 	}
 
 	// Convert addresses
@@ -70,21 +80,23 @@ func (c *ComposeController) SendEmail(r *ghttp.Request) {
 			Size:        att.Size,
 			Disposition: att.Disposition,
 			CID:         att.CID,
+			Content:     att.Content,
 		})
 	}
 
 	result, err := c.composeService.SendEmail(r.Context(), claims.UserID, email)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		writeComposeError(r, err)
 		return
 	}
 
-	response.SuccessWithMessage(r, "Email sent", result)
+	response.SuccessWithMessage(r, "Send attempt recorded", result)
 }
 
 // SaveDraft saves an email as a draft
 // POST /api/v1/compose/drafts
 func (c *ComposeController) SaveDraft(r *ghttp.Request) {
+	r.Request.Body = http.MaxBytesReader(r.Response.Writer, r.Request.Body, 18*1024*1024)
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
@@ -98,13 +110,15 @@ func (c *ComposeController) SaveDraft(r *ghttp.Request) {
 	}
 
 	email := &service.ComposeEmail{
-		IdentityID: req.IdentityID,
-		Subject:    req.Subject,
-		TextBody:   req.TextBody,
-		HTMLBody:   req.HTMLBody,
-		InReplyTo:  req.InReplyTo,
-		References: req.References,
-		IsDraft:    true,
+		IdentityID:   req.IdentityID,
+		Subject:      req.Subject,
+		TextBody:     req.TextBody,
+		HTMLBody:     req.HTMLBody,
+		InReplyTo:    req.InReplyTo,
+		References:   req.References,
+		IsDraft:      true,
+		From:         service.EmailAddress{Email: req.FromEmail},
+		DraftVersion: req.Version,
 	}
 
 	// Convert addresses
@@ -118,6 +132,10 @@ func (c *ComposeController) SaveDraft(r *ghttp.Request) {
 		email.Bcc = append(email.Bcc, service.EmailAddress{Name: addr.Name, Email: addr.Email})
 	}
 
+	for _, addr := range req.ReplyTo {
+		email.ReplyTo = append(email.ReplyTo, service.EmailAddress{Name: addr.Name, Email: addr.Email})
+	}
+
 	// Convert attachments
 	for _, att := range req.Attachments {
 		email.Attachments = append(email.Attachments, service.AttachmentRef{
@@ -127,12 +145,13 @@ func (c *ComposeController) SaveDraft(r *ghttp.Request) {
 			Size:        att.Size,
 			Disposition: att.Disposition,
 			CID:         att.CID,
+			Content:     att.Content,
 		})
 	}
 
 	result, err := c.composeService.SaveDraft(r.Context(), claims.UserID, email)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		writeComposeError(r, err)
 		return
 	}
 
@@ -142,6 +161,7 @@ func (c *ComposeController) SaveDraft(r *ghttp.Request) {
 // UpdateDraft updates an existing draft
 // PUT /api/v1/compose/drafts/:id
 func (c *ComposeController) UpdateDraft(r *ghttp.Request) {
+	r.Request.Body = http.MaxBytesReader(r.Response.Writer, r.Request.Body, 18*1024*1024)
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
@@ -161,13 +181,15 @@ func (c *ComposeController) UpdateDraft(r *ghttp.Request) {
 	}
 
 	email := &service.ComposeEmail{
-		IdentityID: req.IdentityID,
-		Subject:    req.Subject,
-		TextBody:   req.TextBody,
-		HTMLBody:   req.HTMLBody,
-		InReplyTo:  req.InReplyTo,
-		References: req.References,
-		IsDraft:    true,
+		IdentityID:   req.IdentityID,
+		Subject:      req.Subject,
+		TextBody:     req.TextBody,
+		HTMLBody:     req.HTMLBody,
+		InReplyTo:    req.InReplyTo,
+		References:   req.References,
+		IsDraft:      true,
+		From:         service.EmailAddress{Email: req.FromEmail},
+		DraftVersion: req.Version,
 	}
 
 	// Convert addresses
@@ -181,6 +203,10 @@ func (c *ComposeController) UpdateDraft(r *ghttp.Request) {
 		email.Bcc = append(email.Bcc, service.EmailAddress{Name: addr.Name, Email: addr.Email})
 	}
 
+	for _, addr := range req.ReplyTo {
+		email.ReplyTo = append(email.ReplyTo, service.EmailAddress{Name: addr.Name, Email: addr.Email})
+	}
+
 	// Convert attachments
 	for _, att := range req.Attachments {
 		email.Attachments = append(email.Attachments, service.AttachmentRef{
@@ -190,12 +216,13 @@ func (c *ComposeController) UpdateDraft(r *ghttp.Request) {
 			Size:        att.Size,
 			Disposition: att.Disposition,
 			CID:         att.CID,
+			Content:     att.Content,
 		})
 	}
 
 	result, err := c.composeService.UpdateDraft(r.Context(), claims.UserID, draftID, email)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		writeComposeError(r, err)
 		return
 	}
 
@@ -219,7 +246,7 @@ func (c *ComposeController) DeleteDraft(r *ghttp.Request) {
 
 	err := c.composeService.DeleteDraft(r.Context(), claims.UserID, draftID)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		writeComposeError(r, err)
 		return
 	}
 
@@ -279,6 +306,7 @@ func (c *ComposeController) GetForwardContext(r *ghttp.Request) {
 // UploadAttachment uploads an attachment
 // POST /api/v1/compose/attachments
 func (c *ComposeController) UploadAttachment(r *ghttp.Request) {
+	r.Request.Body = http.MaxBytesReader(r.Response.Writer, r.Request.Body, provider.MaxAttachmentBytes+1024*1024)
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
@@ -305,10 +333,13 @@ func (c *ComposeController) UploadAttachment(r *ghttp.Request) {
 	}
 	defer f.Close()
 
-	data := make([]byte, file.Size)
-	_, err = f.Read(data)
+	data, err := io.ReadAll(io.LimitReader(f, provider.MaxAttachmentBytes+1))
 	if err != nil {
 		response.BadRequest(r, "Failed to read file data")
+		return
+	}
+	if len(data) > provider.MaxAttachmentBytes {
+		response.BadRequest(r, "attachment exceeds 10 MiB")
 		return
 	}
 
@@ -319,9 +350,28 @@ func (c *ComposeController) UploadAttachment(r *ghttp.Request) {
 
 	result, err := c.composeService.UploadAttachment(r.Context(), claims.UserID, identityID, data, file.Filename, contentType)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		writeComposeError(r, err)
 		return
 	}
 
 	response.Success(r, result)
+}
+
+// Only positively identified request errors can release a client's frozen send key.
+// Database, S3 and other unclassified failures may occur while replaying an accepted send.
+func composeErrorDetails(err error) (int, string) {
+	if errors.Is(err, service.ErrDraftConflict) || errors.Is(err, service.ErrSubmissionConflict) {
+		return http.StatusConflict, err.Error()
+	}
+	var validation *provider.MailValidationError
+	if errors.As(err, &validation) {
+		return http.StatusBadRequest, validation.Error()
+	}
+	return http.StatusServiceUnavailable, "Mail service is temporarily unavailable. Keep the same submission key and unchanged content when retrying; delivery may already have been attempted."
+}
+
+func writeComposeError(r *ghttp.Request, err error) {
+	status, message := composeErrorDetails(err)
+	r.Response.Status = status
+	response.Error(r, status, message)
 }

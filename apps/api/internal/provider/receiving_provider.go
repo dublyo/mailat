@@ -1,12 +1,16 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -17,6 +21,7 @@ import (
 	sestypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 	snstypes "github.com/aws/aws-sdk-go-v2/service/sns/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/gogf/gf/v2/frame/g"
 )
 
@@ -30,21 +35,22 @@ type ReceivingConfig struct {
 
 // ReceivingSetupResult contains the result of setting up email receiving
 type ReceivingSetupResult struct {
-	S3Bucket       string
-	S3Region       string
-	SNSTopicArn    string
-	RuleSetName    string
-	RuleName       string
-	WebhookURL     string
-	WebhookSecret  string
+	S3Bucket      string
+	S3Region      string
+	SNSTopicArn   string
+	RuleSetName   string
+	RuleName      string
+	WebhookURL    string
+	WebhookSecret string
 }
 
 // ReceivingProvider handles AWS email receiving setup
 type ReceivingProvider struct {
-	s3Client  *s3.Client
-	sesClient *ses.Client
-	snsClient *sns.Client
-	region    string
+	s3Client   *s3.Client
+	sesClient  *ses.Client
+	snsClient  *sns.Client
+	stsClient  *sts.Client
+	region     string
 	webhookURL string
 }
 
@@ -66,6 +72,7 @@ func NewReceivingProvider(cfg *ReceivingConfig) (*ReceivingProvider, error) {
 		s3Client:   s3.NewFromConfig(awsCfg),
 		sesClient:  ses.NewFromConfig(awsCfg),
 		snsClient:  sns.NewFromConfig(awsCfg),
+		stsClient:  sts.NewFromConfig(awsCfg),
 		region:     cfg.Region,
 		webhookURL: cfg.WebhookBaseURL,
 	}, nil
@@ -79,13 +86,27 @@ func (p *ReceivingProvider) SetupReceiving(ctx context.Context, orgID int64, dom
 	suffix := generateShortID()
 	bucketName := fmt.Sprintf("mailat-%d-%s", orgID, suffix)
 	topicName := fmt.Sprintf("mailat-incoming-%d-%s", orgID, suffix)
-	ruleSetName := fmt.Sprintf("mailat-rules-%d", orgID)
+	// SES permits one active rule set per account/region. Add our rule to it
+	// instead of disabling another organization's or application's receiving.
+	ruleSetName := "mailat-receiving"
+	active, err := p.sesClient.DescribeActiveReceiptRuleSet(ctx, &ses.DescribeActiveReceiptRuleSetInput{})
+	if err != nil {
+		return nil, fmt.Errorf("inspect active receiving rules: %w", err)
+	}
+	hasActive := active.Metadata != nil && aws.ToString(active.Metadata.Name) != ""
+	if hasActive {
+		ruleSetName = aws.ToString(active.Metadata.Name)
+	}
+	accountID, err := p.getAccountID(ctx)
+	if err != nil {
+		return nil, err
+	}
 	ruleName := fmt.Sprintf("receive-%s", strings.ReplaceAll(domain, ".", "-"))
 	webhookSecret := generateWebhookSecret()
 
 	// 1. Create S3 bucket
 	g.Log().Infof(ctx, "Creating S3 bucket: %s", bucketName)
-	if err := p.createS3Bucket(ctx, bucketName); err != nil {
+	if err := p.createS3Bucket(ctx, bucketName, accountID); err != nil {
 		g.Log().Errorf(ctx, "Failed to create S3 bucket %s: %v", bucketName, err)
 		return nil, fmt.Errorf("failed to create S3 bucket: %w", err)
 	}
@@ -93,27 +114,22 @@ func (p *ReceivingProvider) SetupReceiving(ctx context.Context, orgID int64, dom
 
 	// 2. Create SNS topic
 	g.Log().Infof(ctx, "Creating SNS topic: %s", topicName)
-	topicArn, err := p.createSNSTopic(ctx, topicName)
+	topicArn, err := p.createSNSTopic(ctx, topicName, accountID)
 	if err != nil {
 		g.Log().Errorf(ctx, "Failed to create SNS topic %s: %v", topicName, err)
 		return nil, fmt.Errorf("failed to create SNS topic: %w", err)
 	}
 	g.Log().Infof(ctx, "SNS topic created successfully: %s", topicArn)
 
-	// 3. Subscribe webhook to SNS topic
-	webhookURL := fmt.Sprintf("%s/api/v1/webhooks/ses/incoming?secret=%s", p.webhookURL, webhookSecret)
-	g.Log().Infof(ctx, "Subscribing webhook to SNS topic: %s", webhookURL)
-	if err := p.subscribeSNSWebhook(ctx, topicArn, webhookURL); err != nil {
-		g.Log().Errorf(ctx, "Failed to subscribe webhook: %v", err)
-		return nil, fmt.Errorf("failed to subscribe webhook: %w", err)
-	}
-	g.Log().Infof(ctx, "Webhook subscribed successfully")
+	// The service persists topic/secret before subscribing to avoid a confirmation race.
+	webhookURL := p.WebhookURL(webhookSecret)
 
 	// 4. Create or get receipt rule set
 	g.Log().Infof(ctx, "Setting up receipt rule set: %s", ruleSetName)
-	if err := p.ensureReceiptRuleSet(ctx, ruleSetName); err != nil {
-		g.Log().Errorf(ctx, "Failed to ensure receipt rule set: %v", err)
-		return nil, fmt.Errorf("failed to ensure receipt rule set: %w", err)
+	if !hasActive {
+		if err := p.ensureReceiptRuleSet(ctx, ruleSetName); err != nil {
+			return nil, fmt.Errorf("failed to ensure receipt rule set: %w", err)
+		}
 	}
 	g.Log().Infof(ctx, "Receipt rule set ready: %s", ruleSetName)
 
@@ -127,9 +143,10 @@ func (p *ReceivingProvider) SetupReceiving(ctx context.Context, orgID int64, dom
 
 	// 6. Set the rule set as active
 	g.Log().Infof(ctx, "Activating receipt rule set: %s", ruleSetName)
-	if err := p.activateReceiptRuleSet(ctx, ruleSetName); err != nil {
-		// This might fail if it's already active, which is fine
-		g.Log().Warningf(ctx, "Could not activate rule set (may already be active): %v", err)
+	if !hasActive {
+		if err := p.activateReceiptRuleSet(ctx, ruleSetName); err != nil {
+			return nil, fmt.Errorf("activate receiving rules: %w", err)
+		}
 	}
 
 	return &ReceivingSetupResult{
@@ -144,7 +161,7 @@ func (p *ReceivingProvider) SetupReceiving(ctx context.Context, orgID int64, dom
 }
 
 // createS3Bucket creates an S3 bucket with proper configuration
-func (p *ReceivingProvider) createS3Bucket(ctx context.Context, bucketName string) error {
+func (p *ReceivingProvider) createS3Bucket(ctx context.Context, bucketName, accountID string) error {
 	createInput := &s3.CreateBucketInput{
 		Bucket: aws.String(bucketName),
 	}
@@ -178,6 +195,10 @@ func (p *ReceivingProvider) createS3Bucket(ctx context.Context, bucketName strin
 				},
 				"Action":   "s3:PutObject",
 				"Resource": fmt.Sprintf("arn:aws:s3:::%s/*", bucketName),
+				"Condition": map[string]interface{}{
+					"StringEquals": map[string]string{"AWS:SourceAccount": accountID},
+					"ArnLike":      map[string]string{"AWS:SourceArn": fmt.Sprintf("arn:aws:ses:%s:%s:receipt-rule-set/*", p.region, accountID)},
+				},
 			},
 		},
 	}
@@ -192,47 +213,20 @@ func (p *ReceivingProvider) createS3Bucket(ctx context.Context, bucketName strin
 		Policy: aws.String(string(policyJSON)),
 	})
 	if err != nil {
-		g.Log().Warningf(ctx, "Failed to set bucket policy (SES may not have permissions): %v", err)
+		return fmt.Errorf("set receiving bucket policy: %w", err)
 	}
 
-	// Enable versioning for safety
-	_, err = p.s3Client.PutBucketVersioning(ctx, &s3.PutBucketVersioningInput{
-		Bucket: aws.String(bucketName),
-		VersioningConfiguration: &s3types.VersioningConfiguration{
-			Status: s3types.BucketVersioningStatusEnabled,
-		},
-	})
-	if err != nil {
-		g.Log().Warningf(ctx, "Failed to enable versioning: %v", err)
-	}
-
-	// Set lifecycle rule to delete old emails (90 days)
-	_, err = p.s3Client.PutBucketLifecycleConfiguration(ctx, &s3.PutBucketLifecycleConfigurationInput{
-		Bucket: aws.String(bucketName),
-		LifecycleConfiguration: &s3types.BucketLifecycleConfiguration{
-			Rules: []s3types.LifecycleRule{
-				{
-					ID:     aws.String("delete-old-emails"),
-					Status: s3types.ExpirationStatusEnabled,
-					Filter: &s3types.LifecycleRuleFilter{
-						Prefix: aws.String(""),
-					},
-					Expiration: &s3types.LifecycleExpiration{
-						Days: aws.Int32(90),
-					},
-				},
-			},
-		},
-	})
-	if err != nil {
-		g.Log().Warningf(ctx, "Failed to set lifecycle policy: %v", err)
+	// Messages live until their owner deletes them; an implicit 90-day lifecycle
+	// would silently destroy attachments still referenced by the mailbox.
+	if _, err = p.s3Client.PutPublicAccessBlock(ctx, &s3.PutPublicAccessBlockInput{Bucket: aws.String(bucketName), PublicAccessBlockConfiguration: &s3types.PublicAccessBlockConfiguration{BlockPublicAcls: aws.Bool(true), IgnorePublicAcls: aws.Bool(true), BlockPublicPolicy: aws.Bool(true), RestrictPublicBuckets: aws.Bool(true)}}); err != nil {
+		return err
 	}
 
 	return nil
 }
 
 // createSNSTopic creates an SNS topic for email notifications
-func (p *ReceivingProvider) createSNSTopic(ctx context.Context, topicName string) (string, error) {
+func (p *ReceivingProvider) createSNSTopic(ctx context.Context, topicName, accountID string) (string, error) {
 	result, err := p.snsClient.CreateTopic(ctx, &sns.CreateTopicInput{
 		Name: aws.String(topicName),
 		Tags: []snstypes.Tag{
@@ -244,11 +238,26 @@ func (p *ReceivingProvider) createSNSTopic(ctx context.Context, topicName string
 		return "", err
 	}
 
-	return *result.TopicArn, nil
+	// Only SES rules in this AWS account can publish receiving notifications.
+	policy, err := json.Marshal(map[string]interface{}{
+		"Version": "2012-10-17",
+		"Statement": []map[string]interface{}{{
+			"Effect": "Allow", "Principal": map[string]string{"Service": "ses.amazonaws.com"},
+			"Action": "sns:Publish", "Resource": aws.ToString(result.TopicArn),
+			"Condition": map[string]interface{}{"StringEquals": map[string]string{"AWS:SourceAccount": accountID}},
+		}},
+	})
+	if err != nil {
+		return "", err
+	}
+	if _, err = p.snsClient.SetTopicAttributes(ctx, &sns.SetTopicAttributesInput{TopicArn: result.TopicArn, AttributeName: aws.String("Policy"), AttributeValue: aws.String(string(policy))}); err != nil {
+		return "", fmt.Errorf("set receiving topic policy: %w", err)
+	}
+	return aws.ToString(result.TopicArn), nil
 }
 
 // subscribeSNSWebhook subscribes an HTTPS endpoint to the SNS topic
-func (p *ReceivingProvider) subscribeSNSWebhook(ctx context.Context, topicArn, webhookURL string) error {
+func (p *ReceivingProvider) SubscribeWebhook(ctx context.Context, topicArn, webhookURL string) error {
 	_, err := p.snsClient.Subscribe(ctx, &sns.SubscribeInput{
 		TopicArn: aws.String(topicArn),
 		Protocol: aws.String("https"),
@@ -285,22 +294,17 @@ func (p *ReceivingProvider) createReceiptRule(ctx context.Context, ruleSetName, 
 	_, err := p.sesClient.CreateReceiptRule(ctx, &ses.CreateReceiptRuleInput{
 		RuleSetName: aws.String(ruleSetName),
 		Rule: &sestypes.ReceiptRule{
-			Name:       aws.String(ruleName),
-			Enabled:    true,
-			TlsPolicy:  sestypes.TlsPolicyOptional,
+			Name:        aws.String(ruleName),
+			Enabled:     true,
+			TlsPolicy:   sestypes.TlsPolicyOptional,
 			ScanEnabled: true,
-			Recipients: []string{domain}, // Catch all for domain
+			Recipients:  []string{domain}, // Catch all for domain
 			Actions: []sestypes.ReceiptAction{
 				{
 					S3Action: &sestypes.S3Action{
 						BucketName:      aws.String(bucketName),
 						ObjectKeyPrefix: aws.String(fmt.Sprintf("incoming/%s/", domain)),
-					},
-				},
-				{
-					SNSAction: &sestypes.SNSAction{
-						TopicArn: aws.String(topicArn),
-						Encoding: sestypes.SNSActionEncodingUtf8,
+						TopicArn:        aws.String(topicArn),
 					},
 				},
 			},
@@ -357,7 +361,7 @@ func (p *ReceivingProvider) DeleteReceiving(ctx context.Context, result *Receivi
 	}
 
 	// Note: We don't delete the S3 bucket as it may contain emails
-	// The lifecycle policy will clean up old emails
+	// The durable mailbox cleanup worker deletes unreferenced messages.
 
 	return nil
 }
@@ -373,13 +377,14 @@ func (p *ReceivingProvider) GetEmailFromS3(ctx context.Context, bucket, key stri
 	}
 	defer result.Body.Close()
 
-	buf := make([]byte, *result.ContentLength)
-	_, err = result.Body.Read(buf)
-	if err != nil && err.Error() != "EOF" {
+	data, err := io.ReadAll(io.LimitReader(result.Body, 40*1024*1024+1))
+	if err != nil {
 		return nil, err
 	}
-
-	return buf, nil
+	if len(data) > 40*1024*1024 {
+		return nil, fmt.Errorf("S3 message too large")
+	}
+	return data, nil
 }
 
 // GeneratePresignedURL generates a presigned URL for downloading an attachment
@@ -389,7 +394,7 @@ func (p *ReceivingProvider) GeneratePresignedURL(ctx context.Context, bucket, ke
 	result, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
-	}, s3.WithPresignExpires(60*15)) // 15 minutes
+	}, s3.WithPresignExpires(time.Duration(expirySeconds)*time.Second)) // 15 minutes
 
 	if err != nil {
 		return "", err
@@ -399,10 +404,15 @@ func (p *ReceivingProvider) GeneratePresignedURL(ctx context.Context, bucket, ke
 }
 
 // getAccountID attempts to get the AWS account ID
-func (p *ReceivingProvider) getAccountID(ctx context.Context) string {
-	// For simplicity, we'll return "*" which is less restrictive
-	// In production, you'd use STS GetCallerIdentity
-	return "*"
+func (p *ReceivingProvider) getAccountID(ctx context.Context) (string, error) {
+	identity, err := p.stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return "", fmt.Errorf("read receiving AWS account: %w", err)
+	}
+	if identity.Account == nil || len(*identity.Account) != 12 {
+		return "", fmt.Errorf("invalid receiving AWS account")
+	}
+	return *identity.Account, nil
 }
 
 // generateShortID generates a short random ID
@@ -433,4 +443,23 @@ func (p *ReceivingProvider) RemoveDomainFromReceiving(ctx context.Context, ruleS
 		RuleName:    aws.String(ruleName),
 	})
 	return err
+}
+
+func (p *ReceivingProvider) WebhookURL(secret string) string {
+	return strings.TrimRight(p.webhookURL, "/") + "/api/v1/webhooks/ses/incoming?secret=" + secret
+}
+func (p *ReceivingProvider) PutAttachment(ctx context.Context, bucket, key, contentType string, data []byte) error {
+	_, err := p.s3Client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(bucket), Key: aws.String(key), Body: bytes.NewReader(data), ContentType: aws.String(contentType), ServerSideEncryption: s3types.ServerSideEncryptionAes256})
+	return err
+}
+func (p *ReceivingProvider) DeleteObject(ctx context.Context, bucket, key string) error {
+	_, err := p.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+	return err
+}
+func (p *ReceivingProvider) GenerateDownloadURL(ctx context.Context, bucket, key, filename string) (string, error) {
+	result, err := s3.NewPresignClient(p.s3Client).PresignGetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key), ResponseContentType: aws.String("application/octet-stream"), ResponseContentDisposition: aws.String(mime.FormatMediaType("attachment", map[string]string{"filename": filename}))}, s3.WithPresignExpires(5*time.Minute))
+	if err != nil {
+		return "", err
+	}
+	return result.URL, nil
 }

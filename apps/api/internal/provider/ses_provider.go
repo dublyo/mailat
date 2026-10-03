@@ -31,9 +31,14 @@ type SESConfig struct {
 
 // NewSESProvider creates a new SES provider
 func NewSESProvider(ctx context.Context, cfg *SESConfig) (*SESProvider, error) {
+	if cfg == nil || cfg.Region == "" || cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
+		return nil, fmt.Errorf("SES requires an AWS region, access key and secret key")
+	}
 	// Create AWS config with explicit credentials
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithRegion(cfg.Region),
+		// SES sends are not idempotent; retrying a timeout can duplicate accepted mail.
+		awsconfig.WithRetryMaxAttempts(1),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			cfg.AccessKeyID,
 			cfg.SecretAccessKey,
@@ -60,89 +65,11 @@ func (p *SESProvider) Name() string {
 
 // SendEmail sends an email via SES
 func (p *SESProvider) SendEmail(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
-	// Build destination
-	destination := &types.Destination{
-		ToAddresses:  msg.To,
-		CcAddresses:  msg.Cc,
-		BccAddresses: msg.Bcc,
-	}
-
-	// Build email content
-	var body types.Body
-	if msg.HTMLBody != "" {
-		body.Html = &types.Content{
-			Data:    aws.String(msg.HTMLBody),
-			Charset: aws.String("UTF-8"),
-		}
-	}
-	if msg.TextBody != "" {
-		body.Text = &types.Content{
-			Data:    aws.String(msg.TextBody),
-			Charset: aws.String("UTF-8"),
-		}
-	}
-
-	content := &types.EmailContent{
-		Simple: &types.Message{
-			Subject: &types.Content{
-				Data:    aws.String(msg.Subject),
-				Charset: aws.String("UTF-8"),
-			},
-			Body: &body,
-		},
-	}
-
-	// Build send request
-	input := &sesv2.SendEmailInput{
-		FromEmailAddress: aws.String(msg.From),
-		Destination:      destination,
-		Content:          content,
-	}
-
-	// Add Reply-To if specified
-	if msg.ReplyTo != "" {
-		input.ReplyToAddresses = []string{msg.ReplyTo}
-	}
-
-	// Add configuration set if specified
-	if p.configurationSet != "" {
-		input.ConfigurationSetName = aws.String(p.configurationSet)
-	}
-
-	// Add custom headers (but NOT Message-ID - SES Simple format doesn't support it)
-	// SES will generate its own Message-ID which we capture from the response
-	if len(msg.Headers) > 0 {
-		headers := make([]types.MessageHeader, 0)
-		for k, v := range msg.Headers {
-			// Skip Message-ID as SES doesn't allow it in Simple format
-			if strings.EqualFold(k, "Message-ID") {
-				continue
-			}
-			headers = append(headers, types.MessageHeader{
-				Name:  aws.String(k),
-				Value: aws.String(v),
-			})
-		}
-		if len(headers) > 0 {
-			input.Content.Simple.Headers = headers
-		}
-	}
-
-	// Send email
-	result, err := p.client.SendEmail(ctx, input)
+	raw, recipients, err := BuildMailMIME(msg)
 	if err != nil {
-		return &SendResult{
-			ProviderName: "ses",
-			Success:      false,
-			Error:        err,
-		}, err
+		return nil, err
 	}
-
-	return &SendResult{
-		MessageID:    aws.ToString(result.MessageId),
-		ProviderName: "ses",
-		Success:      true,
-	}, nil
+	return p.SendRawEmail(ctx, msg.From, recipients, raw)
 }
 
 // SendRawEmail sends a raw MIME message via SES

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 
 	"github.com/dublyo/mailat/api/internal/config"
@@ -45,55 +46,55 @@ type UnifiedMailbox struct {
 	TotalThreads  int     `json:"totalThreads"`
 	UnreadThreads int     `json:"unreadThreads"`
 	// Identity info
-	IdentityID    int64   `json:"identityId"`
-	IdentityUUID  string  `json:"identityUuid"`
-	IdentityEmail string  `json:"identityEmail"`
-	DomainID      int64   `json:"domainId"`
-	DomainName    string  `json:"domainName,omitempty"`
+	IdentityID    int64  `json:"identityId"`
+	IdentityUUID  string `json:"identityUuid"`
+	IdentityEmail string `json:"identityEmail"`
+	DomainID      int64  `json:"domainId"`
+	DomainName    string `json:"domainName,omitempty"`
 }
 
 // UnifiedEmail represents an email with identity and domain info
 type UnifiedEmail struct {
-	ID            string                  `json:"id"`
-	BlobID        string                  `json:"blobId"`
-	ThreadID      string                  `json:"threadId"`
-	MailboxIDs    map[string]bool         `json:"mailboxIds"`
-	Keywords      map[string]bool         `json:"keywords"`
-	Size          int                     `json:"size"`
-	ReceivedAt    time.Time               `json:"receivedAt"`
-	From          []EmailAddress          `json:"from"`
-	To            []EmailAddress          `json:"to"`
-	Cc            []EmailAddress          `json:"cc,omitempty"`
-	Subject       string                  `json:"subject"`
-	Preview       string                  `json:"preview"`
-	HasAttachment bool                    `json:"hasAttachment"`
+	ID            string          `json:"id"`
+	BlobID        string          `json:"blobId"`
+	ThreadID      string          `json:"threadId"`
+	MailboxIDs    map[string]bool `json:"mailboxIds"`
+	Keywords      map[string]bool `json:"keywords"`
+	Size          int             `json:"size"`
+	ReceivedAt    time.Time       `json:"receivedAt"`
+	From          []EmailAddress  `json:"from"`
+	To            []EmailAddress  `json:"to"`
+	Cc            []EmailAddress  `json:"cc,omitempty"`
+	Subject       string          `json:"subject"`
+	Preview       string          `json:"preview"`
+	HasAttachment bool            `json:"hasAttachment"`
 	// Computed fields
-	IsRead        bool                    `json:"isRead"`
-	IsFlagged     bool                    `json:"isFlagged"`
-	IsDraft       bool                    `json:"isDraft"`
-	ThreadCount   int                     `json:"threadCount,omitempty"`
+	IsRead      bool `json:"isRead"`
+	IsFlagged   bool `json:"isFlagged"`
+	IsDraft     bool `json:"isDraft"`
+	ThreadCount int  `json:"threadCount,omitempty"`
 	// Identity info
-	IdentityID    int64                   `json:"identityId"`
-	IdentityUUID  string                  `json:"identityUuid"`
-	IdentityEmail string                  `json:"identityEmail"`
-	DomainID      int64                   `json:"domainId"`
-	DomainName    string                  `json:"domainName"`
-	DomainColor   string                  `json:"domainColor,omitempty"`
+	IdentityID    int64  `json:"identityId"`
+	IdentityUUID  string `json:"identityUuid"`
+	IdentityEmail string `json:"identityEmail"`
+	DomainID      int64  `json:"domainId"`
+	DomainName    string `json:"domainName"`
+	DomainColor   string `json:"domainColor,omitempty"`
 }
 
 // UnifiedInboxResponse represents paginated inbox response
 type UnifiedInboxResponse struct {
-	Emails     []UnifiedEmail `json:"emails"`
-	Total      int            `json:"total"`
-	Page       int            `json:"page"`
-	PageSize   int            `json:"pageSize"`
-	HasMore    bool           `json:"hasMore"`
+	Emails   []UnifiedEmail `json:"emails"`
+	Total    int            `json:"total"`
+	Page     int            `json:"page"`
+	PageSize int            `json:"pageSize"`
+	HasMore  bool           `json:"hasMore"`
 }
 
 // IdentityCredentials stores credentials for JMAP access
 type IdentityCredentials struct {
-	Identity *model.Identity
-	Password string // Retrieved from vault or stored securely
+	Identity  *model.Identity
+	Password  string // Retrieved from vault or stored securely
 	AccountID string
 }
 
@@ -829,94 +830,16 @@ func sortEmailsByDate(emails []UnifiedEmail) {
 // ListReceivedEmails returns a paginated list of received emails
 // If req.IdentityID is 0, returns emails from all user's identities (unified inbox)
 func (s *InboxService) ListReceivedEmails(ctx context.Context, userID int64, req *model.InboxListRequest) (*model.InboxListResponse, error) {
-	var args []interface{}
-	argNum := 1
-
-	// Build base query with identity info join
-	baseQuery := `
-		FROM received_emails re
-		JOIN identities i ON re.identity_id = i.id
-		WHERE i.user_id = $1
-	`
-	args = append(args, userID)
-	argNum++
-
-	// If specific identity requested, filter by it
-	if req.IdentityID > 0 {
-		baseQuery += fmt.Sprintf(" AND re.identity_id = $%d", argNum)
-		args = append(args, req.IdentityID)
-		argNum++
+	if err := s.validateMailboxScope(ctx, userID, req.IdentityID, req.DomainID); err != nil {
+		return nil, err
 	}
-
-	// Apply folder filter
-	switch req.Folder {
-	case "inbox":
-		baseQuery += " AND re.folder = 'inbox' AND re.is_trashed = false AND re.is_archived = false"
-	case "sent":
-		baseQuery += " AND re.folder = 'sent' AND re.is_trashed = false"
-	case "drafts":
-		baseQuery += " AND re.folder = 'drafts' AND re.is_trashed = false"
-	case "spam":
-		baseQuery += " AND (re.folder = 'spam' OR re.is_spam = true) AND re.is_trashed = false"
-	case "trash":
-		baseQuery += " AND re.is_trashed = true"
-	case "starred":
-		baseQuery += " AND re.is_starred = true AND re.is_trashed = false"
-	case "archive":
-		baseQuery += " AND re.is_archived = true AND re.is_trashed = false"
-	case "all":
-		baseQuery += " AND re.is_trashed = false"
-	default:
-		if req.Folder != "" {
-			baseQuery += fmt.Sprintf(" AND re.folder = $%d AND re.is_trashed = false", argNum)
-			args = append(args, req.Folder)
-			argNum++
-		}
-	}
-
-	// Apply read filter
-	if req.IsRead != nil {
-		baseQuery += fmt.Sprintf(" AND re.is_read = $%d", argNum)
-		args = append(args, *req.IsRead)
-		argNum++
-	}
-
-	// Apply starred filter
-	if req.IsStarred != nil {
-		baseQuery += fmt.Sprintf(" AND re.is_starred = $%d", argNum)
-		args = append(args, *req.IsStarred)
-		argNum++
-	}
-
-	// Apply search filter
-	if req.Search != "" {
-		baseQuery += fmt.Sprintf(" AND (LOWER(re.subject) LIKE $%d OR LOWER(re.from_email) LIKE $%d OR LOWER(re.from_name) LIKE $%d OR LOWER(re.snippet) LIKE $%d)", argNum, argNum, argNum, argNum)
-		args = append(args, "%"+strings.ToLower(req.Search)+"%")
-		argNum++
-	}
-
-	// Get total count
-	var total int
-	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) "+baseQuery, args...).Scan(&total)
+	baseQuery, args, err := receivedListQuery(userID, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to count emails: %w", err)
+		return nil, err
 	}
-
-	// Get unread count (for specific identity or all)
-	var unreadCount int
-	if req.IdentityID > 0 {
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*)
-			FROM received_emails
-			WHERE identity_id = $1 AND is_read = false AND is_trashed = false
-		`, req.IdentityID).Scan(&unreadCount)
-	} else {
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*)
-			FROM received_emails re
-			JOIN identities i ON re.identity_id = i.id
-			WHERE i.user_id = $1 AND re.is_read = false AND re.is_trashed = false
-		`, userID).Scan(&unreadCount)
+	var total, unreadCount int
+	if err = s.db.QueryRowContext(ctx, "SELECT COUNT(*),COUNT(*) FILTER(WHERE re.is_read=false AND re.is_trashed=false) "+baseQuery, args...).Scan(&total, &unreadCount); err != nil {
+		return nil, fmt.Errorf("count inbox: %w", err)
 	}
 
 	// Apply pagination
@@ -952,9 +875,9 @@ func (s *InboxService) ListReceivedEmails(ctx context.Context, userID int64, req
 			   re.is_read, re.is_starred, re.is_archived, re.is_trashed, re.is_spam,
 			   re.labels, re.spam_verdict, re.spf_verdict, re.dkim_verdict, re.dmarc_verdict,
 			   re.received_at, re.read_at, re.created_at, re.updated_at,
-			   i.email, i.display_name, i.color
+			   i.email, i.display_name, i.color, re.envelope_recipients, re.direction, re.send_status, re.send_error, re.draft_version
 		%s
-		ORDER BY %s %s
+		ORDER BY %s %s, re.id DESC
 		LIMIT %d OFFSET %d
 	`, baseQuery, sortBy, sortOrder, pageSize, offset)
 
@@ -964,7 +887,7 @@ func (s *InboxService) ListReceivedEmails(ctx context.Context, userID int64, req
 	}
 	defer rows.Close()
 
-	var emails []model.ReceivedEmail
+	emails := []model.ReceivedEmail{}
 	for rows.Next() {
 		var email model.ReceivedEmail
 		var inReplyTo, threadID, fromName, snippet sql.NullString
@@ -972,7 +895,7 @@ func (s *InboxService) ListReceivedEmails(ctx context.Context, userID int64, req
 		var readAt sql.NullTime
 		var toEmails, ccEmails, labels []string
 		var identityEmail, identityDisplayName sql.NullString
-		var identityColor sql.NullString
+		var identityColor, sendError sql.NullString
 
 		err := rows.Scan(
 			&email.ID, &email.UUID, &email.OrgID, &email.DomainID, &email.IdentityID,
@@ -982,10 +905,10 @@ func (s *InboxService) ListReceivedEmails(ctx context.Context, userID int64, req
 			&email.IsRead, &email.IsStarred, &email.IsArchived, &email.IsTrashed, &email.IsSpam,
 			pq.Array(&labels), &spamVerdict, &spfVerdict, &dkimVerdict, &dmarcVerdict,
 			&email.ReceivedAt, &readAt, &email.CreatedAt, &email.UpdatedAt,
-			&identityEmail, &identityDisplayName, &identityColor,
+			&identityEmail, &identityDisplayName, &identityColor, pq.Array(&email.EnvelopeRecipients), &email.Direction, &email.SendStatus, &sendError, &email.DraftVersion,
 		)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("scan inbox row: %w", err)
 		}
 
 		email.InReplyTo = inReplyTo.String
@@ -1006,10 +929,14 @@ func (s *InboxService) ListReceivedEmails(ctx context.Context, userID int64, req
 		email.IdentityEmail = identityEmail.String
 		email.IdentityDisplayName = identityDisplayName.String
 		email.IdentityColor = identityColor.String
+		email.SendError = sendError.String
 
 		emails = append(emails, email)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	totalPages := total / pageSize
 	if total%pageSize > 0 {
 		totalPages++
@@ -1031,7 +958,7 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 	var inReplyTo, threadID, fromName, snippet, textBody, htmlBody sql.NullString
 	var rawS3Key, rawS3Bucket sql.NullString
 	var spamVerdict, virusVerdict, spfVerdict, dkimVerdict, dmarcVerdict sql.NullString
-	var sesMessageID, replyTo sql.NullString
+	var sesMessageID, replyTo, sendError sql.NullString
 	var readAt, trashedAt sql.NullTime
 	var spamScore sql.NullFloat64
 	var toEmails, ccEmails, bccEmails, references, labels []string
@@ -1045,7 +972,7 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 			   re.is_read, re.is_starred, re.is_archived, re.is_trashed, re.is_spam,
 			   re.labels, re.spam_score, re.spam_verdict, re.virus_verdict,
 			   re.spf_verdict, re.dkim_verdict, re.dmarc_verdict, re.ses_message_id,
-			   re.received_at, re.read_at, re.trashed_at, re.created_at, re.updated_at
+			   re.received_at, re.read_at, re.trashed_at, re.created_at, re.updated_at, re.envelope_recipients,re.direction,re.send_status,re.send_error,re.draft_version
 		FROM received_emails re
 		JOIN identities i ON re.identity_id = i.id
 		WHERE re.uuid = $1 AND i.user_id = $2
@@ -1058,7 +985,7 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 		&email.IsRead, &email.IsStarred, &email.IsArchived, &email.IsTrashed, &email.IsSpam,
 		pq.Array(&labels), &spamScore, &spamVerdict, &virusVerdict,
 		&spfVerdict, &dkimVerdict, &dmarcVerdict, &sesMessageID,
-		&email.ReceivedAt, &readAt, &trashedAt, &email.CreatedAt, &email.UpdatedAt,
+		&email.ReceivedAt, &readAt, &trashedAt, &email.CreatedAt, &email.UpdatedAt, pq.Array(&email.EnvelopeRecipients), &email.Direction, &email.SendStatus, &sendError, &email.DraftVersion,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("email not found")
@@ -1067,6 +994,7 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 		return nil, fmt.Errorf("failed to get email: %w", err)
 	}
 
+	email.SendError = sendError.String
 	email.InReplyTo = inReplyTo.String
 	email.References = references
 	email.ThreadID = threadID.String
@@ -1078,8 +1006,9 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 	email.TextBody = textBody.String
 	email.HTMLBody = htmlBody.String
 	email.Snippet = snippet.String
-	email.RawS3Key = rawS3Key.String
-	email.RawS3Bucket = rawS3Bucket.String
+	// Storage locations remain server-side; download URLs enforce ownership.
+	email.RawS3Key = ""
+	email.RawS3Bucket = ""
 	email.Labels = labels
 	email.SpamVerdict = spamVerdict.String
 	email.VirusVerdict = virusVerdict.String
@@ -1109,14 +1038,24 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 		for attachmentRows.Next() {
 			var att model.EmailAttachment
 			var contentID, checksum sql.NullString
-			attachmentRows.Scan(
+			if err = attachmentRows.Scan(
 				&att.ID, &att.UUID, &att.Filename, &att.ContentType, &att.SizeBytes,
 				&att.S3Key, &att.S3Bucket, &contentID, &att.IsInline, &checksum, &att.CreatedAt,
-			)
+			); err != nil {
+				return nil, err
+			}
+			att.DownloadURL = "/api/v1/inbox/received/" + email.UUID + "/attachments/" + att.UUID
+			att.S3Bucket = ""
+			att.S3Key = ""
 			att.ContentID = contentID.String
 			att.Checksum = checksum.String
 			email.Attachments = append(email.Attachments, att)
 		}
+		if err = attachmentRows.Err(); err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, err
 	}
 
 	// Mark as read if not already
@@ -1134,242 +1073,245 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 	return &email, nil
 }
 
-// MarkReceivedEmails marks received emails as read/unread
-func (s *InboxService) MarkReceivedEmails(ctx context.Context, userID int64, emailUUIDs []string, isRead bool) error {
-	if len(emailUUIDs) == 0 {
-		return nil
+// All bulk mutations first lock and validate the complete selection. Partial
+// cross-user selections cannot silently mutate the permitted subset.
+func (s *InboxService) ownedMessageTransaction(ctx context.Context, userID int64, ids []string) (*sql.Tx, error) {
+	if len(ids) == 0 || len(ids) > 500 {
+		return nil, fmt.Errorf("select between 1 and 500 messages")
 	}
-
-	now := time.Now()
-	var readAt interface{}
-	if isRead {
-		readAt = now
-	} else {
-		readAt = nil
+	unique := map[string]bool{}
+	for _, id := range ids {
+		if _, err := uuid.Parse(id); err != nil {
+			return nil, fmt.Errorf("invalid message id")
+		}
+		if unique[id] {
+			return nil, fmt.Errorf("duplicate message id")
+		}
+		unique[id] = true
 	}
-
-	// Build query with proper user validation
-	placeholders := make([]string, len(emailUUIDs))
-	args := []interface{}{isRead, readAt, now, userID}
-	for i, uuid := range emailUUIDs {
-		placeholders[i] = fmt.Sprintf("$%d", i+5)
-		args = append(args, uuid)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
 	}
-
-	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`
-		UPDATE received_emails
-		SET is_read = $1, read_at = $2, updated_at = $3
-		WHERE uuid IN (%s)
-		AND identity_id IN (SELECT id FROM identities WHERE user_id = $4)
-	`, strings.Join(placeholders, ",")), args...)
-
-	return err
+	rows, err := tx.QueryContext(ctx, `SELECT re.uuid,re.send_status FROM received_emails re JOIN identities i ON i.id=re.identity_id WHERE i.user_id=$1 AND re.uuid=ANY($2::uuid[]) FOR UPDATE OF re`, userID, pq.Array(ids))
+	if err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	count := 0
+	sending := false
+	for rows.Next() {
+		var id, status string
+		if err = rows.Scan(&id, &status); err != nil {
+			rows.Close()
+			tx.Rollback()
+			return nil, err
+		}
+		count++
+		sending = sending || status == "sending"
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil || count != len(ids) {
+		tx.Rollback()
+		return nil, fmt.Errorf("message not found or access denied")
+	}
+	// The provider may already be accepting this message. Preserve its durable
+	// outbox record until the send completes or is marked uncertain.
+	if sending {
+		tx.Rollback()
+		return nil, fmt.Errorf("message is currently sending; try again after it completes")
+	}
+	return tx, nil
 }
-
-// StarReceivedEmails stars/unstars received emails
-func (s *InboxService) StarReceivedEmails(ctx context.Context, userID int64, emailUUIDs []string, isStarred bool) error {
-	if len(emailUUIDs) == 0 {
-		return nil
-	}
-
-	now := time.Now()
-
-	placeholders := make([]string, len(emailUUIDs))
-	args := []interface{}{isStarred, now, userID}
-	for i, uuid := range emailUUIDs {
-		placeholders[i] = fmt.Sprintf("$%d", i+4)
-		args = append(args, uuid)
-	}
-
-	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`
-		UPDATE received_emails
-		SET is_starred = $1, updated_at = $2
-		WHERE uuid IN (%s)
-		AND identity_id IN (SELECT id FROM identities WHERE user_id = $3)
-	`, strings.Join(placeholders, ",")), args...)
-
-	return err
-}
-
-// MoveReceivedEmails moves received emails to a folder
-func (s *InboxService) MoveReceivedEmails(ctx context.Context, userID int64, emailUUIDs []string, folder string) error {
-	if len(emailUUIDs) == 0 {
-		return nil
-	}
-
-	now := time.Now()
-
-	placeholders := make([]string, len(emailUUIDs))
-	args := []interface{}{folder, now, userID}
-	for i, uuid := range emailUUIDs {
-		placeholders[i] = fmt.Sprintf("$%d", i+4)
-		args = append(args, uuid)
-	}
-
-	// Handle special folders
-	extraUpdates := ""
-	switch folder {
-	case "archive":
-		extraUpdates = ", is_archived = true"
-	case "spam":
-		extraUpdates = ", is_spam = true"
-	case "inbox":
-		extraUpdates = ", is_archived = false, is_spam = false"
-	}
-
-	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`
-		UPDATE received_emails
-		SET folder = $1, updated_at = $2%s
-		WHERE uuid IN (%s)
-		AND identity_id IN (SELECT id FROM identities WHERE user_id = $3)
-	`, extraUpdates, strings.Join(placeholders, ",")), args...)
-
-	return err
-}
-
-// TrashReceivedEmails moves received emails to trash or permanently deletes
-func (s *InboxService) TrashReceivedEmails(ctx context.Context, userID int64, emailUUIDs []string, permanent bool) error {
-	if len(emailUUIDs) == 0 {
-		return nil
-	}
-
-	placeholders := make([]string, len(emailUUIDs))
-	args := []interface{}{userID}
-	for i, uuid := range emailUUIDs {
-		placeholders[i] = fmt.Sprintf("$%d", i+2)
-		args = append(args, uuid)
-	}
-
-	if permanent {
-		// Delete attachments first
-		s.db.ExecContext(ctx, fmt.Sprintf(`
-			DELETE FROM email_attachments
-			WHERE received_email_id IN (
-				SELECT id FROM received_emails
-				WHERE uuid IN (%s)
-				AND identity_id IN (SELECT id FROM identities WHERE user_id = $1)
-			)
-		`, strings.Join(placeholders, ",")), args...)
-
-		// Delete emails
-		_, err := s.db.ExecContext(ctx, fmt.Sprintf(`
-			DELETE FROM received_emails
-			WHERE uuid IN (%s)
-			AND identity_id IN (SELECT id FROM identities WHERE user_id = $1)
-		`, strings.Join(placeholders, ",")), args...)
+func (s *InboxService) updateReceived(ctx context.Context, userID int64, ids []string, assignment string, args ...interface{}) error {
+	tx, err := s.ownedMessageTransaction(ctx, userID, ids)
+	if err != nil {
 		return err
 	}
-
-	// Move to trash
-	now := time.Now()
-	args = append([]interface{}{now, userID}, args[1:]...)
-	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`
-		UPDATE received_emails
-		SET is_trashed = true, trashed_at = $1, updated_at = $1
-		WHERE uuid IN (%s)
-		AND identity_id IN (SELECT id FROM identities WHERE user_id = $2)
-	`, strings.Join(placeholders, ",")), args...)
-
-	return err
-}
-
-// GetReceivedEmailCounts returns email counts by folder/status
-// If identityID is 0, returns counts across all user's identities
-func (s *InboxService) GetReceivedEmailCounts(ctx context.Context, userID, identityID int64) (*model.InboxCountsResponse, error) {
-	counts := &model.InboxCountsResponse{
-		Labels: make(map[string]int),
+	defer tx.Rollback()
+	args = append(args, pq.Array(ids))
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE received_emails SET %s,updated_at=NOW() WHERE uuid=ANY($%d::uuid[])`, assignment, len(args)), args...)
+	if err != nil {
+		return err
 	}
-
+	return tx.Commit()
+}
+func (s *InboxService) MarkReceivedEmails(ctx context.Context, userID int64, ids []string, read bool) error {
+	return s.updateReceived(ctx, userID, ids, "is_read=$1,read_at=CASE WHEN $1 THEN NOW() ELSE NULL END", read)
+}
+func (s *InboxService) StarReceivedEmails(ctx context.Context, userID int64, ids []string, star bool) error {
+	return s.updateReceived(ctx, userID, ids, "is_starred=$1", star)
+}
+func (s *InboxService) MoveReceivedEmails(ctx context.Context, userID int64, ids []string, folder string) error {
+	switch folder {
+	case "inbox", "archive", "spam", "trash":
+	default:
+		return fmt.Errorf("invalid destination folder")
+	}
+	return s.updateReceived(ctx, userID, ids, "folder=$1::varchar,is_archived=($1::varchar='archive'),is_spam=($1::varchar='spam'),is_trashed=($1::varchar='trash'),trashed_at=CASE WHEN $1::varchar='trash' THEN NOW() ELSE NULL END", folder)
+}
+func (s *InboxService) TrashReceivedEmails(ctx context.Context, userID int64, ids []string, permanent bool) error {
+	if !permanent {
+		return s.MoveReceivedEmails(ctx, userID, ids, "trash")
+	}
+	tx, err := s.ownedMessageTransaction(ctx, userID, ids)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Historical messages may predate the ingestion ledger. Record their identity
+	// before deletion so a delayed signed notification cannot restore the copy.
+	_, err = tx.ExecContext(ctx, `INSERT INTO received_ingestions(org_id,topic_arn,ses_message_id,identity_id)
+ SELECT re.org_id,rc.sns_topic_arn,re.ses_message_id,re.identity_id FROM received_emails re
+ JOIN receiving_configs rc ON rc.org_id=re.org_id WHERE re.uuid=ANY($1::uuid[]) AND re.direction='inbound' AND COALESCE(re.ses_message_id,'')!=''
+ ON CONFLICT DO NOTHING`, pq.Array(ids))
+	if err != nil {
+		return err
+	}
+	// Cleanup jobs are committed with row deletion; objects shared by another copy
+	// are rechecked by the cleanup worker before any S3 operation.
+	_, err = tx.ExecContext(ctx, `INSERT INTO storage_cleanup_jobs(bucket,object_key)
+ SELECT raw_s3_bucket,raw_s3_key FROM received_emails WHERE uuid=ANY($1::uuid[]) AND COALESCE(raw_s3_bucket,'')!='' AND COALESCE(raw_s3_key,'')!=''
+ UNION SELECT a.s3_bucket,a.s3_key FROM email_attachments a JOIN received_emails e ON e.id=a.received_email_id WHERE e.uuid=ANY($1::uuid[]) AND a.s3_bucket!='' AND a.s3_key!=''
+ ON CONFLICT(bucket,object_key) DO UPDATE SET next_attempt_at=NOW()`, pq.Array(ids))
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM received_emails WHERE uuid=ANY($1::uuid[])`, pq.Array(ids)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+func (s *InboxService) validateMailboxScope(ctx context.Context, userID, identityID, domainID int64) error {
+	if identityID < 0 || domainID < 0 {
+		return fmt.Errorf("invalid mailbox filter")
+	}
 	if identityID > 0 {
-		// Verify identity belongs to user
-		var exists bool
-		err := s.db.QueryRowContext(ctx, `
-			SELECT EXISTS(SELECT 1 FROM identities WHERE id = $1 AND user_id = $2)
-		`, identityID, userID).Scan(&exists)
-		if err != nil || !exists {
-			return nil, fmt.Errorf("identity not found")
+		var own bool
+		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE id=$1 AND user_id=$2)`, identityID, userID).Scan(&own)
+		if err != nil {
+			return err
 		}
-
-		// Get counts for specific identity
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails
-			WHERE identity_id = $1 AND folder = 'inbox' AND is_trashed = false AND is_archived = false
-		`, identityID).Scan(&counts.Inbox)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails
-			WHERE identity_id = $1 AND is_read = false AND is_trashed = false
-		`, identityID).Scan(&counts.Unread)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails
-			WHERE identity_id = $1 AND is_starred = true AND is_trashed = false
-		`, identityID).Scan(&counts.Starred)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails
-			WHERE identity_id = $1 AND folder = 'sent' AND is_trashed = false
-		`, identityID).Scan(&counts.Sent)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails
-			WHERE identity_id = $1 AND folder = 'drafts' AND is_trashed = false
-		`, identityID).Scan(&counts.Drafts)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails
-			WHERE identity_id = $1 AND (folder = 'spam' OR is_spam = true) AND is_trashed = false
-		`, identityID).Scan(&counts.Spam)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails
-			WHERE identity_id = $1 AND is_trashed = true
-		`, identityID).Scan(&counts.Trash)
-	} else {
-		// Get counts across all user's identities (unified inbox)
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails re
-			JOIN identities i ON re.identity_id = i.id
-			WHERE i.user_id = $1 AND re.folder = 'inbox' AND re.is_trashed = false AND re.is_archived = false
-		`, userID).Scan(&counts.Inbox)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails re
-			JOIN identities i ON re.identity_id = i.id
-			WHERE i.user_id = $1 AND re.is_read = false AND re.is_trashed = false
-		`, userID).Scan(&counts.Unread)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails re
-			JOIN identities i ON re.identity_id = i.id
-			WHERE i.user_id = $1 AND re.is_starred = true AND re.is_trashed = false
-		`, userID).Scan(&counts.Starred)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails re
-			JOIN identities i ON re.identity_id = i.id
-			WHERE i.user_id = $1 AND re.folder = 'sent' AND re.is_trashed = false
-		`, userID).Scan(&counts.Sent)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails re
-			JOIN identities i ON re.identity_id = i.id
-			WHERE i.user_id = $1 AND re.folder = 'drafts' AND re.is_trashed = false
-		`, userID).Scan(&counts.Drafts)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails re
-			JOIN identities i ON re.identity_id = i.id
-			WHERE i.user_id = $1 AND (re.folder = 'spam' OR re.is_spam = true) AND re.is_trashed = false
-		`, userID).Scan(&counts.Spam)
-
-		s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM received_emails re
-			JOIN identities i ON re.identity_id = i.id
-			WHERE i.user_id = $1 AND re.is_trashed = true
-		`, userID).Scan(&counts.Trash)
+		if !own {
+			return fmt.Errorf("identity not found")
+		}
 	}
-
-	return counts, nil
+	if domainID > 0 {
+		var own bool
+		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE domain_id=$1 AND user_id=$2)`, domainID, userID).Scan(&own)
+		if err != nil {
+			return err
+		}
+		if !own {
+			return fmt.Errorf("domain not found")
+		}
+	}
+	return nil
+}
+func (s *InboxService) GetReceivedEmailCounts(ctx context.Context, userID, identityID int64) (*model.InboxCountsResponse, error) {
+	if err := s.validateMailboxScope(ctx, userID, identityID, 0); err != nil {
+		return nil, err
+	}
+	result := &model.InboxCountsResponse{Labels: map[string]int{}}
+	err := s.db.QueryRowContext(ctx, `SELECT
+ COUNT(*) FILTER(WHERE folder='inbox' AND NOT is_trashed AND NOT is_archived),
+ COUNT(*) FILTER(WHERE NOT is_read AND NOT is_trashed),
+ COUNT(*) FILTER(WHERE is_starred AND NOT is_trashed),
+ COUNT(*) FILTER(WHERE folder='sent' AND NOT is_trashed),
+ COUNT(*) FILTER(WHERE folder='drafts' AND NOT is_trashed),
+ COUNT(*) FILTER(WHERE (folder='spam' OR is_spam) AND NOT is_trashed),
+ COUNT(*) FILTER(WHERE is_trashed)
+ FROM received_emails re JOIN identities i ON re.identity_id=i.id WHERE i.user_id=$1 AND ($2::bigint=0 OR re.identity_id=$2)`, userID, identityID).Scan(&result.Inbox, &result.Unread, &result.Starred, &result.Sent, &result.Drafts, &result.Spam, &result.Trash)
+	return result, err
 }
 
+func receivedListQuery(userID int64, req *model.InboxListRequest) (string, []interface{}, error) {
+	query := `FROM received_emails re JOIN identities i ON i.id=re.identity_id WHERE i.user_id=$1`
+	args := []interface{}{userID}
+	add := func(condition string, value interface{}) {
+		args = append(args, value)
+		query += fmt.Sprintf(condition, len(args))
+	}
+	if req.IdentityID > 0 {
+		add(" AND re.identity_id=$%d", req.IdentityID)
+	}
+	if req.DomainID > 0 {
+		add(" AND re.domain_id=$%d", req.DomainID)
+	}
+	switch req.Folder {
+	case "", "inbox":
+		query += " AND re.folder='inbox' AND NOT re.is_trashed AND NOT re.is_archived"
+	case "sent", "drafts", "outbox":
+		add(" AND re.folder=$%d AND NOT re.is_trashed", req.Folder)
+	case "spam":
+		query += " AND (re.folder='spam' OR re.is_spam) AND NOT re.is_trashed"
+	case "trash":
+		query += " AND re.is_trashed"
+	case "starred":
+		query += " AND re.is_starred AND NOT re.is_trashed"
+	case "archive":
+		query += " AND re.is_archived AND NOT re.is_trashed"
+	case "all":
+		query += " AND NOT re.is_trashed"
+	default:
+		return "", nil, fmt.Errorf("invalid folder")
+	}
+	if req.IsRead != nil {
+		add(" AND re.is_read=$%d", *req.IsRead)
+	}
+	if req.IsStarred != nil {
+		add(" AND re.is_starred=$%d", *req.IsStarred)
+	}
+	if req.HasAttachments != nil {
+		add(" AND re.has_attachments=$%d", *req.HasAttachments)
+	}
+	if len(req.Search) > 500 || len(req.Sender) > 255 {
+		return "", nil, fmt.Errorf("search filter too long")
+	}
+	if req.Search != "" {
+		args = append(args, "%"+escapeLike(strings.ToLower(req.Search))+"%")
+		n := len(args)
+		query += fmt.Sprintf(" AND (lower(re.subject) LIKE $%d OR lower(re.from_email) LIKE $%d OR lower(COALESCE(re.from_name,'')) LIKE $%d OR lower(COALESCE(re.snippet,'')) LIKE $%d)", n, n, n, n)
+	}
+	if req.Sender != "" {
+		add(" AND lower(re.from_email) LIKE $%d", "%"+escapeLike(strings.ToLower(req.Sender))+"%")
+	}
+	for _, bound := range []struct {
+		value string
+		end   bool
+	}{{req.DateFrom, false}, {req.DateTo, true}} {
+		if bound.value == "" {
+			continue
+		}
+		stamp, err := time.Parse(time.RFC3339, bound.value)
+		dateOnly := false
+		if err != nil {
+			stamp, err = time.Parse("2006-01-02", bound.value)
+			dateOnly = true
+		}
+		if err != nil {
+			return "", nil, fmt.Errorf("invalid date filter")
+		}
+		if bound.end {
+			if dateOnly {
+				stamp = stamp.AddDate(0, 0, 1)
+				add(" AND re.received_at<$%d", stamp)
+			} else {
+				add(" AND re.received_at<=$%d", stamp)
+			}
+		} else {
+			add(" AND re.received_at>=$%d", stamp)
+		}
+	}
+	if len(req.Labels) > 0 {
+		if len(req.Labels) > 50 {
+			return "", nil, fmt.Errorf("too many label filters")
+		}
+		add(" AND re.labels @> $%d::text[]", pq.Array(req.Labels))
+	}
+	return query, args, nil
+}
+func escapeLike(value string) string {
+	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(value)
+}
