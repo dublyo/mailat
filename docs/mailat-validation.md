@@ -16,7 +16,7 @@ Date: 2026-10-03. This report records checks run by the implementation agents an
 
 ## Frontend
 
-- `cd apps/web && npm test`: **21 passed, 0 failed** in canonical `mailat` after the security, reply-recipient, login-error, metadata-account-isolation, and final compose retry/threading changes.
+- `cd apps/web && npm test`: **24 passed, 0 failed** in canonical `mailat` after the security, reply-recipient, login-error, metadata-account-isolation, and final compose retry/threading changes.
 - `cd apps/web && npm run build`: **passed** (`vue-tsc --noEmit` and Vite production build), in canonical `mailat`, including compact desktop rows, incoming-status cleanup, auth/metadata isolation, and the final compose retry/threading follow-up.
 - Regression tests exercise unified-identity search/clear, obsolete-response protection, in-flight request deduplication, cache return, post-mutation forced refresh, detail races, unified counts, failed-mutation selection preservation, account isolation, Reply-To/Reply All, envelope-alias sender selection, and subject prefixes. Five additional regressions verify inline login 401 errors with redirect preservation, protected API 401 expiry handling, late list responses after logout, old-account success/failure isolation, and pending creates after logout even when a token is reused.
 - Five final compose regressions cover reply-draft threading retention, forward threading exclusion, retry hydration from a confirmed failed Outbox copy with current attachment UUIDs and no consumed draft, rejection of incomplete/uncertain retry copies, and retention of uncertain submission keys after later client errors.
@@ -39,6 +39,10 @@ Compose agent:
 - The final race-enabled run includes same-key replay after permanent deletion of delivered Sent and unknown Outbox records, with no extra fake-provider calls. A crash during an in-flight send can still leave `sending`; automatic resend is intentionally avoided and operator review is required.
 
 The hosted database connection attempt timed out before test schemas were created. Local integration schemas were temporary and removed by the test harness. No live SES or S3 operation, real SNS round trip, production migration, or end-to-end delivery is claimed by these checks.
+
+## Health follow-up from live smoke checks
+
+The first live rollout exposed outdated frontend metric field names. The follow-up binds the actual API totals and warning actions, replaces the unsupported received-today card with the recorded read count, and computes virus verdict totals in the backend. A PostgreSQL regression checks date/direction scoping and zero-valued JSON fields; three rendered-view tests cover zero, nonzero, and missing metrics. The targeted backend race test, all 24 frontend tests, and production build passed.
 
 ## Dependency audit
 

@@ -535,19 +535,24 @@ func (s *HealthService) GetEmailHealthSummary(ctx context.Context, orgID int64) 
 	}
 
 	// Get receiving metrics
-	var receivedTotal, spamTotal, readTotal int
+	var receivedTotal, spamTotal, virusTotal, readTotal int
 	err = s.db.QueryRowContext(ctx, `
 		SELECT
 			COUNT(*) as total,
 			COALESCE(SUM(CASE WHEN is_spam = true THEN 1 ELSE 0 END), 0) as spam,
+			COALESCE(SUM(CASE WHEN LOWER(virus_verdict) = 'fail' THEN 1 ELSE 0 END), 0) as virus,
 			COALESCE(SUM(CASE WHEN is_read = true THEN 1 ELSE 0 END), 0) as read_count
 		FROM received_emails
 		WHERE org_id = $1 AND direction = 'inbound' AND received_at >= NOW() - INTERVAL '30 days'
-	`, orgID).Scan(&receivedTotal, &spamTotal, &readTotal)
+	`, orgID).Scan(&receivedTotal, &spamTotal, &virusTotal, &readTotal)
+	if err != nil {
+		return nil, fmt.Errorf("load receiving health metrics: %w", err)
+	}
 	if err == nil {
 		summary.ReceivingMetrics = ReceivingMetrics{
 			TotalReceived: receivedTotal,
 			TotalSpam:     spamTotal,
+			TotalVirus:    virusTotal,
 			TotalRead:     readTotal,
 		}
 		if receivedTotal > 0 {

@@ -61,7 +61,7 @@ export const useHealthStore = defineStore('health', () => {
   const healthScore = computed(() => healthSummary.value?.healthScore ?? null)
   const healthStatus = computed(() => healthSummary.value?.healthStatus || 'unknown')
   const warnings = computed<HealthWarning[]>(() => healthSummary.value?.warnings || [])
-  const criticalWarnings = computed(() => warnings.value.filter(w => w.severity === 'critical' || w.severity === 'high'))
+  const criticalWarnings = computed(() => warnings.value.filter(w => w.severity === 'critical'))
 
   async function checkBlacklists(ipAddress?: string) {
     isLoading.value = true

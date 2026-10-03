@@ -601,10 +601,12 @@ export interface SESAccountLimits {
 
 export interface ReceivingMetrics {
   totalReceived: number
-  receivedToday: number
-  spamBlocked: number
-  virusBlocked: number
-  avgDailyReceived: number
+  totalSpam: number
+  totalVirus: number
+  totalRead: number
+  spamRate: number
+  readRate: number
+  byIdentity?: Record<string, number>
 }
 
 export interface DomainAuthStatus {
@@ -612,31 +614,51 @@ export interface DomainAuthStatus {
   spfVerified: boolean
   dkimVerified: boolean
   dmarcVerified: boolean
+  sesVerified: boolean
 }
 
 export interface AuthenticationStatus {
+  totalDomains: number
+  verifiedDomains: number
+  dkimConfigured: number
+  spfConfigured: number
+  dmarcConfigured: number
   domains: DomainAuthStatus[]
-  allDomainsVerified: boolean
 }
 
 export interface HealthWarning {
   type: string
-  severity: 'low' | 'medium' | 'high' | 'critical'
+  severity: 'info' | 'warning' | 'critical'
+  title: string
   message: string
-  recommendation: string
+  action?: string
 }
 
 export interface ReputationMetrics {
+  orgId: number
+  period: string
   score: number
   totalSent: number
-  delivered: number
-  bounced: number
-  complained: number
-  failed: number
+  totalDelivered: number
+  totalBounced: number
+  totalFailed: number
+  totalComplaints: number
+  totalReceived: number
+  totalSpam: number
   deliveryRate: number
   bounceRate: number
   complaintRate: number
-  period: string
+  spamRate: number
+  byDomain?: Record<string, {
+    domain: string
+    sent: number
+    delivered: number
+    bounced: number
+    complaints: number
+    deliveryRate: number
+    bounceRate: number
+    complaintRate: number
+  }>
 }
 
 export interface EmailHealthSummary {
@@ -646,7 +668,7 @@ export interface EmailHealthSummary {
   authStatus: AuthenticationStatus
   warnings: HealthWarning[]
   healthScore: number
-  healthStatus: 'excellent' | 'good' | 'fair' | 'poor' | 'critical' | 'unknown'
+  healthStatus: 'excellent' | 'good' | 'warning' | 'critical' | 'unknown'
 }
 
 export const healthApi = {

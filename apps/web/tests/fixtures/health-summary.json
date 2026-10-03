@@ -1,0 +1,54 @@
+{
+  "sendingMetrics": {
+    "orgId": 1,
+    "period": "30d",
+    "score": 0,
+    "totalSent": 0,
+    "totalDelivered": 0,
+    "totalBounced": 0,
+    "totalFailed": 0,
+    "totalComplaints": 0,
+    "totalReceived": 0,
+    "totalSpam": 0,
+    "deliveryRate": 0,
+    "bounceRate": 0,
+    "complaintRate": 0,
+    "spamRate": 0
+  },
+  "sesLimits": {
+    "max24HourSend": 200,
+    "maxSendRate": 1,
+    "sentLast24Hours": 0,
+    "sendingEnabled": true,
+    "sandboxMode": true,
+    "remaining24Hour": 200,
+    "usagePercentage": 0
+  },
+  "receivingMetrics": {
+    "totalReceived": 0,
+    "totalSpam": 0,
+    "totalVirus": 0,
+    "totalRead": 0,
+    "spamRate": 0,
+    "readRate": 0
+  },
+  "authStatus": {
+    "totalDomains": 0,
+    "verifiedDomains": 0,
+    "dkimConfigured": 0,
+    "spfConfigured": 0,
+    "dmarcConfigured": 0,
+    "domains": []
+  },
+  "warnings": [
+    {
+      "type": "sandbox",
+      "severity": "info",
+      "title": "Sandbox account",
+      "message": "The SES account is in sandbox mode.",
+      "action": "Request production access from AWS."
+    }
+  ],
+  "healthScore": 0,
+  "healthStatus": "unknown"
+}
