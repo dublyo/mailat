@@ -70,15 +70,21 @@ func (c *SSEController) Connect(r *ghttp.Request) {
 	})
 
 	// Heartbeat ticker
-	heartbeat := time.NewTicker(30 * time.Second)
+	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 
 	// Keep connection open
 	for {
 		select {
 		case event := <-eventChan:
+			if !middleware.CredentialActive(r.Context()) {
+				return
+			}
 			c.writeEvent(r, event)
 		case <-heartbeat.C:
+			if !middleware.CredentialActive(r.Context()) {
+				return
+			}
 			// Send heartbeat
 			c.writeEvent(r, &SSEEvent{
 				Type: "heartbeat",
@@ -162,6 +168,7 @@ func (c *SSEController) NotifyNewEmail(userID int64, email *model.ReceivedEmail)
 			"fromName":       email.FromName,
 			"subject":        email.Subject,
 			"snippet":        email.Snippet,
+			"folder":         email.Folder,
 			"receivedAt":     email.ReceivedAt.Format(time.RFC3339),
 			"hasAttachments": email.HasAttachments,
 		},

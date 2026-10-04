@@ -21,11 +21,14 @@ import (
 	"github.com/dublyo/mailat/api/internal/provider"
 )
 
+var ErrDomainNotFound = errors.New("domain not found")
+
 type DomainService struct {
-	db            *sql.DB
-	cfg           *config.Config
-	emailProvider provider.EmailProvider
-	dmarcResolver provider.DMARCResolver
+	db              *sql.DB
+	cfg             *config.Config
+	emailProvider   provider.EmailProvider
+	dmarcResolver   provider.DMARCResolver
+	sendingProvider sendingSetupProvider
 }
 
 func NewDomainService(db *sql.DB, cfg *config.Config) *DomainService {
@@ -111,8 +114,9 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 
 	selector := "mail"
 
-	// If using SES, register domain identity and get DKIM tokens
-	var sesDkimTokens []string
+	// Keep absent tokens consistent with the schema default and read paths.
+	// In particular, SMTP creation must not persist NULL while reload returns [].
+	sesDkimTokens := make([]string, 0)
 	var sesVerificationResult *provider.DomainVerificationResult
 	emailProvider := "smtp"
 
@@ -148,7 +152,7 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 			return nil, fmt.Errorf("lock organization domain limit: %w", err)
 		}
 		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM domains WHERE org_id=$1`, orgID).Scan(&domainCount); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to count domains: %w", err)
 		}
 		if maxDomains > 0 && domainCount >= maxDomains {
 			return nil, fmt.Errorf("domain limit reached: organization can have a maximum of %d domains", maxDomains)
@@ -293,7 +297,8 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 	return &domain, nil
 }
 
-// GetDomain retrieves a domain by UUID
+// GetDomain retrieves a domain by UUID. Nullable legacy metadata is read using
+// schema defaults; a missing key or SES status must never imply verification.
 func (s *DomainService) GetDomain(ctx context.Context, orgID int64, domainUUID string) (*model.Domain, error) {
 	var domain model.Domain
 	var sesDkimTokens []string
@@ -301,7 +306,8 @@ func (s *DomainService) GetDomain(ctx context.Context, orgID int64, domainUUID s
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, uuid, org_id, name, status, verification_token, dkim_selector,
-		       dkim_public_key, email_provider, ses_verified, ses_dkim_tokens, ses_identity_arn,
+		       COALESCE(dkim_public_key, ''), COALESCE(email_provider, 'ses'),
+		       COALESCE(ses_verified, false), COALESCE(ses_dkim_tokens, '{}'::text[]), ses_identity_arn,
 		       mx_verified, spf_verified, dkim_verified, dmarc_verified,
 		       receiving_enabled, verified_at, created_at, updated_at
 		FROM domains
@@ -315,7 +321,7 @@ func (s *DomainService) GetDomain(ctx context.Context, orgID int64, domainUUID s
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("domain not found")
+		return nil, ErrDomainNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query domain: %w", err)
@@ -332,8 +338,9 @@ func (s *DomainService) GetDomain(ctx context.Context, orgID int64, domainUUID s
 // ListDomains returns all domains for an organization
 func (s *DomainService) ListDomains(ctx context.Context, orgID int64) ([]*model.Domain, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, uuid, org_id, name, status, dkim_selector, dkim_public_key,
-		       email_provider, ses_verified, ses_dkim_tokens, ses_identity_arn,
+		SELECT id, uuid, org_id, name, status, verification_token, dkim_selector, COALESCE(dkim_public_key, ''),
+		       COALESCE(email_provider, 'ses'), COALESCE(ses_verified, false),
+		       COALESCE(ses_dkim_tokens, '{}'::text[]), ses_identity_arn,
 		       mx_verified, spf_verified, dkim_verified, dmarc_verified,
 		       receiving_enabled, verified_at, created_at, updated_at
 		FROM domains
@@ -345,13 +352,13 @@ func (s *DomainService) ListDomains(ctx context.Context, orgID int64) ([]*model.
 	}
 	defer rows.Close()
 
-	var domains []*model.Domain
+	domains := make([]*model.Domain, 0)
 	for rows.Next() {
 		var domain model.Domain
 		var sesDkimTokens []string
 		var sesIdentityArn sql.NullString
 		if err := rows.Scan(&domain.ID, &domain.UUID, &domain.OrgID, &domain.Name,
-			&domain.Status, &domain.DKIMSelector, &domain.DKIMPublicKey,
+			&domain.Status, &domain.VerificationToken, &domain.DKIMSelector, &domain.DKIMPublicKey,
 			&domain.EmailProvider, &domain.SESVerified, pq.Array(&sesDkimTokens), &sesIdentityArn,
 			&domain.MXVerified, &domain.SPFVerified, &domain.DKIMVerified, &domain.DMARCVerified,
 			&domain.ReceivingEnabled, &domain.VerifiedAt, &domain.CreatedAt, &domain.UpdatedAt); err != nil {
@@ -364,14 +371,14 @@ func (s *DomainService) ListDomains(ctx context.Context, orgID int64) ([]*model.
 		domains = append(domains, &domain)
 	}
 
-	return domains, nil
+	return domains, rows.Err()
 }
 
 // GetDNSRecords returns DNS records for a domain
 func (s *DomainService) GetDNSRecords(ctx context.Context, domainID int64) ([]*model.DomainDNSRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT r.id, r.domain_id, r.record_type, r.hostname, r.expected_value, r.actual_value, r.verified, r.last_checked_at,
-		       d.name, d.email_provider
+		       d.name, COALESCE(d.email_provider, 'ses')
 		FROM domain_dns_records r JOIN domains d ON d.id=r.domain_id
 		WHERE r.domain_id = $1
 		ORDER BY r.record_type, r.hostname
@@ -381,7 +388,7 @@ func (s *DomainService) GetDNSRecords(ctx context.Context, domainID int64) ([]*m
 	}
 	defer rows.Close()
 
-	var records []*model.DomainDNSRecord
+	records := make([]*model.DomainDNSRecord, 0)
 	for rows.Next() {
 		var rec model.DomainDNSRecord
 		var actualValue sql.NullString
@@ -427,7 +434,7 @@ func (s *DomainService) VerifyDNS(ctx context.Context, domainID int64) (map[stri
 	// Get domain details including email provider
 	var domainName, emailProvider string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT name, email_provider FROM domains WHERE id = $1
+		SELECT name, COALESCE(email_provider, 'ses') FROM domains WHERE id = $1
 	`, domainID).Scan(&domainName, &emailProvider)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get domain: %w", err)
@@ -604,7 +611,7 @@ func (s *DomainService) DeleteDomain(ctx context.Context, orgID int64, domainUUI
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("domain not found")
+		return ErrDomainNotFound
 	}
 
 	return nil
@@ -802,7 +809,7 @@ func (s *DomainService) AddDNSToCloudflare(ctx context.Context, domainID int64, 
 	// after the first finishes. DNS changes are external, so this is only a lock.
 	var domainName, emailProvider string
 	err = tx.QueryRowContext(ctx, `
-		SELECT name, email_provider FROM domains WHERE id = $1 FOR UPDATE
+		SELECT name, COALESCE(email_provider, 'ses') FROM domains WHERE id = $1 FOR UPDATE
 	`, domainID).Scan(&domainName, &emailProvider)
 	if err != nil {
 		return nil, fmt.Errorf("domain not found: %w", err)

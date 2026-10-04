@@ -5,6 +5,7 @@ import (
 
 	"github.com/gogf/gf/v2/net/ghttp"
 
+	"github.com/dublyo/mailat/api/internal/eventoutbox"
 	"github.com/dublyo/mailat/api/internal/middleware"
 	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/internal/service"
@@ -30,31 +31,24 @@ func (c *WebhookController) CreateWebhook(r *ghttp.Request) {
 
 	var req model.CreateWebhookRequest
 	if err := r.Parse(&req); err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, "Invalid webhook request; use a public HTTPS URL and supported email events")
 		return
 	}
 
-	// Validate events
-	validEvents := map[string]bool{
-		"email.sent":       true,
-		"email.delivered":  true,
-		"email.bounced":    true,
-		"email.complained": true,
-		"email.opened":     true,
-		"email.clicked":    true,
-		"email.failed":     true,
+	if len(req.Events) == 0 {
+		response.BadRequest(r, "Choose at least one email event")
+		return
 	}
-
-	for _, event := range req.Events {
-		if !validEvents[event] {
-			response.BadRequest(r, "Invalid event type: "+event)
+	for _, kind := range req.Events {
+		if !eventoutbox.KnownType(kind) {
+			response.BadRequest(r, "Unsupported event type")
 			return
 		}
 	}
 
-	webhook, err := c.webhookService.CreateWebhook(r.Context(), claims.OrgID, &req)
+	webhook, err := c.webhookService.ForUser(claims.UserID).CreateWebhook(r.Context(), claims.OrgID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, "Invalid webhook request; use a public HTTPS URL and supported email events")
 		return
 	}
 
@@ -76,9 +70,9 @@ func (c *WebhookController) GetWebhook(r *ghttp.Request) {
 		return
 	}
 
-	webhook, err := c.webhookService.GetWebhook(r.Context(), claims.OrgID, webhookUUID)
+	webhook, err := c.webhookService.ForUser(claims.UserID).GetWebhook(r.Context(), claims.OrgID, webhookUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		response.NotFound(r, "Webhook not found")
 		return
 	}
 
@@ -94,9 +88,9 @@ func (c *WebhookController) ListWebhooks(r *ghttp.Request) {
 		return
 	}
 
-	webhooks, err := c.webhookService.ListWebhooks(r.Context(), claims.OrgID)
+	webhooks, err := c.webhookService.ForUser(claims.UserID).ListWebhooks(r.Context(), claims.OrgID)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		response.InternalError(r, "Could not load webhook information")
 		return
 	}
 
@@ -120,13 +114,13 @@ func (c *WebhookController) UpdateWebhook(r *ghttp.Request) {
 
 	var req model.UpdateWebhookRequest
 	if err := r.Parse(&req); err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, "Invalid webhook request; use a public HTTPS URL and supported email events")
 		return
 	}
 
-	webhook, err := c.webhookService.UpdateWebhook(r.Context(), claims.OrgID, webhookUUID, &req)
+	webhook, err := c.webhookService.ForUser(claims.UserID).UpdateWebhook(r.Context(), claims.OrgID, webhookUUID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, "Invalid webhook request; use a public HTTPS URL and supported email events")
 		return
 	}
 
@@ -148,9 +142,9 @@ func (c *WebhookController) DeleteWebhook(r *ghttp.Request) {
 		return
 	}
 
-	err := c.webhookService.DeleteWebhook(r.Context(), claims.OrgID, webhookUUID)
+	err := c.webhookService.ForUser(claims.UserID).DeleteWebhook(r.Context(), claims.OrgID, webhookUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		response.NotFound(r, "Webhook not found")
 		return
 	}
 
@@ -172,9 +166,9 @@ func (c *WebhookController) RotateSecret(r *ghttp.Request) {
 		return
 	}
 
-	newSecret, err := c.webhookService.RotateSecret(r.Context(), claims.OrgID, webhookUUID)
+	newSecret, err := c.webhookService.ForUser(claims.UserID).RotateSecret(r.Context(), claims.OrgID, webhookUUID)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, "Invalid webhook request; use a public HTTPS URL and supported email events")
 		return
 	}
 
@@ -203,9 +197,9 @@ func (c *WebhookController) GetWebhookCalls(r *ghttp.Request) {
 		}
 	}
 
-	calls, err := c.webhookService.GetWebhookCalls(r.Context(), claims.OrgID, webhookUUID, limit)
+	calls, err := c.webhookService.ForUser(claims.UserID).GetWebhookCalls(r.Context(), claims.OrgID, webhookUUID, limit)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		response.InternalError(r, "Could not load webhook information")
 		return
 	}
 
@@ -227,24 +221,10 @@ func (c *WebhookController) TestWebhook(r *ghttp.Request) {
 		return
 	}
 
-	// Get webhook
-	webhook, err := c.webhookService.GetWebhook(r.Context(), claims.OrgID, webhookUUID)
+	result, err := c.webhookService.ForUser(claims.UserID).TestDelivery(r.Context(), claims.OrgID, webhookUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		response.BadRequest(r, "Could not test webhook: check the endpoint and its status")
 		return
 	}
-
-	// Send test event
-	testPayload := map[string]interface{}{
-		"test":    true,
-		"message": "This is a test webhook event from mailat.co",
-	}
-
-	err = c.webhookService.DeliverWebhook(r.Context(), webhook.ID, "test", testPayload)
-	if err != nil {
-		response.InternalError(r, err.Error())
-		return
-	}
-
-	response.SuccessWithMessage(r, "Test webhook queued for delivery", nil)
+	response.Success(r, result)
 }

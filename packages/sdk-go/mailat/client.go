@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,9 +30,15 @@ type Client struct {
 	httpClient *http.Client
 
 	// Resource namespaces
-	Emails    *EmailsService
-	Templates *TemplatesService
-	Webhooks  *WebhooksService
+	Emails     *EmailsService
+	Templates  *TemplatesService
+	Webhooks   *WebhooksService
+	Inbox      *InboxService
+	Compose    *ComposeService
+	Domains    *DomainsService
+	Identities *CRUDResource
+	Triggers   *TriggersService
+	Deliveries *DeliveriesService
 }
 
 // ClientOption configures the client.
@@ -76,32 +83,40 @@ func NewClient(apiKey string, opts ...ClientOption) *Client {
 	c.Emails = &EmailsService{client: c}
 	c.Templates = &TemplatesService{client: c}
 	c.Webhooks = &WebhooksService{client: c}
+	c.Inbox = newInbox(c)
+	c.Compose = &ComposeService{c}
+	c.Domains = &DomainsService{ReadResource{c, "/domains"}}
+	c.Identities = &CRUDResource{ReadResource{c, "/identities"}}
+	c.Triggers = &TriggersService{CRUDResource{ReadResource{c, "/webhook-triggers"}}}
+	c.Deliveries = &DeliveriesService{ReadResource{c, "/webhook-deliveries"}}
 
 	return c
 }
 
 // APIError represents an API error response.
 type APIError struct {
-	StatusCode int    `json:"-"`
-	Message    string `json:"message"`
-	Code       string `json:"code,omitempty"`
+	StatusCode int         `json:"-"`
+	RetryAfter string      `json:"-"`
+	Message    string      `json:"message"`
+	Code       interface{} `json:"code,omitempty"`
 }
 
 func (e *APIError) Error() string {
-	if e.Code != "" {
-		return fmt.Sprintf("%s (code: %s, status: %d)", e.Message, e.Code, e.StatusCode)
+	if e.Code != nil {
+		return fmt.Sprintf("%s (code: %v, status: %d)", e.Message, e.Code, e.StatusCode)
 	}
 	return fmt.Sprintf("%s (status: %d)", e.Message, e.StatusCode)
 }
 
 // apiResponse wraps all API responses.
 type apiResponse struct {
+	Code    interface{}     `json:"code"`
 	Success bool            `json:"success"`
 	Message string          `json:"message,omitempty"`
 	Data    json.RawMessage `json:"data"`
 }
 
-func (c *Client) request(ctx context.Context, method, path string, body interface{}, headers map[string]string) (json.RawMessage, error) {
+func (c *Client) request(ctx context.Context, method, path string, body interface{}, headers map[string]string, binary ...bool) (json.RawMessage, error) {
 	url := c.baseURL + path
 
 	var bodyReader io.Reader
@@ -137,6 +152,9 @@ func (c *Client) request(ctx context.Context, method, path string, body interfac
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
+	if resp.StatusCode < 400 && len(binary) > 0 && binary[0] {
+		return respBody, nil
+	}
 	var apiResp apiResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
@@ -146,6 +164,8 @@ func (c *Client) request(ctx context.Context, method, path string, body interfac
 		return nil, &APIError{
 			StatusCode: resp.StatusCode,
 			Message:    apiResp.Message,
+			Code:       apiResp.Code,
+			RetryAfter: resp.Header.Get("Retry-After"),
 		}
 	}
 
@@ -155,52 +175,45 @@ func (c *Client) request(ctx context.Context, method, path string, body interfac
 // VerifyWebhookSignature verifies a webhook signature.
 // Returns true if the signature is valid.
 func VerifyWebhookSignature(payload []byte, signature, secret string, tolerance time.Duration) bool {
-	// Parse signature: t=timestamp,v1=signature
+	if secret == "" || tolerance < 0 {
+		return false
+	}
+	// A zero tolerance uses the safe default; it never disables replay checks.
+	if tolerance == 0 {
+		tolerance = 5 * time.Minute
+	}
 	parts := make(map[string]string)
 	for _, part := range strings.Split(signature, ",") {
-		if kv := strings.SplitN(part, "=", 2); len(kv) == 2 {
-			parts[kv[0]] = kv[1]
-		}
-	}
-
-	timestampStr, ok := parts["t"]
-	if !ok {
-		return false
-	}
-	v1Sig, ok := parts["v1"]
-	if !ok {
-		return false
-	}
-
-	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
-	if err != nil {
-		return false
-	}
-
-	// Check timestamp tolerance
-	now := time.Now().Unix()
-	if tolerance > 0 {
-		diff := now - timestamp
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > int64(tolerance.Seconds()) {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) != 2 || (kv[0] != "t" && kv[0] != "v1") {
 			return false
 		}
+		if _, exists := parts[kv[0]]; exists {
+			return false
+		}
+		parts[kv[0]] = kv[1]
 	}
-
-	// Compute expected signature
-	signedPayload := fmt.Sprintf("%d.%s", timestamp, string(payload))
+	timestampStr, v1Sig := parts["t"], parts["v1"]
+	if !regexp.MustCompile(`^[0-9]{1,13}$`).MatchString(timestampStr) || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(v1Sig) {
+		return false
+	}
+	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
+	if err != nil || timestamp <= 0 {
+		return false
+	}
+	diff := time.Since(time.Unix(timestamp, 0))
+	if diff < -tolerance || diff > tolerance {
+		return false
+	}
 	h := hmac.New(sha256.New, []byte(secret))
-	h.Write([]byte(signedPayload))
+	h.Write([]byte(timestampStr + "."))
+	h.Write(payload)
 	expectedSig := hex.EncodeToString(h.Sum(nil))
-
-	// Timing-safe comparison
 	return hmac.Equal([]byte(v1Sig), []byte(expectedSig))
 }
 
 // ParseWebhookPayload verifies and parses a webhook payload.
-func ParseWebhookPayload(payload []byte, signature, secret string) (*WebhookPayload, error) {
+func ParseWebhookPayload(payload []byte, signature, secret string, claimEvent ...func(string) (bool, error)) (*WebhookPayload, error) {
 	if !VerifyWebhookSignature(payload, signature, secret, 5*time.Minute) {
 		return nil, &APIError{
 			StatusCode: 401,
@@ -213,5 +226,18 @@ func ParseWebhookPayload(payload []byte, signature, secret string) (*WebhookPayl
 		return nil, fmt.Errorf("failed to parse webhook payload: %w", err)
 	}
 
+	if wp.Version != "1" || wp.ID == "" || wp.Type == "" || wp.CreatedAt.IsZero() || wp.Data == nil {
+		return nil, &APIError{StatusCode: 400, Message: "Invalid webhook event envelope"}
+	}
+	// The optional callback must atomically claim IDs in durable application storage.
+	if len(claimEvent) > 0 && claimEvent[0] != nil {
+		claimed, err := claimEvent[0](wp.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !claimed {
+			return nil, &APIError{StatusCode: 409, Message: "Webhook event already processed"}
+		}
+	}
 	return &wp, nil
 }

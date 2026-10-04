@@ -1,12 +1,8 @@
 package service
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,40 +10,42 @@ import (
 	"time"
 
 	"github.com/dublyo/mailat/api/internal/config"
+	"github.com/dublyo/mailat/api/internal/eventoutbox"
 )
 
 // Webhook trigger types
 const (
-	TriggerEmailReceived    = "email_received"
-	TriggerEmailSent        = "email_sent"
-	TriggerContactCreated   = "contact_created"
-	TriggerContactUpdated   = "contact_updated"
-	TriggerContactDeleted   = "contact_deleted"
-	TriggerCampaignSent     = "campaign_sent"
-	TriggerCampaignOpened   = "campaign_opened"
-	TriggerCampaignClicked  = "campaign_clicked"
-	TriggerBounceReceived   = "bounce_received"
+	TriggerEmailReceived     = "email_received"
+	TriggerEmailSent         = "email_sent"
+	TriggerContactCreated    = "contact_created"
+	TriggerContactUpdated    = "contact_updated"
+	TriggerContactDeleted    = "contact_deleted"
+	TriggerCampaignSent      = "campaign_sent"
+	TriggerCampaignOpened    = "campaign_opened"
+	TriggerCampaignClicked   = "campaign_clicked"
+	TriggerBounceReceived    = "bounce_received"
 	TriggerComplaintReceived = "complaint_received"
-	TriggerSubscribed       = "subscribed"
-	TriggerUnsubscribed     = "unsubscribed"
+	TriggerSubscribed        = "subscribed"
+	TriggerUnsubscribed      = "unsubscribed"
 )
 
 // WebhookTrigger represents a webhook trigger configuration
 type WebhookTrigger struct {
-	ID              int        `json:"id"`
-	UUID            string     `json:"uuid"`
-	OrgID           int        `json:"orgId"`
-	UserID          int        `json:"userId"`
-	Name            string     `json:"name"`
-	Description     string     `json:"description,omitempty"`
-	TriggerType     string     `json:"triggerType"`
+	Secret          string                 `json:"secret,omitempty"`
+	ID              int                    `json:"id"`
+	UUID            string                 `json:"uuid"`
+	OrgID           int                    `json:"orgId"`
+	UserID          int                    `json:"userId"`
+	Name            string                 `json:"name"`
+	Description     string                 `json:"description,omitempty"`
+	TriggerType     string                 `json:"triggerType"`
 	Filters         map[string]interface{} `json:"filters,omitempty"`
-	WebhookURL      string     `json:"webhookUrl"`
-	Active          bool       `json:"active"`
-	LastTriggeredAt *time.Time `json:"lastTriggeredAt,omitempty"`
-	TriggerCount    int        `json:"triggerCount"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
+	WebhookURL      string                 `json:"webhookUrl"`
+	Active          bool                   `json:"active"`
+	LastTriggeredAt *time.Time             `json:"lastTriggeredAt,omitempty"`
+	TriggerCount    int                    `json:"triggerCount"`
+	CreatedAt       time.Time              `json:"createdAt"`
+	UpdatedAt       time.Time              `json:"updatedAt"`
 }
 
 // CreateWebhookTriggerInput is the input for creating a webhook trigger
@@ -69,17 +67,17 @@ type WebhookPayload struct {
 
 // WebhookTriggerService handles webhook trigger operations
 type WebhookTriggerService struct {
+	httpClient *http.Client
 	db         *sql.DB
 	cfg        *config.Config
-	httpClient *http.Client
+	userID     int64
 }
 
 // NewWebhookTriggerService creates a new webhook trigger service
 func NewWebhookTriggerService(db *sql.DB, cfg *config.Config) *WebhookTriggerService {
 	return &WebhookTriggerService{
-		db:         db,
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		db:  db,
+		cfg: cfg,
 	}
 }
 
@@ -95,33 +93,20 @@ func (s *WebhookTriggerService) Create(ctx context.Context, userID, orgID int64,
 		return nil, fmt.Errorf("webhook URL is required")
 	}
 
-	// Validate trigger type
-	validTypes := []string{TriggerEmailReceived, TriggerEmailSent, TriggerContactCreated, TriggerContactUpdated,
-		TriggerContactDeleted, TriggerCampaignSent, TriggerCampaignOpened, TriggerCampaignClicked,
-		TriggerBounceReceived, TriggerComplaintReceived, TriggerSubscribed, TriggerUnsubscribed}
-	valid := false
-	for _, t := range validTypes {
-		if input.TriggerType == t {
-			valid = true
-			break
-		}
+	if !eventoutbox.KnownType(input.TriggerType) {
+		return nil, fmt.Errorf("unsupported trigger type")
 	}
-	if !valid {
-		return nil, fmt.Errorf("invalid trigger type: %s", input.TriggerType)
+	if err := eventoutbox.ValidateDestination(input.WebhookURL); err != nil {
+		return nil, err
 	}
-
-	// Generate secret for HMAC signing
-	secret := generateRandomToken(32)
-
-	var filtersJSON []byte
-	var err error
-	if input.Filters != nil {
-		filtersJSON, err = json.Marshal(input.Filters)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal filters: %w", err)
-		}
+	secret := generateWebhookSecret()
+	if input.Filters == nil {
+		input.Filters = map[string]interface{}{}
 	}
-
+	filtersJSON, err := json.Marshal(input.Filters)
+	if err != nil {
+		return nil, err
+	}
 	var trigger WebhookTrigger
 	err = s.db.QueryRowContext(ctx, `
 		INSERT INTO webhook_triggers (org_id, user_id, name, description, trigger_type, filters, webhook_url, secret, active)
@@ -139,6 +124,7 @@ func (s *WebhookTriggerService) Create(ctx context.Context, userID, orgID int64,
 		json.Unmarshal(filtersJSON, &trigger.Filters)
 	}
 
+	trigger.Secret = secret
 	return &trigger, nil
 }
 
@@ -150,8 +136,8 @@ func (s *WebhookTriggerService) Get(ctx context.Context, orgID int64, triggerID 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, uuid, org_id, user_id, name, COALESCE(description, ''), trigger_type, filters, webhook_url, active, last_triggered_at, trigger_count, created_at, updated_at
 		FROM webhook_triggers
-		WHERE id = $1 AND org_id = $2
-	`, triggerID, orgID).Scan(&trigger.ID, &trigger.UUID, &trigger.OrgID, &trigger.UserID, &trigger.Name, &trigger.Description,
+		WHERE id = $1 AND org_id = $2 AND ($3=0 OR user_id=$3)
+	`, triggerID, orgID, s.userID).Scan(&trigger.ID, &trigger.UUID, &trigger.OrgID, &trigger.UserID, &trigger.Name, &trigger.Description,
 		&trigger.TriggerType, &filtersJSON, &trigger.WebhookURL, &trigger.Active,
 		&trigger.LastTriggeredAt, &trigger.TriggerCount, &trigger.CreatedAt, &trigger.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -173,15 +159,15 @@ func (s *WebhookTriggerService) List(ctx context.Context, orgID int64) ([]*Webho
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, uuid, org_id, user_id, name, COALESCE(description, ''), trigger_type, filters, webhook_url, active, last_triggered_at, trigger_count, created_at, updated_at
 		FROM webhook_triggers
-		WHERE org_id = $1
+		WHERE org_id = $1 AND ($2=0 OR user_id=$2)
 		ORDER BY created_at DESC
-	`, orgID)
+	`, orgID, s.userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list webhook triggers: %w", err)
 	}
 	defer rows.Close()
 
-	var triggers []*WebhookTrigger
+	triggers := []*WebhookTrigger{}
 	for rows.Next() {
 		var t WebhookTrigger
 		var filtersJSON []byte
@@ -189,7 +175,7 @@ func (s *WebhookTriggerService) List(ctx context.Context, orgID int64) ([]*Webho
 		if err := rows.Scan(&t.ID, &t.UUID, &t.OrgID, &t.UserID, &t.Name, &t.Description,
 			&t.TriggerType, &filtersJSON, &t.WebhookURL, &t.Active,
 			&t.LastTriggeredAt, &t.TriggerCount, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			continue
+			return nil, err
 		}
 
 		if filtersJSON != nil {
@@ -199,11 +185,19 @@ func (s *WebhookTriggerService) List(ctx context.Context, orgID int64) ([]*Webho
 		triggers = append(triggers, &t)
 	}
 
-	return triggers, nil
+	return triggers, rows.Err()
 }
 
 // Update updates a webhook trigger
 func (s *WebhookTriggerService) Update(ctx context.Context, orgID int64, triggerID int, name, description, webhookURL *string, filters *map[string]interface{}, active *bool) (*WebhookTrigger, error) {
+	if _, err := s.Get(ctx, orgID, triggerID); err != nil {
+		return nil, err
+	}
+	if webhookURL != nil {
+		if err := eventoutbox.ValidateDestination(*webhookURL); err != nil {
+			return nil, err
+		}
+	}
 	updates := []string{}
 	args := []interface{}{}
 	argNum := 1
@@ -227,7 +221,13 @@ func (s *WebhookTriggerService) Update(ctx context.Context, orgID int64, trigger
 	}
 
 	if filters != nil {
-		filtersJSON, _ := json.Marshal(*filters)
+		if *filters == nil {
+			*filters = map[string]interface{}{}
+		}
+		filtersJSON, err := json.Marshal(*filters)
+		if err != nil {
+			return nil, err
+		}
 		updates = append(updates, fmt.Sprintf("filters = $%d", argNum))
 		args = append(args, filtersJSON)
 		argNum++
@@ -268,6 +268,9 @@ func (s *WebhookTriggerService) Update(ctx context.Context, orgID int64, trigger
 
 // Delete deletes a webhook trigger
 func (s *WebhookTriggerService) Delete(ctx context.Context, orgID int64, triggerID int) error {
+	if _, err := s.Get(ctx, orgID, triggerID); err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM webhook_triggers WHERE id = $1 AND org_id = $2
 	`, triggerID, orgID)
@@ -283,145 +286,77 @@ func (s *WebhookTriggerService) Delete(ctx context.Context, orgID int64, trigger
 	return nil
 }
 
-// Fire fires all matching triggers for an event
-func (s *WebhookTriggerService) Fire(ctx context.Context, orgID int64, triggerType string, data map[string]interface{}) error {
-	// Get all active triggers of this type
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, webhook_url, secret, filters
-		FROM webhook_triggers
-		WHERE org_id = $1 AND trigger_type = $2 AND active = true
-	`, orgID, triggerType)
+// ForUser binds HTTP operations to the authenticated mailbox owner.
+func (s *WebhookTriggerService) ForUser(userID int64) *WebhookTriggerService {
+	copy := *s
+	copy.userID = userID
+	return &copy
+}
+func (s *WebhookTriggerService) ResolveID(ctx context.Context, orgID int64, ref string) (int, error) {
+	var id int
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM webhook_triggers WHERE (uuid::text=$1 OR id::text=$1) AND org_id=$2 AND ($3=0 OR user_id=$3)`, ref, orgID, s.userID).Scan(&id)
 	if err != nil {
-		return fmt.Errorf("failed to get triggers: %w", err)
+		return 0, fmt.Errorf("webhook trigger not found")
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var id int
-		var webhookURL, secret string
-		var filtersJSON []byte
-
-		if err := rows.Scan(&id, &webhookURL, &secret, &filtersJSON); err != nil {
-			continue
-		}
-
-		// Check filters
-		if filtersJSON != nil {
-			var filters map[string]interface{}
-			json.Unmarshal(filtersJSON, &filters)
-			if !s.matchFilters(filters, data) {
-				continue
-			}
-		}
-
-		// Fire the webhook asynchronously
-		go s.sendWebhook(id, webhookURL, secret, triggerType, data)
+	return id, nil
+}
+func (s *WebhookTriggerService) RotateSecret(ctx context.Context, orgID int64, id int) (string, error) {
+	if _, err := s.Get(ctx, orgID, id); err != nil {
+		return "", err
 	}
-
-	return nil
+	secret := generateWebhookSecret()
+	_, err := s.db.ExecContext(ctx, `UPDATE webhook_triggers SET secret=$1,updated_at=NOW() WHERE id=$2`, secret, id)
+	return secret, err
 }
 
-// matchFilters checks if data matches the filters
-func (s *WebhookTriggerService) matchFilters(filters, data map[string]interface{}) bool {
-	for key, filterValue := range filters {
-		dataValue, ok := data[key]
-		if !ok {
-			return false
-		}
-
-		// Simple equality check (can be extended for more complex filters)
-		if fmt.Sprintf("%v", filterValue) != fmt.Sprintf("%v", dataValue) {
-			return false
-		}
-	}
-	return true
+// Fire supports older internal callers. Mail events use Emit inside their source transaction.
+func (s *WebhookTriggerService) Fire(ctx context.Context, orgID int64, kind string, data map[string]interface{}) error {
+	return eventoutbox.EmitLegacy(ctx, s.db, orgID, kind, data)
 }
-
-// sendWebhook sends a webhook request
-func (s *WebhookTriggerService) sendWebhook(triggerID int, url, secret, event string, data map[string]interface{}) {
-	payload := WebhookPayload{
-		Event:     event,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Data:      data,
-	}
-
-	body, err := json.Marshal(payload)
+func (s *WebhookTriggerService) TestDelivery(ctx context.Context, orgID int64, id int) (*eventoutbox.Result, error) {
+	t, err := s.Get(ctx, orgID, id)
 	if err != nil {
-		return
+		return nil, err
 	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if !t.Active {
+		return nil, fmt.Errorf("activate this trigger before testing")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return
+		return nil, err
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", fmt.Sprintf("%s/1.0", s.cfg.AppName))
-	req.Header.Set("X-Webhook-Event", event)
-
-	// Add HMAC signature if secret is set
-	if secret != "" {
-		signature := s.computeSignature(body, secret)
-		req.Header.Set("X-Webhook-Signature", signature)
-	}
-
-	resp, err := s.httpClient.Do(req)
+	defer tx.Rollback()
+	eventID, deliveryID, err := eventoutbox.QueueTarget(ctx, tx, eventoutbox.Event{Type: "webhook.test", OrgID: orgID, UserID: int64(t.UserID), Data: map[string]any{"test": true, "triggerUuid": t.UUID}}, 0, int64(id))
 	if err != nil {
-		return
+		return nil, err
 	}
-	defer resp.Body.Close()
-
-	// Update trigger stats
-	s.db.ExecContext(context.Background(), `
-		UPDATE webhook_triggers
-		SET trigger_count = trigger_count + 1, last_triggered_at = NOW()
-		WHERE id = $1
-	`, triggerID)
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	dispatcher := eventoutbox.NewDispatcher(s.db)
+	if s.httpClient != nil {
+		dispatcher.Client = s.httpClient
+	}
+	result, err := dispatcher.DispatchOne(ctx, deliveryID)
+	if result == nil && err == nil {
+		return &eventoutbox.Result{EventID: eventID, DeliveryID: deliveryID, Status: "pending"}, nil
+	}
+	return result, err
 }
-
-// computeSignature computes HMAC-SHA256 signature
-func (s *WebhookTriggerService) computeSignature(payload []byte, secret string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(payload)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
-}
-
-// Test tests a webhook trigger by sending a test payload
-func (s *WebhookTriggerService) Test(ctx context.Context, orgID int64, triggerID int) error {
-	trigger, err := s.Get(ctx, orgID, triggerID)
+func (s *WebhookTriggerService) Test(ctx context.Context, orgID int64, id int) error {
+	r, err := s.TestDelivery(ctx, orgID, id)
 	if err != nil {
 		return err
 	}
-
-	// Get secret
-	var secret string
-	s.db.QueryRowContext(ctx, `SELECT secret FROM webhook_triggers WHERE id = $1`, triggerID).Scan(&secret)
-
-	testData := map[string]interface{}{
-		"test":      true,
-		"message":   fmt.Sprintf("This is a test webhook from %s", s.cfg.AppName),
-		"triggerId": trigger.UUID,
+	if r.Status != "delivered" {
+		return fmt.Errorf("webhook delivery %s: %s", r.Status, r.Error)
 	}
-
-	s.sendWebhook(triggerID, trigger.WebhookURL, secret, trigger.TriggerType+".test", testData)
-
 	return nil
 }
-
-// GetAvailableTriggerTypes returns all available trigger types
 func (s *WebhookTriggerService) GetAvailableTriggerTypes() []map[string]string {
-	return []map[string]string{
-		{"type": TriggerEmailReceived, "name": "Email Received", "description": "Triggered when a new email is received"},
-		{"type": TriggerEmailSent, "name": "Email Sent", "description": "Triggered when an email is sent"},
-		{"type": TriggerContactCreated, "name": "Contact Created", "description": "Triggered when a new contact is created"},
-		{"type": TriggerContactUpdated, "name": "Contact Updated", "description": "Triggered when a contact is updated"},
-		{"type": TriggerContactDeleted, "name": "Contact Deleted", "description": "Triggered when a contact is deleted"},
-		{"type": TriggerCampaignSent, "name": "Campaign Sent", "description": "Triggered when a campaign is sent"},
-		{"type": TriggerCampaignOpened, "name": "Campaign Opened", "description": "Triggered when a campaign email is opened"},
-		{"type": TriggerCampaignClicked, "name": "Campaign Clicked", "description": "Triggered when a link in a campaign is clicked"},
-		{"type": TriggerBounceReceived, "name": "Bounce Received", "description": "Triggered when an email bounces"},
-		{"type": TriggerComplaintReceived, "name": "Complaint Received", "description": "Triggered when a spam complaint is received"},
-		{"type": TriggerSubscribed, "name": "Subscribed", "description": "Triggered when someone subscribes to a list"},
-		{"type": TriggerUnsubscribed, "name": "Unsubscribed", "description": "Triggered when someone unsubscribes from a list"},
+	out := []map[string]string{}
+	for _, kind := range eventoutbox.Types {
+		out = append(out, map[string]string{"type": kind, "name": kind, "description": "Durable " + kind + " event"})
 	}
+	return out
 }

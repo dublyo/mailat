@@ -1,146 +1,46 @@
 package worker
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"time"
-
-	"github.com/hibiken/asynq"
-
 	"github.com/dublyo/mailat/api/internal/config"
+	"github.com/dublyo/mailat/api/internal/eventoutbox"
+	"github.com/hibiken/asynq"
 )
 
-// WebhookHandler handles webhook delivery tasks
 type WebhookHandler struct {
-	db     *sql.DB
-	cfg    *config.Config
-	client *http.Client
+	db  *sql.DB
+	cfg *config.Config
 }
 
-// NewWebhookHandler creates a new webhook handler
 func NewWebhookHandler(db *sql.DB, cfg *config.Config) *WebhookHandler {
-	return &WebhookHandler{
-		db:  db,
-		cfg: cfg,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-	}
+	return &WebhookHandler{db: db, cfg: cfg}
 }
 
-// HandleWebhookDeliver handles a webhook delivery task
+// Old Redis tasks are durably adopted; URL and secret are read from the current endpoint.
 func (h *WebhookHandler) HandleWebhookDeliver(ctx context.Context, task *asynq.Task) error {
-	payload, err := UnmarshalWebhookDeliverPayload(task.Payload())
+	p, err := UnmarshalWebhookDeliverPayload(task.Payload())
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal payload: %w", err)
+		return err
 	}
-
-	// Build webhook payload
-	webhookPayload := map[string]interface{}{
-		"event":     payload.EventType,
-		"emailId":   payload.EmailID,
-		"orgId":     payload.OrgID,
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"data":      payload.Payload,
+	var user int64
+	if err = h.db.QueryRowContext(ctx, `SELECT COALESCE(user_id,0) FROM webhooks WHERE id=$1 AND org_id=$2`, p.WebhookID, p.OrgID).Scan(&user); err == sql.ErrNoRows {
+		return nil
+	} else if err != nil {
+		return err
 	}
-
-	jsonPayload, err := json.Marshal(webhookPayload)
+	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to marshal webhook payload: %w", err)
+		return err
 	}
-
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, "POST", payload.URL, bytes.NewReader(jsonPayload))
+	defer tx.Rollback()
+	_, _, err = eventoutbox.QueueTarget(ctx, tx, eventoutbox.Event{Type: p.EventType, OrgID: p.OrgID, UserID: user, DedupeKey: fmt.Sprintf("legacy:%d:%d:%s", p.WebhookID, p.EmailID, p.EventType), Data: p.Payload}, p.WebhookID, 0)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return err
 	}
-
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Mailat-Webhook/1.0")
-
-	// Add HMAC signature if secret is provided
-	if payload.Secret != "" {
-		timestamp := fmt.Sprintf("%d", time.Now().Unix())
-		signature := h.computeSignature(timestamp, jsonPayload, payload.Secret)
-		req.Header.Set("X-Webhook-Timestamp", timestamp)
-		req.Header.Set("X-Webhook-Signature", signature)
-	}
-
-	// Send request
-	startTime := time.Now()
-	resp, err := h.client.Do(req)
-	duration := time.Since(startTime)
-
-	// Record the webhook call
-	callStatus := "success"
-	callStatusCode := 0
-	callError := ""
-	var responseBody string
-
-	if err != nil {
-		callStatus = "error"
-		callError = err.Error()
-	} else {
-		callStatusCode = resp.StatusCode
-		if resp.StatusCode >= 400 {
-			callStatus = "failed"
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			responseBody = string(body)
-			callError = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, responseBody)
-		}
-		resp.Body.Close()
-	}
-
-	// Store webhook call record
-	h.recordWebhookCall(ctx, payload.WebhookID, payload.EventType, payload.EmailID,
-		callStatus, callStatusCode, callError, duration, payload.RetryCount)
-
-	// Return error to trigger retry if needed
-	if callStatus != "success" {
-		if payload.RetryCount >= payload.MaxRetries {
-			// Max retries exceeded, don't retry
-			fmt.Printf("Webhook delivery to %s failed after %d retries: %s\n",
-				payload.URL, payload.RetryCount, callError)
-			return nil
-		}
-		return fmt.Errorf("webhook delivery failed: %s", callError)
-	}
-
-	return nil
-}
-
-// computeSignature creates an HMAC-SHA256 signature for webhook verification
-func (h *WebhookHandler) computeSignature(timestamp string, payload []byte, secret string) string {
-	// Format: timestamp.payload
-	signedPayload := fmt.Sprintf("%s.%s", timestamp, string(payload))
-
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(signedPayload))
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
-// recordWebhookCall stores a webhook call record
-func (h *WebhookHandler) recordWebhookCall(ctx context.Context, webhookID int64, eventType string,
-	emailID int64, status string, statusCode int, errorMsg string, duration time.Duration, attempt int) {
-
-	// Build payload JSON with email ID
-	payloadJSON, _ := json.Marshal(map[string]any{"emailId": emailID})
-
-	// Insert using schema-aligned column names
-	h.db.ExecContext(ctx, `
-		INSERT INTO webhook_calls (webhook_id, event_type, payload, response_status,
-			response_time_ms, status, attempts, error, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-	`, webhookID, eventType, payloadJSON, statusCode, duration.Milliseconds(), status, attempt+1, errorMsg)
+	return tx.Commit()
 }
 
 // BounceHandler handles bounce processing tasks
@@ -233,12 +133,12 @@ func (h *BounceHandler) triggerBounceWebhooks(ctx context.Context, payload *Boun
 		}
 
 		webhookPayload := &WebhookDeliverPayload{
-			WebhookID:  webhookID,
-			OrgID:      payload.OrgID,
-			URL:        url,
-			Secret:     secret,
-			EventType:  "email.bounced",
-			EmailID:    payload.EmailID,
+			WebhookID: webhookID,
+			OrgID:     payload.OrgID,
+			URL:       url,
+			Secret:    secret,
+			EventType: "email.bounced",
+			EmailID:   payload.EmailID,
 			Payload: map[string]any{
 				"bounceType":   payload.BounceType,
 				"bounceReason": payload.BounceReason,

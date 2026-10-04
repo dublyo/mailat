@@ -30,7 +30,7 @@ export class Templates {
   async get(uuid: string): Promise<Template> {
     const response = await this.request<ApiResponse<Template>>(
       'GET',
-      `/templates/${uuid}`
+      `/templates/${encodeURIComponent(uuid)}`
     );
     return response.data;
   }
@@ -43,7 +43,7 @@ export class Templates {
       'GET',
       '/templates'
     );
-    return response.data;
+    return response.data ?? [];
   }
 
   /**
@@ -54,7 +54,7 @@ export class Templates {
   async update(uuid: string, data: UpdateTemplateRequest): Promise<Template> {
     const response = await this.request<ApiResponse<Template>>(
       'PUT',
-      `/templates/${uuid}`,
+      `/templates/${encodeURIComponent(uuid)}`,
       data
     );
     return response.data;
@@ -65,7 +65,7 @@ export class Templates {
    * @param uuid - The template UUID
    */
   async delete(uuid: string): Promise<void> {
-    await this.request<ApiResponse<null>>('DELETE', `/templates/${uuid}`);
+    await this.request<ApiResponse<null>>('DELETE', `/templates/${encodeURIComponent(uuid)}`);
   }
 
   /**
@@ -79,7 +79,7 @@ export class Templates {
   ): Promise<PreviewTemplateResponse> {
     const response = await this.request<ApiResponse<PreviewTemplateResponse>>(
       'POST',
-      `/templates/${uuid}/preview`,
+      `/templates/${encodeURIComponent(uuid)}/preview`,
       { variables } as PreviewTemplateRequest
     );
     return response.data;

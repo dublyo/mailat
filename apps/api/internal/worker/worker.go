@@ -256,7 +256,7 @@ func (c *QueueClient) EnqueueCampaignProcess(payload *CampaignProcessPayload) (*
 
 	return c.client.Enqueue(task,
 		asynq.Queue("default"),
-		asynq.MaxRetry(1), // Campaign processing should only be attempted once
+		asynq.MaxRetry(1),           // Campaign processing should only be attempted once
 		asynq.Timeout(24*time.Hour), // Long timeout for large campaigns
 	)
 }

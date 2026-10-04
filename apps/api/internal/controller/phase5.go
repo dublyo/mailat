@@ -12,13 +12,13 @@ import (
 
 // Phase5Controller handles Phase 5 feature endpoints
 type Phase5Controller struct {
-	webauthnService     *service.WebAuthnService
-	sharedMailboxService *service.SharedMailboxService
-	sieveService        *service.SieveService
+	webauthnService       *service.WebAuthnService
+	sharedMailboxService  *service.SharedMailboxService
+	sieveService          *service.SieveService
 	webhookTriggerService *service.WebhookTriggerService
-	pushService         *service.PushNotificationService
-	brandingService     *service.BrandingService
-	auditLogService     *service.AuditLogService
+	pushService           *service.PushNotificationService
+	brandingService       *service.BrandingService
+	auditLogService       *service.AuditLogService
 }
 
 // NewPhase5Controller creates a new Phase 5 controller
@@ -32,13 +32,13 @@ func NewPhase5Controller(
 	auditLogService *service.AuditLogService,
 ) *Phase5Controller {
 	return &Phase5Controller{
-		webauthnService:      webauthnService,
-		sharedMailboxService: sharedMailboxService,
-		sieveService:         sieveService,
+		webauthnService:       webauthnService,
+		sharedMailboxService:  sharedMailboxService,
+		sieveService:          sieveService,
 		webhookTriggerService: webhookTriggerService,
-		pushService:          pushService,
-		brandingService:      brandingService,
-		auditLogService:      auditLogService,
+		pushService:           pushService,
+		brandingService:       brandingService,
+		auditLogService:       auditLogService,
 	}
 }
 
@@ -74,7 +74,7 @@ func (c *Phase5Controller) FinishWebAuthnRegistration(r *ghttp.Request) {
 	}
 
 	var req struct {
-		Name     string                       `json:"name"`
+		Name     string                        `json:"name"`
 		Response *service.RegistrationResponse `json:"response"`
 	}
 	if err := r.Parse(&req); err != nil {
@@ -498,13 +498,13 @@ func (c *Phase5Controller) CreateWebhookTrigger(r *ghttp.Request) {
 
 	var input service.CreateWebhookTriggerInput
 	if err := r.Parse(&input); err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, "Invalid trigger request; use a public HTTPS URL and supported email event")
 		return
 	}
 
-	trigger, err := c.webhookTriggerService.Create(r.Context(), claims.UserID, claims.OrgID, &input)
+	trigger, err := c.webhookTriggerService.ForUser(claims.UserID).Create(r.Context(), claims.UserID, claims.OrgID, &input)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, "Invalid trigger request; use a public HTTPS URL and supported email event")
 		return
 	}
 
@@ -520,9 +520,9 @@ func (c *Phase5Controller) ListWebhookTriggers(r *ghttp.Request) {
 		return
 	}
 
-	triggers, err := c.webhookTriggerService.List(r.Context(), claims.OrgID)
+	triggers, err := c.webhookTriggerService.ForUser(claims.UserID).List(r.Context(), claims.OrgID)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		response.InternalError(r, "Could not load webhook triggers")
 		return
 	}
 
@@ -538,10 +538,14 @@ func (c *Phase5Controller) GetWebhookTrigger(r *ghttp.Request) {
 		return
 	}
 
-	id := r.Get("id").Int()
-	trigger, err := c.webhookTriggerService.Get(r.Context(), claims.OrgID, id)
+	id, err := c.webhookTriggerService.ForUser(claims.UserID).ResolveID(r.Context(), claims.OrgID, r.Get("id").String())
 	if err != nil {
-		response.NotFound(r, err.Error())
+		response.NotFound(r, "Webhook trigger not found")
+		return
+	}
+	trigger, err := c.webhookTriggerService.ForUser(claims.UserID).Get(r.Context(), claims.OrgID, id)
+	if err != nil {
+		response.NotFound(r, "Webhook trigger not found")
 		return
 	}
 
@@ -557,10 +561,14 @@ func (c *Phase5Controller) DeleteWebhookTrigger(r *ghttp.Request) {
 		return
 	}
 
-	id := r.Get("id").Int()
-	err := c.webhookTriggerService.Delete(r.Context(), claims.OrgID, id)
+	id, err := c.webhookTriggerService.ForUser(claims.UserID).ResolveID(r.Context(), claims.OrgID, r.Get("id").String())
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.NotFound(r, "Webhook trigger not found")
+		return
+	}
+	err = c.webhookTriggerService.ForUser(claims.UserID).Delete(r.Context(), claims.OrgID, id)
+	if err != nil {
+		response.BadRequest(r, "Invalid trigger request; use a public HTTPS URL and supported email event")
 		return
 	}
 
@@ -576,14 +584,18 @@ func (c *Phase5Controller) TestWebhookTrigger(r *ghttp.Request) {
 		return
 	}
 
-	id := r.Get("id").Int()
-	err := c.webhookTriggerService.Test(r.Context(), claims.OrgID, id)
+	id, err := c.webhookTriggerService.ForUser(claims.UserID).ResolveID(r.Context(), claims.OrgID, r.Get("id").String())
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.NotFound(r, "Webhook trigger not found")
+		return
+	}
+	result, err := c.webhookTriggerService.ForUser(claims.UserID).TestDelivery(r.Context(), claims.OrgID, id)
+	if err != nil {
+		response.BadRequest(r, "Invalid trigger request; use a public HTTPS URL and supported email event")
 		return
 	}
 
-	response.SuccessWithMessage(r, "Test webhook sent", nil)
+	response.Success(r, result)
 }
 
 // GetWebhookTriggerTypes returns available trigger types
@@ -684,9 +696,9 @@ func (c *Phase5Controller) UpdatePushPreferences(r *ghttp.Request) {
 	uuid := r.Get("uuid").String()
 
 	var req struct {
-		NotifyNewEmail  *bool `json:"notifyNewEmail,omitempty"`
-		NotifyCampaign  *bool `json:"notifyCampaign,omitempty"`
-		NotifyMentions  *bool `json:"notifyMentions,omitempty"`
+		NotifyNewEmail *bool `json:"notifyNewEmail,omitempty"`
+		NotifyCampaign *bool `json:"notifyCampaign,omitempty"`
+		NotifyMentions *bool `json:"notifyMentions,omitempty"`
 	}
 	if err := r.Parse(&req); err != nil {
 		response.BadRequest(r, err.Error())

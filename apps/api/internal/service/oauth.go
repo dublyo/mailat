@@ -44,22 +44,22 @@ type OAuthUserInfo struct {
 
 // OAuthConnection represents a stored OAuth connection
 type OAuthConnection struct {
-	ID             int        `json:"id"`
-	UserID         int        `json:"userId"`
-	Provider       string     `json:"provider"`
-	ProviderUserID string     `json:"providerUserId"`
-	Email          string     `json:"email,omitempty"`
-	Name           string     `json:"name,omitempty"`
-	AvatarURL      string     `json:"avatarUrl,omitempty"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	UpdatedAt      time.Time  `json:"updatedAt"`
+	ID             int       `json:"id"`
+	UserID         int       `json:"userId"`
+	Provider       string    `json:"provider"`
+	ProviderUserID string    `json:"providerUserId"`
+	Email          string    `json:"email,omitempty"`
+	Name           string    `json:"name,omitempty"`
+	AvatarURL      string    `json:"avatarUrl,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 // OAuthService handles OAuth2 authentication
 type OAuthService struct {
-	db       *sql.DB
-	cfg      *config.Config
-	configs  map[OAuthProvider]*OAuthConfig
+	db         *sql.DB
+	cfg        *config.Config
+	configs    map[OAuthProvider]*OAuthConfig
 	httpClient *http.Client
 }
 
@@ -341,9 +341,9 @@ func (s *OAuthService) fetchGitHubEmail(accessToken string) string {
 
 func (s *OAuthService) parseMicrosoftUserInfo(body []byte) (*OAuthUserInfo, error) {
 	var data struct {
-		ID          string `json:"id"`
-		DisplayName string `json:"displayName"`
-		Mail        string `json:"mail"`
+		ID                string `json:"id"`
+		DisplayName       string `json:"displayName"`
+		Mail              string `json:"mail"`
 		UserPrincipalName string `json:"userPrincipalName"`
 	}
 
@@ -398,8 +398,8 @@ func (s *OAuthService) FindOrCreateUser(ctx context.Context, provider OAuthProvi
 	if err == nil {
 		// User exists, create OAuth connection
 		_, err = s.db.ExecContext(ctx, `
-			INSERT INTO oauth_connections (user_id, provider, provider_user_id, access_token, refresh_token, token_expiry, email, name, avatar_url)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			INSERT INTO oauth_connections (user_id, provider, provider_user_id, access_token, refresh_token, token_expiry, email, name, avatar_url, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
 		`, userID, string(provider), userInfo.ID, accessToken, refreshToken, tokenExpiry, userInfo.Email, userInfo.Name, userInfo.AvatarURL)
 		if err != nil {
 			return 0, 0, false, fmt.Errorf("failed to create OAuth connection: %w", err)
@@ -419,11 +419,22 @@ func (s *OAuthService) FindOrCreateUser(ctx context.Context, provider OAuthProvi
 	}
 	defer tx.Rollback()
 
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(20261004,1)`); err != nil {
+		return 0, 0, false, err
+	}
+	var existing int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&existing); err != nil {
+		return 0, 0, false, err
+	}
+	if existing > 0 {
+		return 0, 0, false, fmt.Errorf("registration is closed; contact your administrator")
+	}
+
 	// Create organization
 	orgSlug := generateSlug(userInfo.Name)
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO organizations (name, slug)
-		VALUES ($1, $2)
+		INSERT INTO organizations (name, slug, updated_at)
+		VALUES ($1, $2, NOW())
 		RETURNING id
 	`, userInfo.Name+"'s Organization", orgSlug).Scan(&orgID)
 	if err != nil {
@@ -442,8 +453,8 @@ func (s *OAuthService) FindOrCreateUser(ctx context.Context, provider OAuthProvi
 
 	// Create OAuth connection
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO oauth_connections (user_id, provider, provider_user_id, access_token, refresh_token, token_expiry, email, name, avatar_url)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO oauth_connections (user_id, provider, provider_user_id, access_token, refresh_token, token_expiry, email, name, avatar_url, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
 	`, userID, string(provider), userInfo.ID, accessToken, refreshToken, tokenExpiry, userInfo.Email, userInfo.Name, userInfo.AvatarURL)
 	if err != nil {
 		return 0, 0, false, fmt.Errorf("failed to create OAuth connection: %w", err)

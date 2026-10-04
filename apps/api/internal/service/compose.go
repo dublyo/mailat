@@ -564,6 +564,9 @@ func (s *ComposeService) DeleteDraft(ctx context.Context, userID int64, draftID 
 
 // GetReplyContext gets context for replying to an email
 func (s *ComposeService) GetReplyContext(ctx context.Context, userID int64, emailID string, replyAll bool) (*ComposeEmail, error) {
+	if s.cfg.EmailProvider == "ses" {
+		return s.mailboxReplyContext(ctx, userID, emailID, replyAll, false)
+	}
 	identityID, jmapEmailID, err := parseUnifiedID(emailID)
 	if err != nil {
 		return nil, err
@@ -636,6 +639,9 @@ func (s *ComposeService) GetReplyContext(ctx context.Context, userID int64, emai
 
 // GetForwardContext gets context for forwarding an email
 func (s *ComposeService) GetForwardContext(ctx context.Context, userID int64, emailID string) (*ComposeEmail, error) {
+	if s.cfg.EmailProvider == "ses" {
+		return s.mailboxReplyContext(ctx, userID, emailID, false, true)
+	}
 	identityID, jmapEmailID, err := parseUnifiedID(emailID)
 	if err != nil {
 		return nil, err

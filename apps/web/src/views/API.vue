@@ -31,7 +31,7 @@ const activeSection = ref('keys')
 const expandedEndpoints = ref<Set<string>>(new Set(['transactional']))
 
 // API sections for documentation
-const apiSections = [
+const documentationSections = [
   {
     id: 'keys',
     label: 'API Keys',
@@ -62,6 +62,8 @@ const apiSections = [
     endpoints: [
       { method: 'GET', path: '/api/v1/inbox/received', name: 'List Emails', description: 'List received emails with filters' },
       { method: 'GET', path: '/api/v1/inbox/received/:uuid', name: 'Get Email', description: 'Get single email with content' },
+      { method: 'GET', path: '/api/v1/inbox/changes', name: 'Recover Changes', description: 'Resume from a commit-ordered cursor; retention is 90 days' },
+      { method: 'GET', path: '/api/v1/inbox/received/:uuid/attachments/:attachmentUuid', name: 'Download Attachment', description: 'Authenticated attachment bytes' },
       { method: 'GET', path: '/api/v1/inbox/received/counts', name: 'Get Counts', description: 'Get folder counts' },
       { method: 'POST', path: '/api/v1/inbox/received/mark', name: 'Mark Read/Unread', description: 'Mark emails as read or unread' },
       { method: 'POST', path: '/api/v1/inbox/received/star', name: 'Star/Unstar', description: 'Star or unstar emails' },
@@ -74,10 +76,13 @@ const apiSections = [
     label: 'Compose & Send',
     icon: Mail,
     endpoints: [
+      { method: 'GET', path: '/api/v1/compose/reply/:id', name: 'Reply Context', description: 'Threading and recipients for an owned SES message UUID' },
+      { method: 'GET', path: '/api/v1/compose/forward/:id', name: 'Forward Context', description: 'Content and attachments for an owned SES message UUID' },
+      { method: 'POST', path: '/api/v1/compose/attachments', name: 'Upload Attachment', description: 'Stage a private attachment with identityId and file' },
       { method: 'POST', path: '/api/v1/compose/send', name: 'Send Email', description: 'Send email via AWS SES' },
-      { method: 'POST', path: '/api/v1/compose/draft', name: 'Save Draft', description: 'Save email as draft' },
-      { method: 'PUT', path: '/api/v1/compose/draft/:uuid', name: 'Update Draft', description: 'Update existing draft' },
-      { method: 'DELETE', path: '/api/v1/compose/draft/:uuid', name: 'Delete Draft', description: 'Delete a draft' },
+      { method: 'POST', path: '/api/v1/compose/drafts', name: 'Save Draft', description: 'Save email as draft' },
+      { method: 'PUT', path: '/api/v1/compose/drafts/:id', name: 'Update Draft', description: 'Update existing draft' },
+      { method: 'DELETE', path: '/api/v1/compose/drafts/:id', name: 'Delete Draft', description: 'Delete a draft' },
     ]
   },
   {
@@ -89,7 +94,9 @@ const apiSections = [
       { method: 'GET', path: '/api/v1/domains', name: 'List Domains', description: 'List all domains' },
       { method: 'GET', path: '/api/v1/domains/:uuid', name: 'Get Domain', description: 'Get domain details with DNS' },
       { method: 'POST', path: '/api/v1/domains/:uuid/verify', name: 'Verify DNS', description: 'Verify DNS records' },
-      { method: 'POST', path: '/api/v1/domains/:uuid/setup-receiving', name: 'Setup Receiving', description: 'Setup email receiving' },
+      { method: 'POST', path: '/api/v1/inbox/setup', name: 'Setup Receiving', description: 'Explicitly enable receiving for domainId' },
+      { method: 'GET', path: '/api/v1/domains/:uuid/sending-status', name: 'Sending Readiness', description: 'Check attachment storage and feedback readiness' },
+      { method: 'POST', path: '/api/v1/domains/:uuid/setup-sending', name: 'Setup Sending Resources', description: 'Prepare private storage and feedback independently of receiving' },
       { method: 'DELETE', path: '/api/v1/domains/:uuid', name: 'Delete Domain', description: 'Delete a domain' },
     ]
   },
@@ -128,6 +135,10 @@ const apiSections = [
       { method: 'GET', path: '/api/v1/webhooks', name: 'List Webhooks', description: 'List all webhooks' },
       { method: 'PUT', path: '/api/v1/webhooks/:uuid', name: 'Update Webhook', description: 'Update webhook' },
       { method: 'DELETE', path: '/api/v1/webhooks/:uuid', name: 'Delete Webhook', description: 'Delete webhook' },
+      { method: 'GET', path: '/api/v1/webhook-deliveries', name: 'Delivery History', description: 'Paginated deliveries and retry/dead-letter status' },
+      { method: 'GET', path: '/api/v1/webhook-deliveries/:uuid', name: 'Delivery Attempts', description: 'Inspect the actual receiver responses' },
+      { method: 'POST', path: '/api/v1/webhook-deliveries/:uuid/replay', name: 'Replay Delivery', description: 'Retry with the original stable event ID' },
+      { method: 'POST', path: '/api/v1/webhooks/:uuid/rotate-secret', name: 'Rotate Secret', description: 'Return the replacement signing secret once' },
       { method: 'POST', path: '/api/v1/webhooks/:uuid/test', name: 'Test Webhook', description: 'Send test webhook' },
     ]
   },
@@ -136,12 +147,66 @@ const apiSections = [
     label: 'Labels & Filters',
     icon: Tag,
     endpoints: [
+      { method: 'GET', path: '/api/v1/inbox/filters', name: 'List Filters', description: 'Rules applied to incoming SES mail' },
+      { method: 'POST', path: '/api/v1/inbox/filters', name: 'Create Filter', description: 'Create an owned SES filter' },
+      { method: 'PUT', path: '/api/v1/inbox/filters/:uuid', name: 'Update Filter', description: 'Edit selected fields; omitted values are retained' },
+      { method: 'DELETE', path: '/api/v1/inbox/filters/:uuid', name: 'Delete Filter', description: 'Delete an owned filter' },
+      { method: 'POST', path: '/api/v1/inbox/filters/:uuid/test', name: 'Test Filter', description: 'Preview a sample match without modifying mail' },
+      { method: 'POST', path: '/api/v1/inbox/received/labels', name: 'Assign Labels', description: 'Add/remove owned label names for selected messages' },
+      { method: 'PUT', path: '/api/v1/labels/:uuid', name: 'Rename Label', description: 'Update a label and its message/filter references' },
       { method: 'GET', path: '/api/v1/labels', name: 'List Labels', description: 'List user labels' },
       { method: 'POST', path: '/api/v1/labels', name: 'Create Label', description: 'Create a label' },
       { method: 'DELETE', path: '/api/v1/labels/:uuid', name: 'Delete Label', description: 'Delete a label' },
     ]
   },
 ]
+
+// Read the contract served by this installation, so copied examples follow its API.
+const contract = ref<Record<string, any> | null>(null)
+const contractError = ref('')
+const endpointSearch = ref('')
+const referenceLimit = ref(25)
+const expandedSchemas = ref(new Set<string>())
+function toggleSchema(event: Event, key: string) {
+  if ((event.target as HTMLDetailsElement).open) expandedSchemas.value.add(key)
+  else expandedSchemas.value.delete(key)
+}
+const apiSections = computed(() => [...documentationSections, {
+  id: 'reference', label: 'Full API Reference', icon: Code,
+  description: 'All registered routes. Human administration and deprecated routes are marked.',
+  endpoints: Object.entries(contract.value?.paths ?? {}).flatMap(([path, operations]) =>
+    Object.entries(operations as Record<string, any>).map(([method, operation]) => ({
+      method: method.toUpperCase(), path: path.replace(/\{([^}]+)\}/g, ':$1'),
+      name: operation.summary, description: operation.description
+    }))).filter(endpoint => `${endpoint.method} ${endpoint.path} ${endpoint.name}`.toLowerCase().includes(endpointSearch.value.toLowerCase()))
+}])
+function endpointContract(method: string, path: string): Record<string, any> {
+  return contract.value?.paths?.[path.replace(/:([a-zA-Z]+)/g, '{$1}')]?.[method.toLowerCase()] ?? {}
+}
+function endpointAccess(method: string, path: string): string {
+  const operation = endpointContract(method, path)
+  if (!Object.keys(operation).length) return 'Loading contract…'
+  return operation['x-api-key-scope'] ?? (operation.security?.length === 0 ? 'Public or signed callback' : 'Human session required')
+}
+function endpointDetails(method: string, path: string): string {
+  const operation = endpointContract(method, path)
+  // Expand references for readers; cap depth because recursive DTOs can exist.
+  const expand = (value: any, depth = 0): any => {
+    if (!value || typeof value !== 'object' || depth > 8) return value
+    if (value.$ref) return expand(contract.value?.components?.schemas?.[value.$ref.split('/').pop()] ?? value, depth + 1)
+    return Array.isArray(value) ? value.map(v => expand(v, depth + 1)) : Object.fromEntries(Object.entries(value).map(([k, v]) => [k, expand(v, depth + 1)]))
+  }
+  return JSON.stringify(expand({ parameters: operation.parameters ?? [], requestBody: operation.requestBody, responses: operation.responses }), null, 2)
+}
+async function loadContract() {
+  try {
+    const response = await fetch('/api/v1/openapi.json')
+    if (!response.ok) throw new Error('Could not load this server’s API contract.')
+    const data = await response.json()
+    if (!data.openapi || !data.paths) throw new Error('The server did not return an OpenAPI contract.')
+    contract.value = data
+  } catch (e) { contractError.value = e instanceof Error ? e.message : 'Could not load API documentation.' }
+}
 
 // Load API keys
 async function loadApiKeys() {
@@ -165,6 +230,10 @@ async function createApiKey() {
     return
   }
 
+  if (newKeyPermissions.value.length === 0) {
+    error.value = 'Select at least one permission for this key.'
+    return
+  }
   isCreating.value = true
   error.value = ''
 
@@ -275,13 +344,14 @@ function getMethodColor(method: string): string {
 // Get base URL
 const baseUrl = computed(() => {
   const host = window.location.origin
-  return host.includes('localhost') ? 'http://localhost:8000' : host
+  return host
 })
 
 // Code examples for copying
 const curlExample = computed(() => {
   return `curl -X POST ${baseUrl.value}/api/v1/emails \\
   -H "Authorization: Bearer ue_your_api_key" \\
+  -H "Idempotency-Key: welcome-job-42" \\
   -H "Content-Type: application/json" \\
   -d '{
     "from": "hello@yourdomain.com",
@@ -296,7 +366,8 @@ const nodeExample = computed(() => {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer ue_your_api_key',
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json',
+    'Idempotency-Key': 'welcome-job-42'
   },
   body: JSON.stringify({
     from: 'hello@yourdomain.com',
@@ -314,7 +385,8 @@ response = requests.post(
     '${baseUrl.value}/api/v1/emails',
     headers={
         'Authorization': 'Bearer ue_your_api_key',
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'welcome-job-42'
     },
     json={
         'from': 'hello@yourdomain.com',
@@ -326,11 +398,22 @@ response = requests.post(
 })
 
 function getEndpointExample(method: string, path: string): string {
-  return `curl -X ${method} ${baseUrl.value}${path} \\
-  -H "Authorization: Bearer ue_your_api_key"`
+  const operation = endpointContract(method, path)
+  const parts = [`curl -X ${method} "${baseUrl.value}${path}"`]
+  if (operation.security?.length !== 0) parts.push('-H "Authorization: Bearer YOUR_TOKEN"')
+  if (operation.parameters?.some((p: any) => p.name === 'Idempotency-Key')) parts.push('-H "Idempotency-Key: workflow-job-42"')
+  const media = operation.requestBody?.content
+  if (media?.['multipart/form-data']) parts.push('-F "identityId=1"', '-F "file=@attachment.txt"')
+  else if (media?.['application/json']) {
+    parts.push('-H "Content-Type: application/json"')
+    const example = media['application/json'].example
+    parts.push(example ? `--data '${JSON.stringify(example, null, 2)}'` : '--data @request.json')
+  }
+  return parts.join(' \\\n  ')
 }
 
 onMounted(() => {
+  loadContract()
   loadApiKeys()
 })
 </script>
@@ -369,12 +452,13 @@ onMounted(() => {
             <!-- Expanded endpoints -->
             <template v-for="section in apiSections" :key="'endpoints-' + section.id">
               <div
-                v-if="section.endpoints && expandedEndpoints.has(section.id)"
+                v-if="section.endpoints && section.id !== 'reference' && expandedEndpoints.has(section.id)"
                 class="ml-7 space-y-1"
               >
                 <button
                   v-for="endpoint in section.endpoints"
-                  :key="endpoint.path"
+                  :key="endpoint.method + endpoint.path"
+                  @click="activeSection = section.id"
                   class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded"
                 >
                   <span :class="['px-1.5 py-0.5 rounded text-[10px] font-medium', getMethodColor(endpoint.method)]">
@@ -390,6 +474,11 @@ onMounted(() => {
 
       <!-- Main Content -->
       <div class="flex-1 overflow-y-auto p-6">
+        <div v-if="contractError" role="alert" class="mb-4 rounded-lg bg-amber-50 p-4 text-sm text-amber-900">{{ contractError }}</div>
+        <div class="mb-4 flex flex-wrap gap-4 text-sm">
+          <a href="/api/v1/openapi.json" target="_blank" rel="noopener" class="text-blue-600 hover:underline">Download OpenAPI JSON</a>
+          <a href="/docs/" target="_blank" rel="noopener" class="text-blue-600 hover:underline">Open interactive reference</a>
+        </div>
         <!-- API Keys Section -->
         <div v-if="activeSection === 'keys'">
           <div class="flex items-center justify-between mb-6">
@@ -494,13 +583,22 @@ onMounted(() => {
             <div class="bg-white rounded-lg border border-gray-200 p-6">
               <h2 class="text-lg font-medium text-gray-900 mb-4">Authentication</h2>
               <p class="text-gray-600 mb-4">
-                All API requests require authentication using an API key. Include your API key in the Authorization header:
+                Automation requests use a scoped API key in the Authorization header. Some administration routes require a human session; check each route’s access label:
               </p>
               <div class="bg-gray-900 rounded-lg p-4 font-mono text-sm text-gray-100">
                 <code>Authorization: Bearer ue_your_api_key_here</code>
               </div>
             </div>
 
+            <div class="bg-white rounded-lg border border-gray-200 p-6 space-y-3 text-sm text-gray-600">
+              <h2 class="text-lg font-medium text-gray-900">Reliable workflows</h2>
+              <p>Persist one Idempotency-Key per logical send (8–128 characters). Reuse the same key and unchanged payload after a timeout; changed content returns 409. Batch requests need one header key and stable item order. Inspect every item’s result. An unknown send outcome needs investigation before resubmitting.</p>
+              <p>Sent means SES accepted the message. Delivered means the destination server accepted it; neither guarantees inbox placement. Sending-only domains can prepare attachments and feedback in Domains without enabling receiving.</p>
+              <p>Reading message detail leaves it unread. Mark read explicitly. Start recovery with cursor=now, take the inbox snapshot, then process changes after that cursor. Save the cursor after processing; deduplicate repeated message changes. A 410 requires a fresh snapshot. Changes are retained for 90 days.</p>
+              <p>Webhook events contain version, id, type, createdAt and data.messageUuid. Verify the raw body using X-Webhook-Signature (t=timestamp,v1=HMAC-SHA256(timestamp + '.' + rawBody)); reject timestamps outside five minutes and deduplicate event IDs. There are eight delivery attempts before dead letter; replay keeps the original ID.</p>
+              <p>429 responses include Retry-After. Scopes, key expiry and account status are checked on every request. Revoking a key stops API access; pause or delete its user-owned webhook subscription separately.</p>
+              <p>Examples contain sample addresses and IDs. Replace them with your verified domain and owned resources. Persist the example request key in your workflow; do not generate a new key inside a retry loop.</p>
+            </div>
             <!-- Quick Start -->
             <div class="bg-white rounded-lg border border-gray-200 p-6">
               <h2 class="text-lg font-medium text-gray-900 mb-4">Send Your First Email</h2>
@@ -564,14 +662,14 @@ onMounted(() => {
             <div class="bg-white rounded-lg border border-gray-200 p-6">
               <h2 class="text-lg font-medium text-gray-900 mb-4">Response Format</h2>
               <p class="text-gray-600 mb-4">
-                All API responses follow a consistent JSON format:
+                Core JSON APIs use this response envelope. Attachment downloads return bytes, SSE returns an event stream, and legacy paginated endpoints show their own schema in the full reference:
               </p>
               <div class="bg-gray-900 rounded-lg p-4 font-mono text-sm text-gray-100 overflow-x-auto">
                 <pre>{
   "code": 0,
   "message": "Success",
   "data": {
-    // Response data here
+    "status": "sent"
   }
 }</pre>
               </div>
@@ -592,10 +690,11 @@ onMounted(() => {
             {{ apiSections.find(s => s.id === activeSection)?.description }}
           </p>
 
+          <input v-if="activeSection === 'reference'" v-model="endpointSearch" aria-label="Search API endpoints" placeholder="Search methods, paths or operations…" class="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
           <div class="space-y-4">
             <div
-              v-for="endpoint in apiSections.find(s => s.id === activeSection)?.endpoints"
-              :key="endpoint.path"
+              v-for="endpoint in apiSections.find(s => s.id === activeSection)?.endpoints?.slice(0, activeSection === 'reference' ? referenceLimit : undefined)"
+              :key="endpoint.method + endpoint.path"
               class="bg-white rounded-lg border border-gray-200 overflow-hidden"
             >
               <div class="p-4 border-b border-gray-100">
@@ -606,6 +705,7 @@ onMounted(() => {
                   <code class="text-sm font-mono text-gray-700">{{ endpoint.path }}</code>
                 </div>
                 <p class="text-gray-600 text-sm mt-2">{{ endpoint.description }}</p>
+                <p class="mt-2 text-xs font-medium text-blue-700">{{ endpointAccess(endpoint.method, endpoint.path) }}<span v-if="endpointContract(endpoint.method, endpoint.path).deprecated" class="ml-2 text-amber-700">Deprecated</span></p>
               </div>
 
               <div class="p-4 bg-gray-50">
@@ -622,9 +722,14 @@ onMounted(() => {
                 <div class="bg-gray-900 rounded p-3 font-mono text-xs text-gray-100 overflow-x-auto">
                   <pre class="whitespace-pre-wrap">{{ getEndpointExample(endpoint.method, endpoint.path) }}</pre>
                 </div>
+                <details class="mt-3" @toggle="toggleSchema($event, endpoint.method + endpoint.path)">
+                  <summary class="cursor-pointer text-sm text-blue-700">Parameters, request and response schemas</summary>
+                  <pre v-if="expandedSchemas.has(endpoint.method + endpoint.path)" class="mt-2 max-h-96 overflow-auto rounded border border-gray-200 bg-white p-3 text-xs text-gray-700">{{ endpointDetails(endpoint.method, endpoint.path) }}</pre>
+                </details>
               </div>
             </div>
           </div>
+          <Button v-if="activeSection === 'reference' && (apiSections.find(s => s.id === activeSection)?.endpoints?.length ?? 0) > referenceLimit" class="mt-4" @click="referenceLimit += 25">Show more endpoints</Button>
         </div>
       </div>
     </div>

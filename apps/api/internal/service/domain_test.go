@@ -74,7 +74,7 @@ func TestCreateDomainResponseIncludesProviderMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 			if created.EmailProvider != reloaded.EmailProvider || !reflect.DeepEqual(created.SESDKIMTokens, reloaded.SESDKIMTokens) {
-				t.Fatal("create and reload disagree about provider metadata")
+				t.Fatalf("create and reload disagree about provider metadata: create provider=%q tokens=%#v, reload provider=%q tokens=%#v", created.EmailProvider, created.SESDKIMTokens, reloaded.EmailProvider, reloaded.SESDKIMTokens)
 			}
 			if mode == "ses" {
 				assertSESSendingDNS(t, svc, created)
@@ -334,5 +334,49 @@ func TestCloudflareSetupPreservesOccupiedMailFromPair(t *testing.T) {
 				t.Fatalf("created %d independent records, want 4", len(posts))
 			}
 		})
+	}
+}
+
+// Database() applies every migration first: legacy NULL values must remain
+// readable without rewriting them or manufacturing successful verification.
+func TestDomainReadsNullableLegacyMetadata(t *testing.T) {
+	db := testutil.Database(t)
+	ctx := context.Background()
+	var org, domainID int64
+	var domainUUID string
+	if err := db.QueryRow(`INSERT INTO organizations(name,slug,updated_at) VALUES('Legacy domain','legacy-domain',now()) RETURNING id`).Scan(&org); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`INSERT INTO domains(org_id,name,verification_token,dkim_public_key,email_provider,ses_verified,ses_dkim_tokens,ses_identity_arn,updated_at) VALUES($1,'legacy.example.test','legacy-token',NULL,NULL,NULL,NULL,NULL,now()) RETURNING id,uuid`, org).Scan(&domainID, &domainUUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO domain_dns_records(domain_id,record_type,hostname,expected_value) VALUES($1,'TXT','_verification.legacy.example.test','legacy-token'),($1,'MX','legacy.example.test','10 existing-provider.test'),($1,'TXT','legacy.example.test','v=spf1 include:existing-provider.test ~all')`, domainID); err != nil {
+		t.Fatal(err)
+	}
+	svc := &DomainService{db: db}
+	listed, err := svc.ListDomains(ctx, org)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("list nullable metadata: %+v %v", listed, err)
+	}
+	got, err := svc.GetDomain(ctx, org, domainUUID)
+	if err != nil {
+		t.Fatal("get nullable metadata:", err)
+	}
+	for _, domain := range []*model.Domain{listed[0], got} {
+		if domain.EmailProvider != "ses" || domain.DKIMPublicKey != "" || domain.SESVerified || len(domain.SESDKIMTokens) != 0 || domain.SESIdentityArn != "" || domain.VerifiedAt != nil || domain.VerificationToken != "legacy-token" {
+			t.Fatalf("incorrect nullable defaults: %+v", domain)
+		}
+	}
+	records, err := svc.GetDNSRecords(ctx, domainID)
+	if err != nil || len(records) != 1 || records[0].Hostname != "_verification.legacy.example.test" || records[0].VerifiedAt != nil {
+		t.Fatalf("nullable provider must preserve SES sending-only DNS instructions: %+v %v", records, err)
+	}
+	empty, err := svc.ListDomains(ctx, org+1)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("empty domain list must be an array: %+v %v", empty, err)
+	}
+	var unchanged bool
+	if err := db.QueryRow(`SELECT dkim_public_key IS NULL AND email_provider IS NULL AND ses_verified IS NULL AND ses_dkim_tokens IS NULL FROM domains WHERE id=$1`, domainID).Scan(&unchanged); err != nil || !unchanged {
+		t.Fatal("read unexpectedly modified legacy metadata", err)
 	}
 }

@@ -12,9 +12,11 @@ import (
 	"log"
 	"net/mail"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/dublyo/mailat/api/internal/eventoutbox"
 	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/internal/provider"
 	"github.com/lib/pq"
@@ -53,12 +55,13 @@ type incomingStorage interface {
 type ReceivingAuthorization struct {
 	OrgID                    int64
 	TopicARN, Bucket, Region string
+	SendingOnly              bool
 }
 
 func (s *ReceivingService) AuthorizeNotification(ctx context.Context, topic, secret string) (*ReceivingAuthorization, error) {
 	var auth ReceivingAuthorization
 	var expected string
-	err := s.db.QueryRowContext(ctx, `SELECT org_id,sns_topic_arn,s3_bucket,s3_region,webhook_secret FROM receiving_configs WHERE sns_topic_arn=$1 AND status IN ('active','pending')`, topic).Scan(&auth.OrgID, &auth.TopicARN, &auth.Bucket, &auth.Region, &expected)
+	err := s.db.QueryRowContext(ctx, `SELECT org_id,sns_topic_arn,s3_bucket,s3_region,webhook_secret,false FROM receiving_configs WHERE sns_topic_arn=$1 AND status IN ('active','pending') UNION ALL SELECT org_id,sns_topic_arn,s3_bucket,s3_region,webhook_secret,true FROM sending_configs WHERE sns_topic_arn=$1 AND status IN ('active','pending')`, topic).Scan(&auth.OrgID, &auth.TopicARN, &auth.Bucket, &auth.Region, &expected, &auth.SendingOnly)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
@@ -207,6 +210,9 @@ func (s *ReceivingService) SetupDomainReceiving(ctx context.Context, orgID int64
 
 // Each provider delivery is committed once, with one mailbox copy per identity.
 func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *ReceivingAuthorization, n *model.SESNotification) error {
+	if auth.SendingOnly {
+		return fmt.Errorf("sending feedback topics cannot deliver incoming mail")
+	}
 	if n.NotificationType != "Received" || n.Receipt == nil {
 		return fmt.Errorf("invalid received notification")
 	}
@@ -309,6 +315,13 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 		// original bytes as a private .eml attachment and make the failure visible.
 		parsed = malformedIncomingFallback(raw, n, err)
 	}
+	// Classify once from private MIME bytes and authenticated SES verdicts. A
+	// non-match (including parser limits) never interrupts ordinary receiving.
+	reportDomains, _ := dmarcReportDomains(parsed, receiptDMARCVerdicts(n.Receipt))
+	isDMARCReport, classificationErr := ownedDMARCReport(ctx, s.db, auth.OrgID, reportDomains)
+	if classificationErr != nil {
+		log.Print("DMARC classification: domain ownership unavailable; retaining normal placement")
+	}
 	for index := range parsed.Attachments {
 		att := &parsed.Attachments[index]
 		att.S3Bucket = auth.Bucket
@@ -322,6 +335,19 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 		return err
 	}
 	defer tx.Rollback()
+	// Lock all recipient owners in a stable order before inserting mail/cursors.
+	users := []int64{}
+	for _, ident := range identities {
+		users = append(users, ident.UserID)
+	}
+	sort.Slice(users, func(i, j int) bool { return users[i] < users[j] })
+	for i, user := range users {
+		if i == 0 || user != users[i-1] {
+			if err = lockMailboxLabels(ctx, tx, user); err != nil {
+				return err
+			}
+		}
+	}
 	from := clipUTF8(extractEmail(parsed.Header["From"]), 255)
 	name := clipUTF8(decodeMIMEHeader(extractName(parsed.Header["From"])), 255)
 	subject := clipUTF8(decodeMIMEHeader(parsed.Header.Get("Subject")), 1000)
@@ -343,6 +369,16 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 	}
 	saved := map[int64]*model.ReceivedEmail{}
 	for _, ident := range identities {
+		deliveryFolder := folder
+		if isDMARCReport && folder == "inbox" {
+			enabled, err := autoOrganizeDMARC(ctx, tx, ident.UserID)
+			if err != nil {
+				return err
+			}
+			if enabled {
+				deliveryFolder = DMARCReportsFolder
+			}
+		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO received_ingestions(org_id,topic_arn,ses_message_id,identity_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, auth.OrgID, auth.TopicARN, n.Mail.MessageId, ident.ID)
 		if err != nil {
 			return err
@@ -358,7 +394,7 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 		var emailUUID string
 		err = tx.QueryRowContext(ctx, `INSERT INTO received_emails(org_id,domain_id,identity_id,message_id,thread_id,from_email,from_name,to_emails,cc_emails,subject,snippet,raw_s3_bucket,raw_s3_key,folder,is_spam,spam_verdict,virus_verdict,spf_verdict,dkim_verdict,dmarc_verdict,ses_message_id,received_at,text_body,html_body,size_bytes,has_attachments,in_reply_to,"references",reply_to,envelope_recipients,updated_at)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,NOW())
-   ON CONFLICT(identity_id,ses_message_id) DO NOTHING RETURNING id,uuid`, ident.OrgID, ident.DomainID, ident.ID, clipUTF8(messageID, 500), thread, from, name, pq.Array(addressList(parsed.Header, "To")), pq.Array(addressList(parsed.Header, "Cc")), subject, clipUTF8(parsed.Text, 200), auth.Bucket, key, folder, spam, n.Receipt.SpamVerdict.Status, n.Receipt.VirusVerdict.Status, n.Receipt.SPFVerdict.Status, n.Receipt.DKIMVerdict.Status, n.Receipt.DMARCVerdict.Status, n.Mail.MessageId, parseTimestamp(n.Receipt.Timestamp), parsed.Text, parsed.HTML, len(raw), len(parsed.Attachments) > 0, clipUTF8(parsed.Header.Get("In-Reply-To"), 500), pq.Array(refs), replyTo, pq.Array(ident.Recipients)).Scan(&emailID, &emailUUID)
+   ON CONFLICT(identity_id,ses_message_id) DO NOTHING RETURNING id,uuid`, ident.OrgID, ident.DomainID, ident.ID, clipUTF8(messageID, 500), thread, from, name, pq.Array(addressList(parsed.Header, "To")), pq.Array(addressList(parsed.Header, "Cc")), subject, clipUTF8(parsed.Text, 200), auth.Bucket, key, deliveryFolder, spam, n.Receipt.SpamVerdict.Status, n.Receipt.VirusVerdict.Status, n.Receipt.SPFVerdict.Status, n.Receipt.DKIMVerdict.Status, n.Receipt.DMARCVerdict.Status, n.Mail.MessageId, parseTimestamp(n.Receipt.Timestamp), parsed.Text, parsed.HTML, len(raw), len(parsed.Attachments) > 0, clipUTF8(parsed.Header.Get("In-Reply-To"), 500), pq.Array(refs), replyTo, pq.Array(ident.Recipients)).Scan(&emailID, &emailUUID)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -370,19 +406,17 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 				return err
 			}
 		}
-		email := &model.ReceivedEmail{ID: emailID, UUID: emailUUID, OrgID: ident.OrgID, IdentityID: ident.ID, DomainID: ident.DomainID, FromEmail: from, Subject: subject, TextBody: parsed.Text, HasAttachments: len(parsed.Attachments) > 0, ToEmails: addressList(parsed.Header, "To"), CcEmails: addressList(parsed.Header, "Cc"), Folder: folder, ReceivedAt: parseTimestamp(n.Receipt.Timestamp)}
+		email := &model.ReceivedEmail{ID: emailID, UUID: emailUUID, OrgID: ident.OrgID, IdentityID: ident.ID, DomainID: ident.DomainID, FromEmail: from, Subject: subject, TextBody: parsed.Text, HasAttachments: len(parsed.Attachments) > 0, ToEmails: addressList(parsed.Header, "To"), CcEmails: addressList(parsed.Header, "Cc"), EnvelopeRecipients: ident.Recipients, Folder: deliveryFolder, IsSpam: spam, ReceivedAt: parseTimestamp(n.Receipt.Timestamp)}
 		if err = s.applyReceivedFilters(ctx, tx, ident.UserID, email); err != nil {
+			return err
+		}
+		if err = eventoutbox.Emit(ctx, tx, eventoutbox.Event{Type: "email.received", OrgID: ident.OrgID, UserID: ident.UserID, IdentityID: ident.ID, MessageUUID: emailUUID, DedupeKey: fmt.Sprintf("received:%s:%d", n.Mail.MessageId, ident.ID), Data: map[string]any{"from": email.FromEmail, "to": email.ToEmails, "subject": email.Subject, "folder": email.Folder, "inReplyTo": parsed.Header.Get("In-Reply-To"), "hasAttachments": email.HasAttachments}}); err != nil {
 			return err
 		}
 		saved[ident.ID] = email
 	}
 	if err = tx.Commit(); err != nil {
 		return err
-	}
-	if s.webhookTriggerService != nil {
-		for _, email := range saved {
-			go s.webhookTriggerService.Fire(context.Background(), auth.OrgID, TriggerEmailReceived, map[string]interface{}{"email_id": email.ID, "from": email.FromEmail, "to": email.ToEmails, "subject": email.Subject, "folder": email.Folder})
-		}
 	}
 	if s.notify != nil {
 		for _, ident := range identities {
@@ -434,6 +468,9 @@ func (s *ReceivingService) applyReceivedFilters(ctx context.Context, tx *sql.Tx,
 	if err != nil {
 		return err
 	}
+	// Authenticated SES spam/virus placement wins over automatic folder rules.
+	// A user may still explicitly discard it with a Trash rule.
+	initialSpam := email.IsSpam
 	for _, r := range rules {
 		if !s.matchesFilter(*email, r.conditions, r.logic) {
 			continue
@@ -447,6 +484,9 @@ func (s *ReceivingService) applyReceivedFilters(ctx context.Context, tx *sql.Tx,
 		}
 		if r.trash {
 			folder = "trash"
+		}
+		if initialSpam && folder != "trash" {
+			folder = "spam"
 		}
 		email.Folder = folder
 		email.IsArchived = folder == "archive"
@@ -491,7 +531,7 @@ func (s *ReceivingService) matchesCondition(email model.ReceivedEmail, cond mode
 	case "from":
 		value = email.FromEmail
 	case "to":
-		value = strings.Join(email.ToEmails, ", ")
+		value = strings.Join(append(append(append([]string{}, email.ToEmails...), email.CcEmails...), email.EnvelopeRecipients...), ", ")
 	case "subject":
 		value = email.Subject
 	case "body":
@@ -505,10 +545,18 @@ func (s *ReceivingService) matchesCondition(email model.ReceivedEmail, cond mode
 		return false
 	}
 
+	if cond.Operator == "regex" {
+		matched, _ := regexp.MatchString("(?i)"+cond.Value, value)
+		return matched
+	}
 	value = strings.ToLower(value)
 	condValue := strings.ToLower(cond.Value)
 
 	switch cond.Operator {
+	case "notContains":
+		return !strings.Contains(value, condValue)
+	case "notEquals":
+		return value != condValue
 	case "contains":
 		return strings.Contains(value, condValue)
 	case "equals":
@@ -517,9 +565,6 @@ func (s *ReceivingService) matchesCondition(email model.ReceivedEmail, cond mode
 		return strings.HasPrefix(value, condValue)
 	case "endsWith":
 		return strings.HasSuffix(value, condValue)
-	case "regex":
-		matched, _ := regexp.MatchString(cond.Value, value)
-		return matched
 	}
 
 	return false

@@ -113,6 +113,9 @@ func (c *AuthController) Me(r *ghttp.Request) {
 // CreateAPIKey generates a new API key
 // POST /api/v1/api-keys
 func (c *AuthController) CreateAPIKey(r *ghttp.Request) {
+	if !requireHumanAdmin(r) {
+		return
+	}
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
@@ -137,6 +140,9 @@ func (c *AuthController) CreateAPIKey(r *ghttp.Request) {
 // ListAPIKeys returns all API keys for the organization
 // GET /api/v1/api-keys
 func (c *AuthController) ListAPIKeys(r *ghttp.Request) {
+	if !requireHumanAdmin(r) {
+		return
+	}
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
@@ -155,6 +161,9 @@ func (c *AuthController) ListAPIKeys(r *ghttp.Request) {
 // DeleteAPIKey revokes an API key
 // DELETE /api/v1/api-keys/:uuid
 func (c *AuthController) DeleteAPIKey(r *ghttp.Request) {
+	if !requireHumanAdmin(r) {
+		return
+	}
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
@@ -174,4 +183,55 @@ func (c *AuthController) DeleteAPIKey(r *ghttp.Request) {
 	}
 
 	response.SuccessWithMessage(r, "API key revoked", nil)
+}
+
+func requireHumanAdmin(r *ghttp.Request) bool {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Unauthorized(r, "Authentication required")
+		return false
+	}
+	if claims.Role != "owner" && claims.Role != "admin" {
+		response.Forbidden(r, "A workspace administrator session is required")
+		return false
+	}
+	return true
+}
+
+// CompleteChallenge accepts a one-use password/OAuth challenge, never an API key.
+func (c *AuthController) CompleteChallenge(r *ghttp.Request) {
+	var req struct {
+		ChallengeToken string `json:"challengeToken" v:"required"`
+		Code           string `json:"code" v:"required"`
+	}
+	if err := r.Parse(&req); err != nil {
+		response.BadRequest(r, "Challenge token and verification code are required")
+		return
+	}
+	result, err := c.authService.CompleteChallenge(r.Context(), req.ChallengeToken, req.Code)
+	if err != nil {
+		response.Unauthorized(r, "Invalid or expired verification code. Sign in again if needed.")
+		return
+	}
+	response.Success(r, result)
+}
+func (c *AuthController) Logout(r *ghttp.Request) {
+	if err := c.authService.RevokeToken(r.Context(), middleware.ExtractToken(r)); err != nil {
+		response.InternalError(r, "Unable to end session")
+		return
+	}
+	response.SuccessWithMessage(r, "Signed out", nil)
+}
+func (c *AuthController) StreamToken(r *ghttp.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil || claims.Role == "api" {
+		response.Forbidden(r, "A user session is required")
+		return
+	}
+	token, expires, err := c.authService.StreamToken(r.Context(), middleware.ExtractToken(r), claims)
+	if err != nil {
+		response.Unauthorized(r, "Active user session required")
+		return
+	}
+	response.Success(r, map[string]interface{}{"token": token, "expiresAt": expires})
 }

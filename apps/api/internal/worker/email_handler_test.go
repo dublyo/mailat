@@ -1,7 +1,9 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -15,10 +17,12 @@ type guardTestProvider struct {
 	provider.EmailProvider
 	calls int
 	err   error
+	last  *provider.EmailMessage
 }
 
-func (p *guardTestProvider) SendEmail(context.Context, *provider.EmailMessage) (*provider.SendResult, error) {
+func (p *guardTestProvider) SendEmail(_ context.Context, msg *provider.EmailMessage) (*provider.SendResult, error) {
 	p.calls++
+	p.last = msg
 	return &provider.SendResult{MessageID: "test-provider-id"}, p.err
 }
 func (p *guardTestProvider) Name() string { return "ses" }
@@ -114,5 +118,42 @@ func TestEmailWorkerPreservesFastDeliveryEvents(t *testing.T) {
 		if status != tc.status {
 			t.Fatalf("fast event regressed: want %s, got %s", tc.status, status)
 		}
+	}
+}
+
+func TestWorkerRecoversDurableAttachmentPayloadOnce(t *testing.T) {
+	db := testutil.Database(t)
+	ctx := context.Background()
+	var org, id int64
+	if err := db.QueryRow(`INSERT INTO organizations(name,slug,updated_at) VALUES('Recovery','recovery',NOW()) RETURNING id`).Scan(&org); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`INSERT INTO transactional_emails(org_id,message_id,from_address,to_addresses,subject,status,scheduled_for,updated_at) VALUES($1,'<recovery@test>','from@test.test','to@test.test','test','queued',NOW()+INTERVAL '1 hour',NOW()) RETURNING id`, org).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	payload := NewEmailSendPayload(id, org, "from@test.test", []string{"to@test.test"}, "test", "", "hello", "<recovery@test>")
+	payload.Attachments = []AttachmentInfo{{Name: "binary.bin", Type: "application/octet-stream", Data: []byte{0, 255, 2}, Disposition: "inline", CID: "binary"}}
+	data, _ := json.Marshal(payload)
+	if _, err := db.Exec(`UPDATE transactional_emails SET send_payload=$2 WHERE id=$1`, id, string(data)); err != nil {
+		t.Fatal(err)
+	}
+	fake := &guardTestProvider{}
+	handler := &EmailHandler{db: db, cfg: &config.Config{}, emailProvider: fake}
+	if err := handler.RecoverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fake.calls != 0 {
+		t.Fatal("future job sent early")
+	}
+	if _, err := db.Exec(`UPDATE transactional_emails SET scheduled_for=NOW()-INTERVAL '1 minute' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := handler.RecoverPending(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fake.calls != 1 || len(fake.last.Attachments) != 1 || !bytes.Equal(fake.last.Attachments[0].Data, []byte{0, 255, 2}) || !fake.last.Attachments[0].Inline || fake.last.Attachments[0].ContentID != "binary" {
+		t.Fatalf("durable attachment changed: %+v", fake.last)
 	}
 }

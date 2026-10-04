@@ -8,6 +8,7 @@ export interface UserSettings {
   showSnippets: boolean
   conversationView: boolean
   autoAdvance: boolean
+  autoOrganizeDmarcReports: boolean
 
   // Notifications
   newEmailNotifications: boolean
@@ -33,6 +34,7 @@ const defaultSettings: UserSettings = {
   showSnippets: true,
   conversationView: true,
   autoAdvance: false,
+  autoOrganizeDmarcReports: true,
   newEmailNotifications: true,
   campaignReports: true,
   weeklyDigest: false,
@@ -83,6 +85,9 @@ export const useSettingsStore = defineStore('settings', () => {
   const isSaving = ref(false)
   const error = ref<string | null>(null)
   const saveSuccess = ref(false)
+  const settingsLoaded = ref(false)
+  let settingsOwner: string | null = null
+  let settingsRequest = 0
 
   // Load settings from localStorage on init
   function loadFromStorage() {
@@ -125,38 +130,77 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   async function fetchSettings() {
+    const request = ++settingsRequest
+    const token = api.getToken()
     isLoading.value = true
+    settingsLoaded.value = false
     error.value = null
     try {
-      // Try to fetch from API first
       const result = await api.get<UserSettings>('/api/v1/settings')
+      if (request !== settingsRequest || token !== api.getToken()) return
       if (result) {
         settings.value = { ...defaultSettings, ...result }
+        settingsOwner = token
+        settingsLoaded.value = true
         saveToStorage()
       }
     } catch {
-      // Fall back to localStorage
+      if (request !== settingsRequest || token !== api.getToken()) return
       loadFromStorage()
+      error.value = 'Could not load settings. Retry before changing mail organization.'
     } finally {
-      isLoading.value = false
+      if (request === settingsRequest) isLoading.value = false
     }
   }
 
-  async function saveSettings() {
+  async function saveDmarcOrganization() {
+    if (isSaving.value || !settingsLoaded.value || settingsOwner !== api.getToken()) return false
+    const token = settingsOwner
     isSaving.value = true
     error.value = null
     saveSuccess.value = false
     try {
-      // Try to save to API
-      await api.put('/api/v1/settings', settings.value)
+      // This server-side preference cannot fall back to a local-only save.
+      // Send the boolean explicitly so opting out is not treated as omission.
+      await api.put('/api/v1/settings', { autoOrganizeDmarcReports: settings.value.autoOrganizeDmarcReports })
+      if (token !== api.getToken()) return false
       saveToStorage()
       saveSuccess.value = true
       setTimeout(() => { saveSuccess.value = false }, 3000)
+      return true
     } catch {
-      // Save to localStorage as fallback
+      if (token === api.getToken()) error.value = 'DMARC organization was not saved. Please try again.'
+      return false
+    } finally {
+      isSaving.value = false
+    }
+  }
+
+  async function saveSettings() {
+    if (isSaving.value) return false
+    if (!settingsLoaded.value || settingsOwner !== api.getToken()) {
+      saveSuccess.value = false
+      error.value = 'Load your current account settings before saving changes.'
+      return false
+    }
+    const token = settingsOwner
+    // Mail organization is saved only by its dedicated action. An unrelated
+    // appearance/general save must not submit an unsaved DMARC checkbox value.
+    const { autoOrganizeDmarcReports: _dmarcPreference, ...updates } = settings.value
+    isSaving.value = true
+    error.value = null
+    saveSuccess.value = false
+    try {
+      await api.put('/api/v1/settings', updates)
+      if (token !== api.getToken() || settingsOwner !== token) return false
       saveToStorage()
       saveSuccess.value = true
       setTimeout(() => { saveSuccess.value = false }, 3000)
+      return true
+    } catch {
+      // Server preferences affect receiving; a local write cannot confirm them.
+      if (token === api.getToken() && settingsOwner === token) error.value = 'Settings were not saved. Please try again.'
+      return false
     } finally {
       isSaving.value = false
     }
@@ -344,6 +388,8 @@ export const useSettingsStore = defineStore('settings', () => {
     isSaving,
     error,
     saveSuccess,
+    settingsLoaded,
+    saveDmarcOrganization,
     fetchSettings,
     saveSettings,
     updateSetting,

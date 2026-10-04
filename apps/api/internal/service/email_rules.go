@@ -14,8 +14,8 @@ import (
 
 // RuleCondition defines a single condition for matching emails
 type RuleCondition struct {
-	Field         string `json:"field"`          // from, to, subject, body, header
-	Operator      string `json:"operator"`       // contains, equals, matches, starts_with, ends_with, not_contains, not_equals
+	Field         string `json:"field"`    // from, to, subject, body, header
+	Operator      string `json:"operator"` // contains, equals, matches, starts_with, ends_with, not_contains, not_equals
 	Value         string `json:"value"`
 	CaseSensitive bool   `json:"caseSensitive"`
 	HeaderName    string `json:"headerName,omitempty"` // Only for field="header"
@@ -29,22 +29,23 @@ type RuleAction struct {
 
 // EmailRule represents an email filter rule
 type EmailRule struct {
-	ID             int             `json:"id"`
-	UUID           string          `json:"uuid"`
-	UserID         int             `json:"userId"`
-	OrgID          int             `json:"orgId"`
-	Name           string          `json:"name"`
-	Description    string          `json:"description,omitempty"`
-	Priority       int             `json:"priority"`
-	Conditions     []RuleCondition `json:"conditions"`
-	ConditionLogic string          `json:"conditionLogic"` // "all" or "any"
-	Actions        []RuleAction    `json:"actions"`
-	IdentityIDs    []int           `json:"identityIds,omitempty"`
-	Active         bool            `json:"active"`
-	MatchCount     int             `json:"matchCount"`
-	LastMatchedAt  *time.Time      `json:"lastMatchedAt,omitempty"`
-	CreatedAt      time.Time       `json:"createdAt"`
-	UpdatedAt      time.Time       `json:"updatedAt"`
+	MigrationWarning string          `json:"migrationWarning,omitempty"`
+	ID               int             `json:"id"`
+	UUID             string          `json:"uuid"`
+	UserID           int             `json:"userId"`
+	OrgID            int             `json:"orgId"`
+	Name             string          `json:"name"`
+	Description      string          `json:"description,omitempty"`
+	Priority         int             `json:"priority"`
+	Conditions       []RuleCondition `json:"conditions"`
+	ConditionLogic   string          `json:"conditionLogic"` // "all" or "any"
+	Actions          []RuleAction    `json:"actions"`
+	IdentityIDs      []int           `json:"identityIds,omitempty"`
+	Active           bool            `json:"active"`
+	MatchCount       int             `json:"matchCount"`
+	LastMatchedAt    *time.Time      `json:"lastMatchedAt,omitempty"`
+	CreatedAt        time.Time       `json:"createdAt"`
+	UpdatedAt        time.Time       `json:"updatedAt"`
 }
 
 // CreateEmailRuleInput is the input for creating an email rule
@@ -128,15 +129,23 @@ func (s *EmailRulesService) CreateRule(ctx context.Context, userID, orgID int64,
 		identityIDsArray = "{" + strings.Join(idStrs, ",") + "}"
 	}
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err = lockMailboxLabels(ctx, tx, userID); err != nil {
+		return nil, err
+	}
 	var rule EmailRule
-	err = s.db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO email_rules (user_id, org_id, name, description, priority, conditions, condition_logic, actions, identity_ids, active)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING id, uuid, user_id, org_id, name, COALESCE(description, ''), priority, conditions, condition_logic, actions, identity_ids, active, match_count, last_matched_at, created_at, updated_at
+		RETURNING id, uuid, user_id, org_id, name, COALESCE(description, ''), priority, conditions, condition_logic, actions, identity_ids, active, match_count, last_matched_at, created_at, updated_at, COALESCE(migration_warning,'')
 	`, userID, orgID, input.Name, input.Description, input.Priority, conditionsJSON, input.ConditionLogic, actionsJSON, identityIDsArray, input.Active,
 	).Scan(&rule.ID, &rule.UUID, &rule.UserID, &rule.OrgID, &rule.Name, &rule.Description, &rule.Priority,
 		&conditionsJSON, &rule.ConditionLogic, &actionsJSON, scanIntArray(&rule.IdentityIDs),
-		&rule.Active, &rule.MatchCount, &rule.LastMatchedAt, &rule.CreatedAt, &rule.UpdatedAt)
+		&rule.Active, &rule.MatchCount, &rule.LastMatchedAt, &rule.CreatedAt, &rule.UpdatedAt, &rule.MigrationWarning)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create email rule: %w", err)
 	}
@@ -145,6 +154,9 @@ func (s *EmailRulesService) CreateRule(ctx context.Context, userID, orgID int64,
 	json.Unmarshal(conditionsJSON, &rule.Conditions)
 	json.Unmarshal(actionsJSON, &rule.Actions)
 
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
 	return &rule, nil
 }
 
@@ -154,12 +166,12 @@ func (s *EmailRulesService) GetRule(ctx context.Context, userID int64, ruleID in
 	var conditionsJSON, actionsJSON []byte
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, uuid, user_id, org_id, name, COALESCE(description, ''), priority, conditions, condition_logic, actions, identity_ids, active, match_count, last_matched_at, created_at, updated_at
+		SELECT id, uuid, user_id, org_id, name, COALESCE(description, ''), priority, conditions, condition_logic, actions, identity_ids, active, match_count, last_matched_at, created_at, updated_at, COALESCE(migration_warning,'')
 		FROM email_rules
 		WHERE id = $1 AND user_id = $2
 	`, ruleID, userID).Scan(&rule.ID, &rule.UUID, &rule.UserID, &rule.OrgID, &rule.Name, &rule.Description, &rule.Priority,
 		&conditionsJSON, &rule.ConditionLogic, &actionsJSON, scanIntArray(&rule.IdentityIDs),
-		&rule.Active, &rule.MatchCount, &rule.LastMatchedAt, &rule.CreatedAt, &rule.UpdatedAt)
+		&rule.Active, &rule.MatchCount, &rule.LastMatchedAt, &rule.CreatedAt, &rule.UpdatedAt, &rule.MigrationWarning)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("email rule not found")
 	}
@@ -176,7 +188,7 @@ func (s *EmailRulesService) GetRule(ctx context.Context, userID int64, ruleID in
 // ListRules lists all email rules for a user
 func (s *EmailRulesService) ListRules(ctx context.Context, userID int64, activeOnly bool) ([]*EmailRule, error) {
 	query := `
-		SELECT id, uuid, user_id, org_id, name, COALESCE(description, ''), priority, conditions, condition_logic, actions, identity_ids, active, match_count, last_matched_at, created_at, updated_at
+		SELECT id, uuid, user_id, org_id, name, COALESCE(description, ''), priority, conditions, condition_logic, actions, identity_ids, active, match_count, last_matched_at, created_at, updated_at, COALESCE(migration_warning,'')
 		FROM email_rules
 		WHERE user_id = $1
 	`
@@ -201,7 +213,7 @@ func (s *EmailRulesService) ListRules(ctx context.Context, userID int64, activeO
 
 		if err := rows.Scan(&rule.ID, &rule.UUID, &rule.UserID, &rule.OrgID, &rule.Name, &rule.Description, &rule.Priority,
 			&conditionsJSON, &rule.ConditionLogic, &actionsJSON, scanIntArray(&rule.IdentityIDs),
-			&rule.Active, &rule.MatchCount, &rule.LastMatchedAt, &rule.CreatedAt, &rule.UpdatedAt); err != nil {
+			&rule.Active, &rule.MatchCount, &rule.LastMatchedAt, &rule.CreatedAt, &rule.UpdatedAt, &rule.MigrationWarning); err != nil {
 			continue
 		}
 
@@ -293,7 +305,15 @@ func (s *EmailRulesService) UpdateRule(ctx context.Context, userID int64, ruleID
 
 	args = append(args, ruleID, userID)
 
-	result, err := s.db.ExecContext(ctx, query, args...)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err = lockMailboxLabels(ctx, tx, userID); err != nil {
+		return nil, err
+	}
+	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update email rule: %w", err)
 	}
@@ -303,12 +323,23 @@ func (s *EmailRulesService) UpdateRule(ctx context.Context, userID int64, ruleID
 		return nil, fmt.Errorf("email rule not found")
 	}
 
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
 	return s.GetRule(ctx, userID, ruleID)
 }
 
 // DeleteRule deletes an email rule
 func (s *EmailRulesService) DeleteRule(ctx context.Context, userID int64, ruleID int) error {
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = lockMailboxLabels(ctx, tx, userID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `
 		DELETE FROM email_rules WHERE id = $1 AND user_id = $2
 	`, ruleID, userID)
 	if err != nil {
@@ -320,7 +351,7 @@ func (s *EmailRulesService) DeleteRule(ctx context.Context, userID int64, ruleID
 		return fmt.Errorf("email rule not found")
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // ReorderRules updates the priority order of rules
@@ -330,6 +361,9 @@ func (s *EmailRulesService) ReorderRules(ctx context.Context, userID int64, rule
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if err = lockMailboxLabels(ctx, tx, userID); err != nil {
+		return err
+	}
 
 	for i, ruleID := range ruleIDs {
 		_, err := tx.ExecContext(ctx, `

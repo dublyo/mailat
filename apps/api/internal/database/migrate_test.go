@@ -28,6 +28,9 @@ func TestFreshAndLegacyMigrationPreservesMail(t *testing.T) {
 				if _, err := db.Exec(`INSERT INTO organizations(id,name,slug) VALUES(1,'Existing','existing'); INSERT INTO users(id,org_id,email,password_hash) VALUES(1,1,'existing@example.test','unused'); INSERT INTO domains(id,org_id,name,verification_token) VALUES(1,1,'example.test','token'); INSERT INTO identities(id,user_id,domain_id,email) VALUES(1,1,1,'mail@example.test'); INSERT INTO received_emails(org_id,identity_id,domain_id,message_id,from_email,to_emails,subject,text_body) VALUES(1,1,1,'legacy-message','sender@example.test',ARRAY['mail@example.test'],'Preserve me','Original body');`); err != nil {
 					t.Fatal(err)
 				}
+				if _, err := db.Exec(`INSERT INTO user_settings(user_id,org_id) VALUES(1,1)`); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := database.Migrate(ctx, db); err != nil {
 				t.Fatal(err)
@@ -39,6 +42,19 @@ func TestFreshAndLegacyMigrationPreservesMail(t *testing.T) {
 				var body string
 				if err := db.QueryRow(`SELECT text_body FROM received_emails WHERE message_id='legacy-message'`).Scan(&body); err != nil || body != "Original body" {
 					t.Fatalf("legacy mail changed: %v", err)
+				}
+				var organize bool
+				if err := db.QueryRow(`SELECT auto_organize_dmarc_reports FROM user_settings WHERE user_id=1`).Scan(&organize); err != nil || !organize {
+					t.Fatalf("existing account missing DMARC default: %v", err)
+				}
+				if _, err := db.Exec(`UPDATE user_settings SET auto_organize_dmarc_reports=false WHERE user_id=1`); err != nil {
+					t.Fatal(err)
+				}
+				if err := database.Migrate(ctx, db); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.QueryRow(`SELECT auto_organize_dmarc_reports FROM user_settings WHERE user_id=1`).Scan(&organize); err != nil || organize {
+					t.Fatalf("migration rerun overwrote opt-out: %v", err)
 				}
 			}
 			var n int

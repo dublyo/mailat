@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 )
 
 // WebhooksService handles webhook operations.
@@ -28,7 +29,7 @@ func (s *WebhooksService) Create(ctx context.Context, req *CreateWebhookRequest)
 
 // Get retrieves a webhook by UUID.
 func (s *WebhooksService) Get(ctx context.Context, webhookID string) (*Webhook, error) {
-	data, err := s.client.request(ctx, "GET", "/webhooks/"+webhookID, nil, nil)
+	data, err := s.client.request(ctx, "GET", "/webhooks/"+url.PathEscape(webhookID), nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +49,7 @@ func (s *WebhooksService) List(ctx context.Context) ([]Webhook, error) {
 		return nil, err
 	}
 
-	var resp []Webhook
+	resp := []Webhook{}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
@@ -58,7 +59,7 @@ func (s *WebhooksService) List(ctx context.Context) ([]Webhook, error) {
 
 // Update updates a webhook.
 func (s *WebhooksService) Update(ctx context.Context, webhookID string, req *UpdateWebhookRequest) (*Webhook, error) {
-	data, err := s.client.request(ctx, "PUT", "/webhooks/"+webhookID, req, nil)
+	data, err := s.client.request(ctx, "PUT", "/webhooks/"+url.PathEscape(webhookID), req, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -73,13 +74,13 @@ func (s *WebhooksService) Update(ctx context.Context, webhookID string, req *Upd
 
 // Delete deletes a webhook.
 func (s *WebhooksService) Delete(ctx context.Context, webhookID string) error {
-	_, err := s.client.request(ctx, "DELETE", "/webhooks/"+webhookID, nil, nil)
+	_, err := s.client.request(ctx, "DELETE", "/webhooks/"+url.PathEscape(webhookID), nil, nil)
 	return err
 }
 
 // RotateSecret generates a new secret for a webhook.
 func (s *WebhooksService) RotateSecret(ctx context.Context, webhookID string) (string, error) {
-	data, err := s.client.request(ctx, "POST", "/webhooks/"+webhookID+"/rotate-secret", nil, nil)
+	data, err := s.client.request(ctx, "POST", "/webhooks/"+url.PathEscape(webhookID)+"/rotate-secret", nil, nil)
 	if err != nil {
 		return "", err
 	}
@@ -94,13 +95,13 @@ func (s *WebhooksService) RotateSecret(ctx context.Context, webhookID string) (s
 
 // GetCalls retrieves recent webhook delivery attempts.
 func (s *WebhooksService) GetCalls(ctx context.Context, webhookID string, limit int) ([]WebhookCall, error) {
-	path := fmt.Sprintf("/webhooks/%s/calls?limit=%d", webhookID, limit)
+	path := fmt.Sprintf("/webhooks/%s/calls?limit=%d", url.PathEscape(webhookID), limit)
 	data, err := s.client.request(ctx, "GET", path, nil, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	var resp []WebhookCall
+	resp := []WebhookCall{}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
@@ -110,6 +111,17 @@ func (s *WebhooksService) GetCalls(ctx context.Context, webhookID string, limit 
 
 // Test sends a test event to a webhook.
 func (s *WebhooksService) Test(ctx context.Context, webhookID string) error {
-	_, err := s.client.request(ctx, "POST", "/webhooks/"+webhookID+"/test", nil, nil)
+	_, err := s.client.request(ctx, "POST", "/webhooks/"+url.PathEscape(webhookID)+"/test", nil, nil)
 	return err
+}
+
+// TestDelivery exposes receiver outcome; HTTP success alone does not mean delivery.
+func (s *WebhooksService) TestDelivery(ctx context.Context, webhookID string) (*WebhookTestResult, error) {
+	data, err := s.client.request(ctx, "POST", "/webhooks/"+url.PathEscape(webhookID)+"/test", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var result WebhookTestResult
+	err = json.Unmarshal(data, &result)
+	return &result, err
 }

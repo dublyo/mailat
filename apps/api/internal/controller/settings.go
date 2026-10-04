@@ -26,14 +26,14 @@ func (c *SettingsController) GetSettings(r *ghttp.Request) {
 	}
 
 	// Settings require user authentication (not API key)
-	if claims.UserID == 0 {
+	if claims.UserID == 0 || claims.Role == "api" {
 		response.BadRequest(r, "Settings endpoint requires user authentication, not API key")
 		return
 	}
 
 	settings, err := c.settingsService.GetSettings(r.Context(), claims.UserID)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		response.InternalError(r, "Unable to load settings")
 		return
 	}
 
@@ -50,7 +50,7 @@ func (c *SettingsController) UpdateSettings(r *ghttp.Request) {
 	}
 
 	// Settings require user authentication (not API key)
-	if claims.UserID == 0 {
+	if claims.UserID == 0 || claims.Role == "api" {
 		response.BadRequest(r, "Settings endpoint requires user authentication, not API key")
 		return
 	}
@@ -63,7 +63,7 @@ func (c *SettingsController) UpdateSettings(r *ghttp.Request) {
 
 	settings, err := c.settingsService.UpdateSettings(r.Context(), claims.UserID, &req)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		response.InternalError(r, "Unable to save settings")
 		return
 	}
 

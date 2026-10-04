@@ -293,3 +293,32 @@ test('forced post-event counts supersede pre-event requests and their stale cach
   assert.equal(calls, 2)
   assert.equal(store.counts.unread, 2)
 })
+
+
+test('DMARC report arrival refreshes folder counts without an Inbox arrival notice', async t => {
+  const { store, state, endpoints } = realtimeFixture(t)
+  await store.fetchEmails(0, { folder: 'inbox' }); store.connectSSE()
+  endpoints.getCounts = async () => ({ inbox: 3, inboxUnread: 1, unread: 7, dmarcReports: 6, dmarcReportsUnread: 6 })
+  state.handlers.onNewEmail(email('report', { folder: 'dmarc-reports' }))
+  t.mock.timers.tick(300); await settleRefresh()
+  assert.equal(store.currentFolder, 'inbox')
+  assert.equal(store.counts.inboxUnread, 1)
+  assert.equal(store.counts.dmarcReportsUnread, 6)
+  assert.equal(store.unreadCount, 7)
+  assert.equal(store.notice, '')
+  assert.equal(state.calls.at(-1)[1].folder, 'inbox')
+})
+
+test('DMARC folder and All Mail search retain normal filtering and move semantics', async () => {
+  const moves = []
+  const { store, state } = fixture({ move: async (ids, folder) => { moves.push([ids, folder]) } })
+  await store.fetchEmails(0, { folder: 'dmarc-reports', search: 'example.test', domainId: 2, isRead: false })
+  assert.equal(state.calls.at(-1)[1].folder, 'dmarc-reports')
+  await store.moveEmails(['a'], 'inbox')
+  assert.deepEqual(moves, [[['a'], 'inbox']])
+  await store.fetchEmails(0, { folder: 'all', search: 'example.test' })
+  assert.equal(state.calls.at(-1)[1].folder, 'all')
+  assert.equal(state.calls.at(-1)[1].search, 'example.test')
+  await store.moveEmails(['a'], 'dmarc-reports')
+  assert.deepEqual(moves.at(-1), [['a'], 'dmarc-reports'])
+})

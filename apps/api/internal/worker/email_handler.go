@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/smtp"
@@ -16,6 +17,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"github.com/dublyo/mailat/api/internal/config"
+	"github.com/dublyo/mailat/api/internal/eventoutbox"
 	"github.com/dublyo/mailat/api/internal/provider"
 )
 
@@ -140,162 +142,168 @@ func (h *EmailHandler) SetWebhookTriggerService(svc webhookTriggerFirer) {
 	h.webhookTriggerService = svc
 }
 
-// HandleEmailSend processes a single email send task
+// NewEmailHandlerWithProvider lets direct dispatch and tests use exactly the queue send path.
+func NewEmailHandlerWithProvider(db *sql.DB, cfg *config.Config, p provider.EmailProvider) *EmailHandler {
+	return &EmailHandler{db: db, cfg: cfg, emailProvider: p}
+}
+
 func (h *EmailHandler) HandleEmailSend(ctx context.Context, t *asynq.Task) error {
-	if h.emailProvider == nil {
-		return fmt.Errorf("email provider is not configured; sending has not been attempted")
-	}
 	payload, err := UnmarshalEmailSendPayload(t.Payload())
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal payload: %w", err)
+		return fmt.Errorf("invalid email job: %w", err)
 	}
+	return h.ProcessEmail(ctx, payload)
+}
 
-	// Atomically claim only a queued message. Retried jobs must not submit an
-	// already accepted, sending, failed, or uncertain attempt to the provider again.
-	claimed, err := h.db.ExecContext(ctx, `UPDATE transactional_emails SET status='sending',updated_at=NOW() WHERE id=$1 AND status='queued'`, payload.EmailID)
-	if err != nil {
-		return fmt.Errorf("claim email send: %w", err)
+// ProcessEmail claims once, then records an outcome and event in one transaction.
+// A task retry cannot repeat a provider submission whose outcome may be uncertain.
+func (h *EmailHandler) ProcessEmail(ctx context.Context, payload *EmailSendPayload) error {
+	if h.emailProvider == nil {
+		return fmt.Errorf("email provider is not configured")
 	}
-	affected, err := claimed.RowsAffected()
+	var durable []byte
+	err := h.db.QueryRowContext(ctx, `UPDATE transactional_emails SET status='sending',updated_at=NOW() WHERE id=$1 AND org_id=$2 AND status='queued' AND (scheduled_for IS NULL OR scheduled_for<=NOW()) RETURNING send_payload`, payload.EmailID, payload.OrgID).Scan(&durable)
+	if err == sql.ErrNoRows {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if affected == 0 {
-		return nil
-	}
-
-	// Record sending event
-	h.recordEvent(ctx, payload.EmailID, "sending", "Email processing started")
-
-	// Build email message for provider
-	emailMsg := &provider.EmailMessage{
-		From:      payload.From,
-		To:        payload.To,
-		Cc:        payload.Cc,
-		Bcc:       payload.Bcc,
-		ReplyTo:   payload.ReplyTo,
-		Subject:   payload.Subject,
-		TextBody:  payload.TextBody,
-		HTMLBody:  payload.HTMLBody,
-		MessageID: payload.MessageID,
-	}
-
-	// SES has no submission idempotency token. A network retry may send twice,
-	// so persist an unknown outcome instead of repeating an ambiguous submission.
-	sendResult, sendErr := h.emailProvider.SendEmail(ctx, emailMsg)
-
-	// Store provider message ID if available
-	if sendResult != nil && sendResult.MessageID != "" {
-		_, err = h.db.ExecContext(ctx, `
-			UPDATE transactional_emails
-			SET provider_message_id = $2, email_provider = $3, updated_at = NOW()
-			WHERE id = $1
-		`, payload.EmailID, sendResult.MessageID, h.emailProvider.Name())
-		if err != nil {
-			fmt.Printf("Warning: failed to update provider message ID: %v\n", err)
+	if len(durable) > 0 {
+		if err = json.Unmarshal(durable, payload); err != nil {
+			return h.finishEmail(payload.EmailID, "failed", "invalid stored send payload", "", nil)
 		}
 	}
-
+	msg := &provider.EmailMessage{From: payload.From, To: payload.To, Cc: payload.Cc, Bcc: payload.Bcc, ReplyTo: payload.ReplyTo, Subject: payload.Subject, TextBody: payload.TextBody, HTMLBody: payload.HTMLBody, MessageID: payload.MessageID, Headers: map[string]string{}}
+	if payload.MessageUUID != "" {
+		msg.Headers["X-Mailat-Message-ID"] = payload.MessageUUID
+	}
+	for _, a := range payload.Attachments {
+		msg.Attachments = append(msg.Attachments, provider.Attachment{Filename: a.Name, ContentType: a.Type, Data: a.Data, ContentID: a.CID, Inline: a.Disposition == "inline"})
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	result, sendErr := h.emailProvider.SendEmail(sendCtx, msg)
+	cancel()
+	providerID := ""
+	if result != nil {
+		providerID = result.MessageID
+	}
+	status, details := "sent", "Email accepted by the provider"
 	if sendErr != nil {
-		status := "unknown"
+		status = "unknown"
+		details = "Provider outcome is uncertain; do not automatically resubmit"
 		if provider.IsDefinitiveSendError(sendErr) {
 			status = "failed"
+			details = "Provider rejected the message"
 		}
-		persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, persistErr := h.db.ExecContext(persistCtx, `UPDATE transactional_emails SET status=$2,updated_at=NOW() WHERE id=$1 AND status='sending'`, payload.EmailID, status)
-		if persistErr != nil {
-			fmt.Printf("Failed to persist send outcome for email %d: %v\n", payload.EmailID, persistErr)
-		}
-		h.recordEvent(persistCtx, payload.EmailID, status, sendErr.Error())
-		return nil // A queue retry cannot safely determine whether SES accepted the prior call.
 	}
+	return h.finishEmail(payload.EmailID, status, details, providerID, payload)
+}
 
-	// A fast SNS event may already report delivery/bounce after the provider-ID write.
-	// Acceptance persistence must not regress that more informative terminal result.
-	now := time.Now()
-	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (h *EmailHandler) finishEmail(id int64, status, details, providerID string, payload *EmailSendPayload) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = h.db.ExecContext(persistCtx, `
-		UPDATE transactional_emails
-		SET status = CASE WHEN status IN ('delivered','bounced','complained','opened','clicked') THEN status ELSE 'sent' END, sent_at = COALESCE(sent_at,$2), updated_at = NOW()
-		WHERE id = $1
-	`, payload.EmailID, now)
+	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
-		fmt.Printf("Warning: failed to update email status: %v\n", err)
+		return err
 	}
-
-	h.recordEvent(ctx, payload.EmailID, "sent", "Email sent successfully")
-
-	// Trigger webhook delivery for 'sent' event
-	go h.triggerWebhook(ctx, payload.OrgID, payload.EmailID, "sent")
-
-	// Fire webhook trigger (n8n / Zapier integration)
-	if h.webhookTriggerService != nil {
-		go h.webhookTriggerService.Fire(context.Background(), payload.OrgID, "email_sent", map[string]interface{}{
-			"email_id": payload.EmailID,
-			"to":       payload.To,
-			"subject":  payload.Subject,
-			"from":     payload.From,
-		})
+	defer tx.Rollback()
+	var org, user, identity int64
+	var messageUUID, current string
+	err = tx.QueryRowContext(ctx, `UPDATE transactional_emails SET
+ status=CASE WHEN status IN ('delivered','bounced','complained','opened','clicked') THEN status ELSE $2 END,
+ sent_at=CASE WHEN $2='sent' THEN COALESCE(sent_at,NOW()) ELSE sent_at END,
+ provider_message_id=COALESCE(NULLIF($3,''),provider_message_id),email_provider=$4,updated_at=NOW()
+ WHERE id=$1 RETURNING org_id,uuid,status,COALESCE(identity_id,0)`, id, status, providerID, h.emailProvider.Name()).Scan(&org, &messageUUID, &current, &identity)
+	if err != nil {
+		return err
 	}
+	if payload != nil {
+		user = payload.UserID
+	}
+	if user == 0 && identity > 0 {
+		_ = tx.QueryRowContext(ctx, `SELECT user_id FROM identities WHERE id=$1`, identity).Scan(&user)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO transactional_delivery_events(email_id,event_type,details) VALUES($1,$2,$3)`, id, status, details); err != nil {
+		return err
+	}
+	data := map[string]any{"status": current, "messageUuid": messageUUID, "providerMessageId": providerID}
+	if payload != nil {
+		data["messageId"] = payload.MessageID
+		data["from"] = payload.From
+		data["to"] = payload.To
+		data["subject"] = payload.Subject
+	}
+	if err = eventoutbox.Emit(ctx, tx, eventoutbox.Event{Type: "email." + status, OrgID: org, UserID: user, IdentityID: identity, MessageUUID: messageUUID, DedupeKey: status + ":" + messageUUID, Data: data}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
+// RecoverPending processes only due, never-attempted jobs. Multiple instances may
+// discover the same row; ProcessEmail's atomic claim permits one provider attempt.
+func (h *EmailHandler) RecoverPending(ctx context.Context) error {
+	rows, err := h.db.QueryContext(ctx, `SELECT id,org_id FROM transactional_emails WHERE status='queued' AND send_payload IS NOT NULL AND (scheduled_for IS NULL OR scheduled_for<=NOW()) ORDER BY id LIMIT 25`)
+	if err != nil {
+		return err
+	}
+	var jobs []*EmailSendPayload
+	for rows.Next() {
+		p := &EmailSendPayload{}
+		if err = rows.Scan(&p.EmailID, &p.OrgID); err != nil {
+			rows.Close()
+			return err
+		}
+		jobs = append(jobs, p)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, p := range jobs {
+		if err = h.ProcessEmail(ctx, p); err != nil {
+			return err
+		}
+	}
+	// A process may die after the durable claim and after SES accepted. Never reset
+	// that claim to queued; expose uncertainty for operator reconciliation instead.
+	rows, err = h.db.QueryContext(ctx, `SELECT id FROM transactional_emails WHERE status='sending' AND updated_at<NOW()-INTERVAL '10 minutes' LIMIT 25`)
+	if err != nil {
+		return err
+	}
+	var stale []int64
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		stale = append(stale, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, id := range stale {
+		if err = h.finishEmail(id, "unknown", "Send worker stopped before recording an outcome", "", nil); err != nil {
+			return err
+		}
+	}
 	return nil
 }
-
-// recordEvent records a delivery event
-func (h *EmailHandler) recordEvent(ctx context.Context, emailID int64, eventType, details string) {
-	_, err := h.db.ExecContext(ctx, `
-		INSERT INTO transactional_delivery_events (email_id, event_type, details)
-		VALUES ($1, $2, $3)
-	`, emailID, eventType, details)
-	if err != nil {
-		fmt.Printf("Warning: failed to record event: %v\n", err)
-	}
-}
-
-// triggerWebhook queues webhook delivery for an event
-func (h *EmailHandler) triggerWebhook(ctx context.Context, orgID, emailID int64, eventType string) {
-	// Get active webhooks for this org that listen to this event type
-	eventName := "email." + eventType // e.g., "email.sent", "email.delivered"
-	rows, err := h.db.QueryContext(ctx, `
-		SELECT id, url, secret FROM webhooks
-		WHERE org_id = $1 AND active = true AND $2 = ANY(events)
-	`, orgID, eventName)
-	if err != nil {
-		fmt.Printf("Failed to get webhooks: %v\n", err)
-		return
-	}
-	defer rows.Close()
-
-	// Create queue client
-	queueClient, err := NewQueueClient(h.cfg)
-	if err != nil {
-		fmt.Printf("Failed to create queue client for webhooks: %v\n", err)
-		return
-	}
-	defer queueClient.Close()
-
-	for rows.Next() {
-		var webhookID int64
-		var url, secret string
-		if err := rows.Scan(&webhookID, &url, &secret); err != nil {
-			continue
+func (h *EmailHandler) RunPending(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		if err := h.RecoverPending(ctx); err != nil && ctx.Err() == nil {
+			fmt.Printf("Pending send recovery: %v\n", err)
 		}
-
-		payload := &WebhookDeliverPayload{
-			WebhookID:  webhookID,
-			OrgID:      orgID,
-			URL:        url,
-			Secret:     secret,
-			EventType:  eventName,
-			EmailID:    emailID,
-			MaxRetries: 5,
-		}
-
-		_, err := queueClient.EnqueueWebhookDeliver(payload)
-		if err != nil {
-			fmt.Printf("Failed to enqueue webhook: %v\n", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
 	}
 }

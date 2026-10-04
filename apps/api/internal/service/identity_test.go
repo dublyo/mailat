@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -160,5 +161,36 @@ func TestSESIdentitiesAndExplicitMonthlyQuota(t *testing.T) {
 	}
 	if err = reserveMonthlySend(ctx, db, cfg, org); err == nil {
 		t.Fatal("positive quota not enforced")
+	}
+}
+
+func TestIdentityReadsNullableLegacyMetadata(t *testing.T) {
+	db := testutil.Database(t)
+	ctx := context.Background()
+	if _, err := db.Exec(`INSERT INTO organizations(id,name,slug,updated_at) VALUES(1,'Legacy identity','legacy-identity',now());
+INSERT INTO users(id,org_id,email,password_hash,updated_at) VALUES(1,1,'legacy@example.test','unused',now());
+INSERT INTO domains(id,org_id,name,verification_token,updated_at) VALUES(1,1,'example.test','legacy-token',now());
+INSERT INTO identities(id,user_id,domain_id,email,display_name,color,stalwart_account_id,can_send,can_receive,updated_at) VALUES(1,1,1,'legacy@example.test',NULL,NULL,NULL,false,false,now());`); err != nil {
+		t.Fatal(err)
+	}
+	svc := &IdentityService{db: db}
+	listed, err := svc.ListIdentities(ctx, 1)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("list nullable identity metadata: %+v %v", listed, err)
+	}
+	got, err := svc.GetIdentity(ctx, 1, listed[0].UUID)
+	if err != nil {
+		t.Fatal("get nullable identity metadata:", err)
+	}
+	for _, identity := range []*model.Identity{listed[0], got} {
+		if identity.DisplayName != "" || identity.Color != "" || identity.StalwartAcctID != "" || identity.CanSend || identity.CanReceive || identity.Email != "legacy@example.test" {
+			t.Fatalf("nullable identity defaults changed metadata or permissions: %+v", identity)
+		}
+	}
+	if _, err := svc.GetIdentity(ctx, 2, got.UUID); !errors.Is(err, ErrIdentityNotFound) {
+		t.Fatalf("cross-user identity should be hidden: %v", err)
+	}
+	if empty, err := svc.ListIdentities(ctx, 2); err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("empty identity list: %+v %v", empty, err)
 	}
 }

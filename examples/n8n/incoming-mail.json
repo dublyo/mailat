@@ -1,0 +1,656 @@
+{
+  "id": "mailatIncomingV1",
+  "name": "Mailat - verified incoming mail",
+  "nodes": [
+    {
+      "id": "f9556c35-251e-5226-9f87-656493a66a7f",
+      "name": "Incoming Mailat event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "mailat-incoming",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "webhookId": "b39b0137-5a39-4013-b3bb-c724264c9336"
+    },
+    {
+      "id": "10436883-8315-5850-a8de-1238f2aa2908",
+      "name": "Verify exact body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        250,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Authenticate the exact raw bytes before parsing or making any API request.\nconst crypto = require('crypto');\nconst item = $input.first();\nconst raw = await this.helpers.getBinaryDataBuffer(0, 'data');\nconst signature = String(item.json.headers['x-webhook-signature'] || '');\nconst parts = /^t=([1-9][0-9]*),v1=([0-9a-f]{64})$/.exec(signature);\nconst secret = $env.MAILAT_WEBHOOK_SECRET;\nif (!secret) throw new Error('Configure MAILAT_WEBHOOK_SECRET');\nif (!parts || Math.abs(Date.now()/1000 - Number(parts[1])) > 300) return [{json:{valid:false}}];\nconst expected = crypto.createHmac('sha256', secret).update(parts[1]+'.').update(raw).digest();\nif (!crypto.timingSafeEqual(expected, Buffer.from(parts[2], 'hex'))) return [{json:{valid:false}}];\nconst event = JSON.parse(raw.toString('utf8'));\nconst uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nif (event.version !== '1' || event.type !== 'email.received' || !uuid.test(event.id) || !uuid.test(event.data?.messageUuid) || item.json.headers['x-webhook-id'] !== event.id) throw new Error('Unsupported webhook envelope');\nreturn [{json: {valid:true,event, leaseOwner: $execution.id}}];"
+      }
+    },
+    {
+      "id": "fbcf3232-1ef5-52ba-ac91-5c01bdd35eab",
+      "name": "Claim event",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        500,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH claimed AS (\n INSERT INTO mailat_n8n_events(event_id,message_uuid,lease_owner,lease_until)\n VALUES($1,$2,$3,NOW()+INTERVAL '10 minutes')\n ON CONFLICT(event_id) DO UPDATE SET lease_owner=EXCLUDED.lease_owner,lease_until=EXCLUDED.lease_until\n WHERE mailat_n8n_events.completed_at IS NULL AND mailat_n8n_events.lease_until<NOW()\n RETURNING true AS claimed\n)\nSELECT EXISTS(SELECT 1 FROM claimed) AS claimed,\n COALESCE((SELECT completed_at IS NOT NULL FROM mailat_n8n_events WHERE event_id=$1),false) AS completed;",
+        "options": {
+          "queryReplacement": "={{ [$json.event.id, $json.event.data.messageUuid, $json.leaseOwner] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "MAILAT_STATE_CREDENTIAL",
+          "name": "Mailat automation state"
+        }
+      }
+    },
+    {
+      "id": "a816f7a0-b263-5038-a1b3-9c8c1e9974de",
+      "name": "Event claimed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        750,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "98f3a7e8-4d19-49aa-8bf9-0263783ffbfa",
+              "leftValue": "={{ $json.claimed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e229fe39-9e99-51db-9ba9-3479a81481b1",
+      "name": "Duplicate or busy",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1000,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {accepted: $json.completed, duplicate: $json.completed} }}",
+        "options": {
+          "responseCode": "={{ $json.completed ? 200 : 503 }}"
+        }
+      }
+    },
+    {
+      "id": "dbeed9fd-ebcf-5514-a13d-945f6379ac65",
+      "name": "Fetch private message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1250,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.MAILAT_API_URL + '/inbox/received/' + $('Verify exact body').first().json.event.data.messageUuid }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "MAILAT_API_CREDENTIAL",
+          "name": "Mailat API token"
+        }
+      }
+    },
+    {
+      "id": "1565a8aa-3cbe-55ef-bbb8-85033b375a23",
+      "name": "Attachment items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        250
+      ],
+      "parameters": {
+        "jsCode": "const a=$json.data.attachments || []; return a.length ? a.map(x=>({json:{attachment:x}})) : [{json:{attachment:null}}];"
+      }
+    },
+    {
+      "id": "02215206-d5e7-520d-882c-05826a183aee",
+      "name": "Has attachments",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        250,
+        250
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d76cd6f3-c37d-4b26-95b4-6d3be4e38111",
+              "leftValue": "={{ Boolean($json.attachment) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "79e8f275-d463-5809-9f12-a6ef7b9f4a72",
+      "name": "Download private attachment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        250
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.MAILAT_API_URL + '/inbox/received/' + $('Verify exact body').first().json.event.data.messageUuid + '/attachments/' + $json.attachment.uuid }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "attachment"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "MAILAT_API_CREDENTIAL",
+          "name": "Mailat API token"
+        }
+      }
+    },
+    {
+      "id": "b67c0c58-94fd-5c91-bd9c-791719308ac7",
+      "name": "Inspect downloaded bytes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        750,
+        250
+      ],
+      "parameters": {
+        "jsCode": "const items=$input.all(); const files=[]; for(let i=0;i<items.length;i++){const b=await this.helpers.getBinaryDataBuffer(i,'attachment'); files.push({bytes:b.length});} return [{json:{downloaded:files}}];"
+      }
+    },
+    {
+      "id": "6adcd81b-b11c-5b98-87a2-8498c13e7451",
+      "name": "Get owned reply context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        250
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.MAILAT_API_URL + '/compose/reply/' + $('Verify exact body').first().json.event.data.messageUuid }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "MAILAT_API_CREDENTIAL",
+          "name": "Mailat API token"
+        }
+      }
+    },
+    {
+      "id": "d5bb5cdf-97ae-52b8-9bf8-2e706bec37cb",
+      "name": "Send one reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1250,
+        250
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MAILAT_API_URL + '/compose/send' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ ({...$json.data, fromEmail:$json.data.from.email, textBody:'Thank you. We received your email.' + ($json.data.textBody || ''), htmlBody:'<p>Thank you. We received your email.</p>' + ($json.data.htmlBody || '')}) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ 'n8n-reply:' + $('Verify exact body').first().json.event.id }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "MAILAT_API_CREDENTIAL",
+          "name": "Mailat API token"
+        }
+      }
+    },
+    {
+      "id": "96eb97ad-892e-5a92-9cdc-3291b509b1f3",
+      "name": "Require accepted reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        500
+      ],
+      "parameters": {
+        "jsCode": "const r=$json.data; if (!['sent','delivered'].includes(r.status)) throw new Error('Reply outcome '+r.status+' for '+r.emailId+'. Inspect status; never use a new key automatically.'); return $input.all();"
+      }
+    },
+    {
+      "id": "c88470c6-9349-5975-9dc3-f41d0ec0b512",
+      "name": "Apply label",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        250,
+        500
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MAILAT_API_URL + '/inbox/received/labels' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {emailUuids:[$('Verify exact body').first().json.event.data.messageUuid],addLabels:[$env.MAILAT_LABEL || 'Automated'],removeLabels:[]} }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "MAILAT_API_CREDENTIAL",
+          "name": "Mailat API token"
+        }
+      }
+    },
+    {
+      "id": "13349a76-b867-5d9e-9eee-6f5be4a839a4",
+      "name": "Archive message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        500
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MAILAT_API_URL + '/inbox/received/move' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {emailUuids:[$('Verify exact body').first().json.event.data.messageUuid],folder:'archive'} }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "MAILAT_API_CREDENTIAL",
+          "name": "Mailat API token"
+        }
+      }
+    },
+    {
+      "id": "9360430c-ec56-526c-b906-6529b5007237",
+      "name": "Complete event",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        750,
+        500
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE mailat_n8n_events SET completed_at=NOW(),lease_until=NULL WHERE event_id=$1 AND lease_owner=$2 RETURNING event_id;",
+        "options": {
+          "queryReplacement": "={{ [$('Verify exact body').first().json.event.id,$('Verify exact body').first().json.leaseOwner] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "MAILAT_STATE_CREDENTIAL",
+          "name": "Mailat automation state"
+        }
+      }
+    },
+    {
+      "id": "f3119bf5-5d8f-51c5-9266-3097ef18423c",
+      "name": "Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1000,
+        500
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {accepted:true} }}",
+        "options": {
+          "responseCode": "={{ 200 }}"
+        }
+      }
+    },
+    {
+      "id": "f31c5460-17f3-409c-901d-a43975962c5f",
+      "name": "Authenticated",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        500,
+        -250
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "817779d5-2062-4948-a064-501eb0961730",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f7b9a571-b94e-4961-aeb0-5cd62d5ba6bb",
+      "name": "Reject unauthenticated",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        750,
+        -250
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {accepted:false} }}",
+        "options": {
+          "responseCode": 401
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Incoming Mailat event": {
+      "main": [
+        [
+          {
+            "node": "Verify exact body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify exact body": {
+      "main": [
+        [
+          {
+            "node": "Authenticated",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim event": {
+      "main": [
+        [
+          {
+            "node": "Event claimed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Event claimed": {
+      "main": [
+        [
+          {
+            "node": "Fetch private message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Duplicate or busy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch private message": {
+      "main": [
+        [
+          {
+            "node": "Attachment items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attachment items": {
+      "main": [
+        [
+          {
+            "node": "Has attachments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has attachments": {
+      "main": [
+        [
+          {
+            "node": "Download private attachment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get owned reply context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download private attachment": {
+      "main": [
+        [
+          {
+            "node": "Inspect downloaded bytes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inspect downloaded bytes": {
+      "main": [
+        [
+          {
+            "node": "Get owned reply context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get owned reply context": {
+      "main": [
+        [
+          {
+            "node": "Send one reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send one reply": {
+      "main": [
+        [
+          {
+            "node": "Require accepted reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Require accepted reply": {
+      "main": [
+        [
+          {
+            "node": "Apply label",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply label": {
+      "main": [
+        [
+          {
+            "node": "Archive message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Archive message": {
+      "main": [
+        [
+          {
+            "node": "Complete event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Complete event": {
+      "main": [
+        [
+          {
+            "node": "Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authenticated": {
+      "main": [
+        [
+          {
+            "node": "Claim event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject unauthenticated",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 240,
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all"
+  }
+}

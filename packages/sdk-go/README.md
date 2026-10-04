@@ -1,307 +1,51 @@
-# mailat.co Go SDK
+# Mailat Go SDK
 
-Official Go SDK for the mailat.co transactional email API.
-
-## Installation
-
-```bash
-go get github.com/dublyo/mailat-go
-```
-
-## Quick Start
+Requires Go 1.21+. Run `go test -race ./...` in this package for HTTP and signature tests.
 
 ```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-
-    "github.com/dublyo/mailat-go/mailat"
-)
-
-func main() {
-    client := mailat.NewClient("ue_your_api_key")
-
-    // Send an email
-    resp, err := client.Emails.Send(context.Background(), &mailat.SendEmailRequest{
-        From:    "sender@yourdomain.com",
-        To:      []string{"recipient@example.com"},
-        Subject: "Hello from mailat.co!",
-        HTML:    "<p>Welcome to our service!</p>",
-    }, nil)
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Printf("Email sent! ID: %s\n", resp.ID)
-}
+import "github.com/dublyo/mailat-go/mailat"
+client := mailat.NewClient(apiKey, mailat.WithBaseURL("https://mail.dublyo.com/api/v1"))
+sent, err := client.Emails.Send(ctx, &mailat.SendEmailRequest{
+    From: "hello@yourdomain.com", To: []string{"recipient@example.com"},
+    Subject: "Hello", Text: "Hello",
+    Attachments: []mailat.Attachment{{Name:"hello.txt", Content:"SGVsbG8=", Type:"text/plain"}},
+}, &mailat.SendOptions{IdempotencyKey:"order-123-confirmation"})
+// Handle err before using sent.
+status, err := client.Emails.Get(ctx, sent.ID)
+batch, err := client.Emails.SendBatch(ctx, requests, &mailat.SendOptions{IdempotencyKey:"batch-order-123"})
+page, err := client.Inbox.List(ctx, url.Values{"folder":{"inbox"},"page":{"1"},"pageSize":{"20"}})
+err = client.Inbox.Mark(ctx, []string{"message-uuid"}, true)
+changes, err := client.Inbox.Changes(ctx, savedCursor, 100)
+attachmentBytes, err := client.Inbox.Attachment(ctx, "message-uuid", "attachment-uuid")
+outcome, err := client.Webhooks.TestDelivery(ctx, "webhook-uuid")
+event, err := mailat.ParseWebhookPayload(rawBody, signature, secret, atomicallyClaim)
 ```
 
-## Configuration
+`atomicallyClaim` has signature `func(string) (bool, error)`. `VerifyWebhookSignature` accepts an explicit `time.Duration`; zero uses five minutes and a negative value is rejected.
+
+Namespaces: `Emails`, `Inbox` (including `Labels` and `Filters`), `Compose`, `Domains`, `Identities`, `Templates`, `Webhooks`, `Triggers`, `Deliveries`. Core request/response objects use `mailat.Object` with camelCase keys. Core `List` methods return `json.RawMessage` because some resources return arrays and others return paginated objects. `Inbox.AssignLabels` accepts label names. Compose context uses `ReplyContext` / `ForwardContext`; `Compose.Send` expects `fromEmail` and a stable key. `APIError` exposes `StatusCode`, `Code`, and `RetryAfter`.
+
+Use `Webhooks.TestDelivery` to inspect the actual attempt; legacy `Webhooks.Test` only returns API errors. `Template.ID` and `Webhook.ID` are numeric database IDs; their `UUID` fields address routes.
+
+Every send needs a stable 8–128 character idempotency key. Reuse the same key and unchanged payload after a timeout. A changed payload under the same key returns 409. An `unknown` result must be reconciled using email status; changing the key can cause a duplicate. Batch retries retain the complete original body and order, including per-item keys. The SDK does not retry automatically. `sent` means provider acceptance, while `delivered` means recipient-server delivery.
+
+API keys are scoped and limited per minute. 403 means a missing permission; 429 includes `Retry-After`. Use `email:send`, `email:read`, and `email:manage` for mail automation, with domain/identity/webhook scopes only when needed. API keys cannot create more keys or change account security.
+
+Webhooks use `{version:"1", id, type, createdAt, data}` and `X-Webhook-Signature: t=<unix>,v1=<HMAC-SHA256(timestamp.rawBody)>`, with a dot between timestamp and exact raw body. Verification enforces a five-minute window. Do not parse and reserialize before verifying. Atomically deduplicate `id` in durable storage; retries retain the event ID. Optional claim callbacks support that check, but your application must ensure failed processing is retried safely. Save a job and the claim in one transaction before acknowledging.
+
+Events: `email.received`, `email.sent`, `email.delivered`, `email.failed`, `email.unknown`, `email.bounced`, `email.complained`, and `webhook.test`. Fetch content through the inbox API using `data.messageUuid`. A webhook test returning `status: retry` and `httpStatus: 500` means the receiver failed, even when Mailat's API returned HTTP 200.
+
+Domain creation and `setupSending` / `setup_sending` / `SetupSending` keep receiving opt-in and do not replace root MX. Existing valid DMARC is preserved. Core resource bodies retain documented camelCase keys. See your instance's `/api-docs` and `/api/v1/openapi.json` for field definitions.
+
+DMARC reports use `mailat.FolderDMARCReports` (`dmarc-reports`). Generic methods are unchanged; `FolderCounts` adds a typed `InboxCounts` result:
 
 ```go
-// Custom base URL (for self-hosted)
-client := mailat.NewClient("ue_key", mailat.WithBaseURL("https://your-instance.com/api/v1"))
-
-// Custom timeout
-client := mailat.NewClient("ue_key", mailat.WithTimeout(60 * time.Second))
-
-// Custom HTTP client
-httpClient := &http.Client{Transport: customTransport}
-client := mailat.NewClient("ue_key", mailat.WithHTTPClient(httpClient))
+reports, err := client.Inbox.List(ctx, url.Values{"folder": {mailat.FolderDMARCReports}})
+counts, err := client.Inbox.FolderCounts(ctx, 0) // Zero means all owned identities.
+// Handle err, then use counts.InboxUnread, counts.DMARCReports, counts.DMARCReportsUnread.
+err = client.Inbox.Move(ctx, []string{"message-uuid"}, "inbox")
 ```
 
-## Emails
+`Unread` retains the global non-trash count, including Spam and unread reports. Explicit filter destinations override automatic sorting. Received events include final `data.folder`; historical moves appear in the change feed without another received event.
 
-### Send Single Email
-
-```go
-resp, err := client.Emails.Send(ctx, &mailat.SendEmailRequest{
-    From:    "sender@yourdomain.com",
-    To:      []string{"recipient@example.com"},
-    Subject: "Hello!",
-    HTML:    "<p>Welcome!</p>",
-    Text:    "Welcome!",
-    CC:      []string{"cc@example.com"},
-    BCC:     []string{"bcc@example.com"},
-    ReplyTo: "reply@yourdomain.com",
-    Tags:    []string{"welcome", "onboarding"},
-    Metadata: map[string]string{
-        "user_id": "123",
-    },
-}, &mailat.SendOptions{
-    IdempotencyKey: "unique-key-123",
-})
-```
-
-### Send with Template
-
-```go
-resp, err := client.Emails.Send(ctx, &mailat.SendEmailRequest{
-    From:       "sender@yourdomain.com",
-    To:         []string{"recipient@example.com"},
-    Subject:    "Welcome!",
-    TemplateID: "template-uuid",
-    Variables: map[string]string{
-        "name":    "John",
-        "company": "Acme Inc",
-    },
-}, nil)
-```
-
-### Batch Send
-
-```go
-emails := []mailat.SendEmailRequest{
-    {
-        From:    "sender@yourdomain.com",
-        To:      []string{"user1@example.com"},
-        Subject: "Hello User 1",
-        HTML:    "<p>Hello!</p>",
-    },
-    {
-        From:    "sender@yourdomain.com",
-        To:      []string{"user2@example.com"},
-        Subject: "Hello User 2",
-        HTML:    "<p>Hello!</p>",
-    },
-}
-
-resp, err := client.Emails.SendBatch(ctx, emails)
-fmt.Printf("Sent: %d, Failed: %d\n", resp.Sent, resp.Failed)
-```
-
-### Get Email Status
-
-```go
-status, err := client.Emails.Get(ctx, "email-uuid")
-fmt.Printf("Status: %s\n", status.Status)
-for _, event := range status.Events {
-    fmt.Printf("  %s: %s\n", event.Event, event.Timestamp)
-}
-```
-
-### Cancel Scheduled Email
-
-```go
-err := client.Emails.Cancel(ctx, "email-uuid")
-```
-
-## Templates
-
-### Create Template
-
-```go
-template, err := client.Templates.Create(ctx, &mailat.CreateTemplateRequest{
-    Name:        "Welcome Email",
-    Subject:     "Welcome, {{name}}!",
-    HTML:        "<h1>Welcome, {{name}}!</h1><p>Thanks for joining {{company}}.</p>",
-    Text:        "Welcome, {{name}}! Thanks for joining {{company}}.",
-    Description: "Sent to new users after signup",
-})
-```
-
-### List Templates
-
-```go
-templates, err := client.Templates.List(ctx)
-for _, t := range templates {
-    fmt.Printf("%s: %s\n", t.ID, t.Name)
-}
-```
-
-### Update Template
-
-```go
-active := false
-template, err := client.Templates.Update(ctx, "template-uuid", &mailat.UpdateTemplateRequest{
-    IsActive: &active,
-})
-```
-
-### Preview Template
-
-```go
-preview, err := client.Templates.Preview(ctx, "template-uuid", map[string]string{
-    "name":    "John",
-    "company": "Acme Inc",
-})
-fmt.Println(preview.HTML)
-```
-
-### Delete Template
-
-```go
-err := client.Templates.Delete(ctx, "template-uuid")
-```
-
-## Webhooks
-
-### Create Webhook
-
-```go
-webhook, err := client.Webhooks.Create(ctx, &mailat.CreateWebhookRequest{
-    Name:   "Delivery Events",
-    URL:    "https://yourapp.com/webhooks/email",
-    Events: []string{"email.delivered", "email.bounced", "email.complained"},
-})
-fmt.Printf("Secret: %s\n", webhook.Secret) // Store this securely!
-```
-
-### List Webhooks
-
-```go
-webhooks, err := client.Webhooks.List(ctx)
-```
-
-### Update Webhook
-
-```go
-active := false
-webhook, err := client.Webhooks.Update(ctx, "webhook-uuid", &mailat.UpdateWebhookRequest{
-    Active: &active,
-})
-```
-
-### Rotate Secret
-
-```go
-newSecret, err := client.Webhooks.RotateSecret(ctx, "webhook-uuid")
-```
-
-### Get Delivery History
-
-```go
-calls, err := client.Webhooks.GetCalls(ctx, "webhook-uuid", 50)
-for _, call := range calls {
-    fmt.Printf("%s: %d %v\n", call.Event, call.StatusCode, call.Success)
-}
-```
-
-### Test Webhook
-
-```go
-err := client.Webhooks.Test(ctx, "webhook-uuid")
-```
-
-## Webhook Verification
-
-Verify incoming webhooks in your HTTP handler:
-
-```go
-import (
-    "io"
-    "net/http"
-    "time"
-
-    "github.com/dublyo/mailat-go/mailat"
-)
-
-func webhookHandler(w http.ResponseWriter, r *http.Request) {
-    payload, _ := io.ReadAll(r.Body)
-    signature := r.Header.Get("X-Webhook-Signature")
-    secret := "whsec_your_webhook_secret"
-
-    // Verify and parse
-    event, err := mailat.ParseWebhookPayload(payload, signature, secret)
-    if err != nil {
-        http.Error(w, "Invalid signature", http.StatusUnauthorized)
-        return
-    }
-
-    // Handle the event
-    switch event.Event {
-    case "email.delivered":
-        emailID := event.Data["emailId"].(string)
-        fmt.Printf("Email delivered: %s\n", emailID)
-    case "email.bounced":
-        emailID := event.Data["emailId"].(string)
-        reason := event.Data["reason"].(string)
-        fmt.Printf("Email bounced: %s - %s\n", emailID, reason)
-    }
-
-    w.WriteHeader(http.StatusOK)
-}
-```
-
-Or verify manually:
-
-```go
-valid := mailat.VerifyWebhookSignature(
-    payload,
-    signature,
-    secret,
-    5 * time.Minute, // Tolerance
-)
-```
-
-## Error Handling
-
-```go
-resp, err := client.Emails.Send(ctx, req, nil)
-if err != nil {
-    if apiErr, ok := err.(*mailat.APIError); ok {
-        fmt.Printf("API Error: %s (status: %d, code: %s)\n",
-            apiErr.Message, apiErr.StatusCode, apiErr.Code)
-    } else {
-        fmt.Printf("Error: %v\n", err)
-    }
-    return
-}
-```
-
-## Supported Events
-
-- `email.sent` - Email accepted for delivery
-- `email.delivered` - Email delivered to recipient
-- `email.bounced` - Email bounced (hard or soft)
-- `email.complained` - Recipient marked as spam
-- `email.opened` - Email opened (if tracking enabled)
-- `email.clicked` - Link clicked (if tracking enabled)
-- `email.failed` - Delivery failed
-
-## License
-
-MIT License
+`DMARCReportsSettings` and `UpdateDMARCReportsSettings` describe the human-session-only `autoOrganizeDmarcReports` preference, default true. A nil update pointer is omitted; a pointer to false opts out for future arrivals. Existing reports remain in place, and DNS/receiving setup is unaffected. API keys cannot change account settings.

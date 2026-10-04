@@ -3,7 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { Eye, EyeOff } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
-import { authApi } from '@/lib/api'
+import { api, authApi } from '@/lib/api'
 import Button from '@/components/common/Button.vue'
 import Spinner from '@/components/common/Spinner.vue'
 
@@ -14,11 +14,25 @@ const authStore = useAuthStore()
 const email = ref('')
 const password = ref('')
 const showPassword = ref(false)
+const verificationCode = ref('')
 const error = ref('')
 const isLoading = ref(false)
 const registrationOpen = ref(false)
 
 onMounted(async () => {
+  const params = new URLSearchParams(route.hash.replace(/^#/, ''))
+  const challenge = params.get('challenge')
+  const session = params.get('session')
+  if (challenge || session) {
+    await router.replace({ path: route.path, query: route.query, hash: '' })
+    if (challenge) authStore.challengeToken = challenge
+    if (session) {
+      api.setToken(session)
+      await authStore.checkAuth()
+      if (authStore.isAuthenticated) { await router.replace('/inbox'); return }
+      error.value = 'Unable to complete sign in. Please try again.'
+    }
+  }
   try {
     const res = await authApi.registerStatus()
     registrationOpen.value = res.open
@@ -32,7 +46,12 @@ const handleSubmit = async () => {
   isLoading.value = true
 
   try {
-    await authStore.login(email.value, password.value)
+    if (authStore.challengeToken) {
+      await authStore.verifyChallenge(verificationCode.value.trim())
+    } else if (!await authStore.login(email.value, password.value)) {
+      password.value = ''
+      return
+    }
     const redirect = route.query.redirect as string || '/inbox'
     router.push(redirect)
   } catch (err) {
@@ -61,7 +80,7 @@ const handleSubmit = async () => {
         </div>
 
         <form @submit.prevent="handleSubmit" class="space-y-4">
-          <div>
+          <div v-if="!authStore.challengeToken">
             <label for="email" class="block text-sm font-medium text-gmail-gray mb-1">
               Email
             </label>
@@ -75,7 +94,7 @@ const handleSubmit = async () => {
             />
           </div>
 
-          <div>
+          <div v-if="!authStore.challengeToken">
             <label for="password" class="block text-sm font-medium text-gmail-gray mb-1">
               Password
             </label>
@@ -98,7 +117,16 @@ const handleSubmit = async () => {
             </div>
           </div>
 
-          <div class="flex items-center justify-between text-sm">
+          <div v-if="authStore.challengeToken">
+            <label for="verification-code" class="block text-sm font-medium text-gmail-gray mb-1">Verification code</label>
+            <input id="verification-code" v-model="verificationCode" autocomplete="one-time-code" required autofocus
+              class="w-full px-4 py-3 border border-gmail-border rounded-lg focus:outline-none focus:border-gmail-blue focus:ring-1 focus:ring-gmail-blue"
+              placeholder="Authenticator or recovery code" />
+            <p class="mt-2 text-sm text-gmail-gray">Enter the code from your authenticator app, or one unused recovery code.</p>
+            <button type="button" class="mt-2 text-sm text-gmail-blue hover:underline" @click="authStore.challengeToken = null; verificationCode = ''; error = ''">Start sign in again</button>
+          </div>
+
+          <div v-if="!authStore.challengeToken" class="flex items-center justify-between text-sm">
             <label class="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" class="gmail-checkbox" />
               <span class="text-gmail-gray">Remember me</span>
@@ -114,7 +142,7 @@ const handleSubmit = async () => {
             :loading="isLoading"
             class="w-full"
           >
-            Sign in
+            {{ authStore.challengeToken ? 'Verify and sign in' : 'Sign in' }}
           </Button>
         </form>
 

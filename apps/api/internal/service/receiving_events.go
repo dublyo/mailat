@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dublyo/mailat/api/internal/eventoutbox"
 	"github.com/dublyo/mailat/api/internal/model"
 )
 
@@ -99,33 +100,53 @@ func (s *ReceivingService) ProcessDeliveryEvent(ctx context.Context, auth *Recei
 			return err
 		}
 	}
+	// Resolve the immutable public mailbox ID even if the Sent copy was deleted.
+	rows, err := tx.QueryContext(ctx, `SELECT e.uuid::text,i.user_id,e.identity_id FROM received_emails e JOIN identities i ON i.id=e.identity_id WHERE e.org_id=$1 AND e.direction='outbound' AND(e.ses_message_id=$2 OR e.uuid::text=$3)
+ UNION SELECT t.uuid::text,i.user_id,t.identity_id FROM transactional_emails t JOIN identities i ON i.id=t.identity_id WHERE t.org_id=$1 AND(t.provider_message_id=$2 OR t.uuid::text=$3)
+ UNION SELECT k.email_uuid::text,k.user_id,COALESCE(k.identity_id,0)::bigint FROM compose_submission_keys k JOIN users u ON u.id=k.user_id WHERE u.org_id=$1 AND(k.ses_message_id=$2 OR k.email_uuid::text=$3)`, auth.OrgID, n.Mail.MessageId, mailboxUUID)
+	if err != nil {
+		return err
+	}
+	type target struct {
+		uuid           string
+		user, identity int64
+	}
+	targets := []target{}
+	seen := map[string]int{}
+	for rows.Next() {
+		var t target
+		if err = rows.Scan(&t.uuid, &t.user, &t.identity); err != nil {
+			rows.Close()
+			return err
+		}
+		if position, ok := seen[t.uuid]; !ok {
+			seen[t.uuid] = len(targets)
+			targets = append(targets, t)
+		} else if targets[position].identity == 0 && t.identity != 0 {
+			targets[position] = t
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, t := range targets {
+		data := map[string]any{"providerMessageId": n.Mail.MessageId, "status": status}
+		if n.Bounce != nil {
+			data["bounceType"] = n.Bounce.BounceType
+		}
+		if n.Complaint != nil {
+			data["complaintType"] = n.Complaint.ComplaintFeedbackType
+		}
+		if err = eventoutbox.Emit(ctx, tx, eventoutbox.Event{Type: "email." + status, OrgID: auth.OrgID, UserID: t.user, IdentityID: t.identity, MessageUUID: t.uuid, DedupeKey: notificationID + ":" + t.uuid, Data: data}); err != nil {
+			return err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	// External automation sees only authenticated events that committed. Duplicate
-	// SNS deliveries return above and cannot fire the same trigger a second time.
-	if s.webhookTriggerService != nil {
-		var trigger string
-		data := map[string]interface{}{"message_id": n.Mail.MessageId}
-		switch n.NotificationType {
-		case "Bounce":
-			trigger = TriggerBounceReceived
-			data["bounce_type"] = n.Bounce.BounceType
-			data["bounce_subtype"] = n.Bounce.BounceSubType
-			allRecipients := make([]string, 0, len(n.Bounce.BouncedRecipients))
-			for _, recipient := range n.Bounce.BouncedRecipients {
-				allRecipients = append(allRecipients, recipient.EmailAddress)
-			}
-			data["recipients"] = allRecipients
-		case "Complaint":
-			trigger = TriggerComplaintReceived
-			data["complaint_type"] = n.Complaint.ComplaintFeedbackType
-			data["recipients"] = recipients
-		}
-		if trigger != "" {
-			go s.webhookTriggerService.Fire(context.Background(), auth.OrgID, trigger, data)
-		}
-	}
+
 	return nil
 }
 

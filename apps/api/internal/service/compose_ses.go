@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dublyo/mailat/api/internal/eventoutbox"
 	"github.com/dublyo/mailat/api/internal/provider"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
@@ -58,7 +59,7 @@ func normalizeSenderAlias(alias, domain string) (string, error) {
 func (s *ComposeService) authorizeMailboxSender(ctx context.Context, userID, identityID int64, alias string) (*mailboxSender, error) {
 	sender := &mailboxSender{userID: userID}
 	err := s.db.QueryRowContext(ctx, `SELECT i.id,d.id,u.org_id,i.email,COALESCE(i.display_name,''),d.name,
-	 COALESCE(NULLIF(d.receiving_s3_bucket,''),rc.s3_bucket,'')
+	 COALESCE(NULLIF(d.attachment_s3_bucket,''),NULLIF(d.receiving_s3_bucket,''),rc.s3_bucket,'')
 	 FROM identities i JOIN users u ON u.id=i.user_id JOIN domains d ON d.id=i.domain_id
 	 LEFT JOIN receiving_configs rc ON rc.org_id=u.org_id
 	 WHERE i.id=$1 AND i.user_id=$2 AND i.can_send=true AND d.org_id=u.org_id
@@ -226,7 +227,7 @@ func (s *ComposeService) prepareMailboxAttachments(ctx context.Context, sender *
 			a.contentType = media
 			a.bucket = sender.bucket
 			if a.bucket == "" {
-				return nil, &provider.MailValidationError{Message: "configure this domain's private S3 receiving storage before adding attachments"}
+				return nil, &provider.MailValidationError{Message: "attachment storage is not ready; run the domain setup-sending operation before adding attachments"}
 			}
 		}
 		a.size = len(a.data)
@@ -348,7 +349,7 @@ func (s *ComposeService) sendMailboxEmail(ctx context.Context, userID int64, ema
 	}
 	defer tx.Rollback()
 	// Reserve independently of the mailbox row so deleting Sent cannot reuse the key.
-	claim, err := tx.ExecContext(ctx, `INSERT INTO compose_submission_keys(user_id,submission_key,request_hash,email_uuid,message_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, userID, email.SubmissionKey, hash, id, messageID)
+	claim, err := tx.ExecContext(ctx, `INSERT INTO compose_submission_keys(user_id,submission_key,request_hash,email_uuid,message_id,identity_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, userID, email.SubmissionKey, hash, id, messageID, sender.identityID)
 	if err != nil {
 		return nil, err
 	}
@@ -455,6 +456,16 @@ func (s *ComposeService) finishMailboxSubmission(emailID int64, result *SendEmai
 	// The row may have been removed by another administrative path; the receipt survives.
 	_, err = tx.ExecContext(ctx, `UPDATE compose_submission_keys SET status=CASE WHEN status IN ('delivered','bounced','complained') THEN status ELSE $2 END,send_error=CASE WHEN status IN ('bounced','complained') THEN send_error ELSE NULLIF($3,'') END,sent_at=COALESCE(sent_at,$4),ses_message_id=COALESCE(NULLIF($5,''),ses_message_id),updated_at=NOW() WHERE email_uuid=$1`, result.EmailID, result.Status, result.SendError, sentAt, providerID)
 	if err != nil {
+		return err
+	}
+	var org, user, identity int64
+	var from, subject string
+	var to []string
+	err = tx.QueryRowContext(ctx, `SELECT u.org_id,k.user_id,COALESCE(k.identity_id,e.identity_id,0),COALESCE(e.from_email,''),COALESCE(e.subject,''),COALESCE(e.to_emails,'{}'::text[]) FROM compose_submission_keys k JOIN users u ON u.id=k.user_id LEFT JOIN received_emails e ON e.uuid=k.email_uuid WHERE k.email_uuid=$1`, result.EmailID).Scan(&org, &user, &identity, &from, &subject, pq.Array(&to))
+	if err != nil {
+		return err
+	}
+	if err = eventoutbox.Emit(ctx, tx, eventoutbox.Event{Type: "email." + result.Status, OrgID: org, UserID: user, IdentityID: identity, MessageUUID: result.EmailID, DedupeKey: result.Status + ":" + result.EmailID, Data: map[string]any{"status": result.Status, "messageId": result.MessageID, "providerMessageId": providerID, "from": from, "to": to, "subject": subject}}); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -3,10 +3,10 @@ package router
 import (
 	"context"
 	"log"
-	"net/http"
 
 	"github.com/gogf/gf/v2/net/ghttp"
 
+	"github.com/dublyo/mailat/api/internal/apidocs"
 	"github.com/dublyo/mailat/api/internal/config"
 	"github.com/dublyo/mailat/api/internal/controller"
 	"github.com/dublyo/mailat/api/internal/database"
@@ -38,7 +38,7 @@ const swaggerUIHTML = `<!DOCTYPE html>
   <script>
     window.onload = function() {
       window.ui = SwaggerUIBundle({
-        url: "/docs/openapi.yaml",
+        url: "/api/v1/openapi.json",
         dom_id: '#swagger-ui',
         deepLinking: true,
         presets: [
@@ -56,7 +56,11 @@ const swaggerUIHTML = `<!DOCTYPE html>
 </body>
 </html>`
 
-func Setup(s *ghttp.Server, cfg *config.Config) {
+// Setup retains compatibility for embedders. Tests and long-lived servers should
+// pass a cancellable lifecycle to SetupWithContext.
+func Setup(s *ghttp.Server, cfg *config.Config) { SetupWithContext(context.Background(), s, cfg) }
+
+func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) {
 	// Initialize services
 	authService := service.NewAuthService(database.DB, cfg)
 	domainService := service.NewDomainService(database.DB, cfg)
@@ -133,7 +137,8 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 	// Email Receiving controllers
 	sseCtrl := controller.NewSSEController()
 	receivingService.SetNotifier(sseCtrl.NotifyNewEmail)
-	go receivingService.RunStorageCleanup(context.Background())
+	go receivingService.RunStorageCleanup(ctx)
+	go inboxService.RunChangeRetention(ctx)
 	sesWebhookCtrl := controller.NewSESWebhookController(receivingService)
 	receivedInboxCtrl := controller.NewReceivedInboxController(inboxService, receivingService)
 
@@ -142,17 +147,9 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 
 	// Swagger/OpenAPI documentation
 	s.Group("/docs", func(group *ghttp.RouterGroup) {
-		// Serve OpenAPI spec
-		group.GET("/openapi.yaml", func(r *ghttp.Request) {
-			r.Response.Header().Set("Content-Type", "application/x-yaml")
-			r.Response.Header().Set("Access-Control-Allow-Origin", "*")
-			http.ServeFile(r.Response.Writer, r.Request, "docs/openapi.yaml")
-		})
-		group.GET("/openapi.json", func(r *ghttp.Request) {
-			r.Response.Header().Set("Content-Type", "application/json")
-			r.Response.Header().Set("Access-Control-Allow-Origin", "*")
-			http.ServeFile(r.Response.Writer, r.Request, "docs/openapi.json")
-		})
+		// JSON is also valid YAML. All aliases serve the same embedded contract.
+		group.GET("/openapi.yaml", serveOpenAPI)
+		group.GET("/openapi.json", serveOpenAPI)
 		// Swagger UI using CDN
 		group.GET("/", func(r *ghttp.Request) {
 			r.Response.Header().Set("Content-Type", "text/html")
@@ -162,6 +159,7 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 
 	// API v1 routes
 	s.Group("/api/v1", func(group *ghttp.RouterGroup) {
+		group.GET("/openapi.json", serveOpenAPI)
 		// Health check (public)
 		group.GET("/health", healthCtrl.Health)
 		group.GET("/ready", healthCtrl.Ready)
@@ -194,10 +192,13 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 			authGroup.GET("/register-status", authCtrl.RegisterStatus)
 			authGroup.POST("/register", authCtrl.Register)
 			authGroup.POST("/login", authCtrl.Login)
+			authGroup.POST("/2fa/challenge", authCtrl.CompleteChallenge)
 
 			// Protected auth routes
 			authGroup.Middleware(middleware.Auth)
 			authGroup.GET("/me", authCtrl.Me)
+			authGroup.POST("/logout", authCtrl.Logout)
+			authGroup.POST("/stream-token", authCtrl.StreamToken)
 
 			// Session management (alias for /security/sessions)
 			authGroup.GET("/sessions", securityCtrl.ListSessions)
@@ -240,6 +241,24 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 			protectedGroup.POST("/inbox/setup", receivedInboxCtrl.SetupReceiving)
 			protectedGroup.POST("/identities/:uuid/catch-all", identityCtrl.Update)
 
+			// SES mailbox management and resumable automation reads.
+			protectedGroup.GET("/inbox/changes", receivedInboxCtrl.Changes)
+			protectedGroup.POST("/inbox/received/labels", receivedInboxCtrl.LabelEmails)
+			protectedGroup.GET("/inbox/labels", receivedInboxCtrl.ListLabels)
+			protectedGroup.POST("/inbox/labels", receivedInboxCtrl.SaveLabel)
+			protectedGroup.PUT("/inbox/labels/:uuid", receivedInboxCtrl.SaveLabel)
+			protectedGroup.DELETE("/inbox/labels/:uuid", receivedInboxCtrl.DeleteLabel)
+			protectedGroup.GET("/labels", receivedInboxCtrl.ListLabels)
+			protectedGroup.POST("/labels", receivedInboxCtrl.SaveLabel)
+			protectedGroup.PUT("/labels/:uuid", receivedInboxCtrl.SaveLabel)
+			protectedGroup.DELETE("/labels/:uuid", receivedInboxCtrl.DeleteLabel)
+			protectedGroup.GET("/inbox/filters", receivedInboxCtrl.ListFilters)
+			protectedGroup.POST("/inbox/filters", receivedInboxCtrl.SaveFilter)
+			protectedGroup.GET("/inbox/filters/:uuid", receivedInboxCtrl.GetFilter)
+			protectedGroup.PUT("/inbox/filters/:uuid", receivedInboxCtrl.SaveFilter)
+			protectedGroup.DELETE("/inbox/filters/:uuid", receivedInboxCtrl.DeleteFilter)
+			protectedGroup.POST("/inbox/filters/:uuid/test", receivedInboxCtrl.TestFilter)
+
 			// API Keys
 			protectedGroup.POST("/api-keys", authCtrl.CreateAPIKey)
 			protectedGroup.GET("/api-keys", authCtrl.ListAPIKeys)
@@ -250,6 +269,8 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 			protectedGroup.GET("/domains", domainCtrl.List)
 			protectedGroup.GET("/domains/:uuid", domainCtrl.Get)
 			protectedGroup.GET("/domains/:uuid/dmarc", domainCtrl.DMARC)
+			protectedGroup.GET("/domains/:uuid/sending-status", domainCtrl.SendingStatus)
+			protectedGroup.POST("/domains/:uuid/setup-sending", domainCtrl.SetupSending)
 			protectedGroup.POST("/domains/:uuid/verify", domainCtrl.Verify)
 			protectedGroup.DELETE("/domains/:uuid", domainCtrl.Delete)
 			// SES and Cloudflare integration
@@ -303,6 +324,9 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 			// Webhooks
 			protectedGroup.POST("/webhooks", webhookCtrl.CreateWebhook)
 			protectedGroup.GET("/webhooks", webhookCtrl.ListWebhooks)
+			protectedGroup.GET("/webhook-deliveries", webhookCtrl.ListDeliveries)
+			protectedGroup.GET("/webhook-deliveries/:uuid", webhookCtrl.GetDelivery)
+			protectedGroup.POST("/webhook-deliveries/:uuid/replay", webhookCtrl.ReplayDelivery)
 			protectedGroup.GET("/webhooks/:uuid", webhookCtrl.GetWebhook)
 			protectedGroup.PUT("/webhooks/:uuid", webhookCtrl.UpdateWebhook)
 			protectedGroup.DELETE("/webhooks/:uuid", webhookCtrl.DeleteWebhook)
@@ -447,6 +471,8 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 			protectedGroup.POST("/webhook-triggers", phase5Ctrl.CreateWebhookTrigger)
 			protectedGroup.GET("/webhook-triggers", phase5Ctrl.ListWebhookTriggers)
 			protectedGroup.GET("/webhook-triggers/:id", phase5Ctrl.GetWebhookTrigger)
+			protectedGroup.PUT("/webhook-triggers/:id", phase5Ctrl.UpdateWebhookTrigger)
+			protectedGroup.POST("/webhook-triggers/:id/rotate-secret", phase5Ctrl.RotateWebhookTriggerSecret)
 			protectedGroup.DELETE("/webhook-triggers/:id", phase5Ctrl.DeleteWebhookTrigger)
 			protectedGroup.POST("/webhook-triggers/:id/test", phase5Ctrl.TestWebhookTrigger)
 
@@ -464,4 +490,9 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 			protectedGroup.GET("/branding/css", phase5Ctrl.GetBrandingCSS)
 		})
 	})
+}
+
+func serveOpenAPI(r *ghttp.Request) {
+	r.Response.Header().Set("Content-Type", "application/json; charset=utf-8")
+	r.Response.Write(apidocs.Spec)
 }

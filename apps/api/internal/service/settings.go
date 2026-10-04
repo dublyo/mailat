@@ -11,44 +11,46 @@ import (
 
 // UserSettings represents user preferences
 type UserSettings struct {
-	ID                    int64     `json:"id"`
-	UserID                int64     `json:"userId"`
-	DisplayName           string    `json:"displayName"`
-	ShowSnippets          bool      `json:"showSnippets"`
-	ConversationView      bool      `json:"conversationView"`
-	AutoAdvance           bool      `json:"autoAdvance"`
-	NewEmailNotifications bool      `json:"newEmailNotifications"`
-	CampaignReports       bool      `json:"campaignReports"`
-	WeeklyDigest          bool      `json:"weeklyDigest"`
-	BlacklistAlerts       bool      `json:"blacklistAlerts"`
-	BounceRateWarnings    bool      `json:"bounceRateWarnings"`
-	QuotaWarnings         bool      `json:"quotaWarnings"`
-	BrowserNotifications  bool      `json:"browserNotifications"`
-	Theme                 string    `json:"theme"`
-	Density               string    `json:"density"`
-	InboxLayout           string    `json:"inboxLayout"`
-	TwoFactorEnabled      bool      `json:"twoFactorEnabled"`
-	TwoFactorMethod       *string   `json:"twoFactorMethod"`
-	CreatedAt             time.Time `json:"createdAt"`
-	UpdatedAt             time.Time `json:"updatedAt"`
+	ID                       int64     `json:"id"`
+	UserID                   int64     `json:"userId"`
+	DisplayName              string    `json:"displayName"`
+	ShowSnippets             bool      `json:"showSnippets"`
+	ConversationView         bool      `json:"conversationView"`
+	AutoAdvance              bool      `json:"autoAdvance"`
+	AutoOrganizeDMARCReports bool      `json:"autoOrganizeDmarcReports"`
+	NewEmailNotifications    bool      `json:"newEmailNotifications"`
+	CampaignReports          bool      `json:"campaignReports"`
+	WeeklyDigest             bool      `json:"weeklyDigest"`
+	BlacklistAlerts          bool      `json:"blacklistAlerts"`
+	BounceRateWarnings       bool      `json:"bounceRateWarnings"`
+	QuotaWarnings            bool      `json:"quotaWarnings"`
+	BrowserNotifications     bool      `json:"browserNotifications"`
+	Theme                    string    `json:"theme"`
+	Density                  string    `json:"density"`
+	InboxLayout              string    `json:"inboxLayout"`
+	TwoFactorEnabled         bool      `json:"twoFactorEnabled"`
+	TwoFactorMethod          *string   `json:"twoFactorMethod"`
+	CreatedAt                time.Time `json:"createdAt"`
+	UpdatedAt                time.Time `json:"updatedAt"`
 }
 
 // UpdateSettingsRequest for updating settings
 type UpdateSettingsRequest struct {
-	DisplayName           *string `json:"displayName"`
-	ShowSnippets          *bool   `json:"showSnippets"`
-	ConversationView      *bool   `json:"conversationView"`
-	AutoAdvance           *bool   `json:"autoAdvance"`
-	NewEmailNotifications *bool   `json:"newEmailNotifications"`
-	CampaignReports       *bool   `json:"campaignReports"`
-	WeeklyDigest          *bool   `json:"weeklyDigest"`
-	BlacklistAlerts       *bool   `json:"blacklistAlerts"`
-	BounceRateWarnings    *bool   `json:"bounceRateWarnings"`
-	QuotaWarnings         *bool   `json:"quotaWarnings"`
-	BrowserNotifications  *bool   `json:"browserNotifications"`
-	Theme                 *string `json:"theme"`
-	Density               *string `json:"density"`
-	InboxLayout           *string `json:"inboxLayout"`
+	DisplayName              *string `json:"displayName"`
+	ShowSnippets             *bool   `json:"showSnippets"`
+	ConversationView         *bool   `json:"conversationView"`
+	AutoAdvance              *bool   `json:"autoAdvance"`
+	AutoOrganizeDMARCReports *bool   `json:"autoOrganizeDmarcReports"`
+	NewEmailNotifications    *bool   `json:"newEmailNotifications"`
+	CampaignReports          *bool   `json:"campaignReports"`
+	WeeklyDigest             *bool   `json:"weeklyDigest"`
+	BlacklistAlerts          *bool   `json:"blacklistAlerts"`
+	BounceRateWarnings       *bool   `json:"bounceRateWarnings"`
+	QuotaWarnings            *bool   `json:"quotaWarnings"`
+	BrowserNotifications     *bool   `json:"browserNotifications"`
+	Theme                    *string `json:"theme"`
+	Density                  *string `json:"density"`
+	InboxLayout              *string `json:"inboxLayout"`
 }
 
 // ChangePasswordRequest for password changes
@@ -74,7 +76,7 @@ func (s *SettingsService) GetSettings(ctx context.Context, userID int64) (*UserS
 		SELECT id, user_id, COALESCE(display_name, ''), show_snippets, conversation_view, auto_advance,
 			   new_email_notifications, campaign_reports, weekly_digest, blacklist_alerts,
 			   bounce_rate_warnings, quota_warnings, browser_notifications, theme, density,
-			   inbox_layout, two_factor_enabled, two_factor_method, created_at, updated_at
+			   inbox_layout, two_factor_enabled, two_factor_method, auto_organize_dmarc_reports, created_at, updated_at
 		FROM user_settings
 		WHERE user_id = $1
 	`, userID).Scan(
@@ -83,7 +85,7 @@ func (s *SettingsService) GetSettings(ctx context.Context, userID int64) (*UserS
 		&settings.CampaignReports, &settings.WeeklyDigest, &settings.BlacklistAlerts,
 		&settings.BounceRateWarnings, &settings.QuotaWarnings, &settings.BrowserNotifications,
 		&settings.Theme, &settings.Density, &settings.InboxLayout, &settings.TwoFactorEnabled,
-		&settings.TwoFactorMethod, &settings.CreatedAt, &settings.UpdatedAt,
+		&settings.TwoFactorMethod, &settings.AutoOrganizeDMARCReports, &settings.CreatedAt, &settings.UpdatedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -107,23 +109,24 @@ func (s *SettingsService) createDefaultSettings(ctx context.Context, userID int6
 	}
 
 	settings := &UserSettings{
-		UserID:                userID,
-		DisplayName:           "",
-		ShowSnippets:          true,
-		ConversationView:      true,
-		AutoAdvance:           false,
-		NewEmailNotifications: true,
-		CampaignReports:       true,
-		WeeklyDigest:          false,
-		BlacklistAlerts:       true,
-		BounceRateWarnings:    true,
-		QuotaWarnings:         true,
-		BrowserNotifications:  false,
-		Theme:                 "light",
-		Density:               "comfortable",
-		InboxLayout:           "default",
-		TwoFactorEnabled:      false,
-		TwoFactorMethod:       nil,
+		UserID:                   userID,
+		DisplayName:              "",
+		ShowSnippets:             true,
+		ConversationView:         true,
+		AutoAdvance:              false,
+		AutoOrganizeDMARCReports: true,
+		NewEmailNotifications:    true,
+		CampaignReports:          true,
+		WeeklyDigest:             false,
+		BlacklistAlerts:          true,
+		BounceRateWarnings:       true,
+		QuotaWarnings:            true,
+		BrowserNotifications:     false,
+		Theme:                    "light",
+		Density:                  "comfortable",
+		InboxLayout:              "default",
+		TwoFactorEnabled:         false,
+		TwoFactorMethod:          nil,
 	}
 
 	err = s.db.QueryRowContext(ctx, `
@@ -132,6 +135,7 @@ func (s *SettingsService) createDefaultSettings(ctx context.Context, userID int6
 			bounce_rate_warnings, quota_warnings, browser_notifications, theme, density,
 			inbox_layout, two_factor_enabled, two_factor_method, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
+		ON CONFLICT (user_id) DO NOTHING
 		RETURNING id, created_at, updated_at
 	`, userID, orgID, settings.DisplayName, settings.ShowSnippets, settings.ConversationView,
 		settings.AutoAdvance, settings.NewEmailNotifications, settings.CampaignReports,
@@ -140,6 +144,10 @@ func (s *SettingsService) createDefaultSettings(ctx context.Context, userID int6
 		settings.Density, settings.InboxLayout, settings.TwoFactorEnabled, settings.TwoFactorMethod,
 	).Scan(&settings.ID, &settings.CreatedAt, &settings.UpdatedAt)
 
+	if err == sql.ErrNoRows {
+		// Concurrent first reads must not overwrite a saved opt-out with defaults.
+		return s.GetSettings(ctx, userID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create settings: %w", err)
 	}
@@ -155,7 +163,17 @@ func (s *SettingsService) UpdateSettings(ctx context.Context, userID int64, req 
 		return nil, err
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	// The historical sorter shares this lock, so a completed opt-out cannot race
+	// its final preference check and mailbox move.
+	if err = lockMailboxLabels(ctx, tx, userID); err != nil {
+		return nil, err
+	}
+	_, err = tx.ExecContext(ctx, `
 		UPDATE user_settings SET
 			display_name = COALESCE($2, display_name),
 			show_snippets = COALESCE($3, show_snippets),
@@ -171,15 +189,19 @@ func (s *SettingsService) UpdateSettings(ctx context.Context, userID int64, req 
 			theme = COALESCE($13, theme),
 			density = COALESCE($14, density),
 			inbox_layout = COALESCE($15, inbox_layout),
+			auto_organize_dmarc_reports = COALESCE($16, auto_organize_dmarc_reports),
 			updated_at = NOW()
 		WHERE user_id = $1
 	`, userID, req.DisplayName, req.ShowSnippets, req.ConversationView, req.AutoAdvance,
 		req.NewEmailNotifications, req.CampaignReports, req.WeeklyDigest, req.BlacklistAlerts,
 		req.BounceRateWarnings, req.QuotaWarnings, req.BrowserNotifications, req.Theme,
-		req.Density, req.InboxLayout)
+		req.Density, req.InboxLayout, req.AutoOrganizeDMARCReports)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to update settings: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
 	}
 
 	return s.GetSettings(ctx, userID)

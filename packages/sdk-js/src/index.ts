@@ -1,269 +1,83 @@
 import { Emails } from './resources/emails';
 import { Templates } from './resources/templates';
 import { Webhooks } from './resources/webhooks';
+import { Inbox, Compose, Domains, Identities, Triggers, Deliveries } from './resources/core';
 import { MailatError } from './types';
 import type { MailatConfig, WebhookPayload } from './types';
-
-// Re-export all types
 export * from './types';
+export * from './resources/core';
 
-// Default configuration
-const DEFAULT_BASE_URL = 'https://api.mailat.co/api/v1';
-const DEFAULT_TIMEOUT = 30000;
-
-/**
- * mailat.co SDK Client
- *
- * @example
- * ```typescript
- * import { Mailat } from '@mailat/sdk';
- *
- * const client = new Mailat({
- *   apiKey: 'ue_your_api_key_here'
- * });
- *
- * // Send an email
- * const result = await client.emails.send({
- *   from: 'sender@yourdomain.com',
- *   to: ['recipient@example.com'],
- *   subject: 'Hello!',
- *   html: '<p>Welcome to our service!</p>'
- * });
- * ```
- */
 export class Mailat {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly timeout: number;
-
-  // Resource namespaces
-  public readonly emails: Emails;
-  public readonly templates: Templates;
-  public readonly webhooks: Webhooks;
-
+  readonly emails: Emails;
+  readonly templates: Templates;
+  readonly webhooks: Webhooks;
+  readonly inbox: Inbox;
+  readonly compose: Compose;
+  readonly domains: Domains;
+  readonly identities: Identities;
+  readonly triggers: Triggers;
+  readonly deliveries: Deliveries;
   constructor(config: MailatConfig) {
-    if (!config.apiKey) {
-      throw new Error('API key is required');
-    }
-
+    if (!config.apiKey) throw new Error('API key is required');
     this.apiKey = config.apiKey;
-    this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
-    this.timeout = config.timeout ?? DEFAULT_TIMEOUT;
-
-    // Initialize resources with bound request method
+    this.baseUrl = (config.baseUrl ?? 'https://api.mailat.co/api/v1').replace(/\/$/, '');
+    this.timeout = config.timeout ?? 30000;
     const request = this.request.bind(this);
-    this.emails = new Emails(request);
-    this.templates = new Templates(request);
-    this.webhooks = new Webhooks(request);
+    this.emails = new Emails(request); this.templates = new Templates(request); this.webhooks = new Webhooks(request);
+    this.inbox = new Inbox(request, path => this.request<Uint8Array>('GET', path, undefined, undefined, true));
+    this.compose = new Compose(request); this.domains = new Domains(request); this.identities = new Identities(request);
+    this.triggers = new Triggers(request); this.deliveries = new Deliveries(request);
   }
-
-  /**
-   * Make an authenticated API request
-   */
-  private async request<T>(
-    method: string,
-    path: string,
-    body?: unknown,
-    headers?: Record<string, string>
-  ): Promise<T> {
-    const url = `${this.baseUrl}${path}`;
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-
+  // No automatic retries: callers retain their original send key and payload,
+  // and decide how to reconcile an ambiguous provider/network outcome.
+  private async request<T>(method: string, path: string, body?: unknown, headers?: Record<string, string>, binary = false): Promise<T> {
+    const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), this.timeout);
     try {
-      const response = await fetch(url, {
-        method,
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-          'User-Agent': '@mailat/sdk/0.1.0',
-          ...headers,
-        },
-        body: body ? JSON.stringify(body) : undefined,
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new MailatError(
-          data.message || 'Request failed',
-          response.status,
-          data.code
-        );
-      }
-
+      const response = await fetch(this.baseUrl + path, { method, headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json', ...headers }, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal });
+      if (response.ok && binary) return new Uint8Array(await response.arrayBuffer()) as T;
+      const text = await response.text(); let data: any;
+      try { data = text ? JSON.parse(text) : {}; } catch { throw new MailatError('Unexpected non-JSON API response', response.status); }
+      if (!response.ok) throw new MailatError(data.message || 'Request failed', response.status, data.code, response.headers.get('Retry-After') ?? undefined);
       return data as T;
     } catch (error) {
-      clearTimeout(timeoutId);
-
-      if (error instanceof MailatError) {
-        throw error;
-      }
-
-      if (error instanceof Error) {
-        if (error.name === 'AbortError') {
-          throw new MailatError('Request timeout', 408);
-        }
-        throw new MailatError(error.message, 0);
-      }
-
-      throw new MailatError('Unknown error', 0);
-    }
+      if (error instanceof MailatError) throw error;
+      if (error instanceof Error) throw new MailatError(error.name === 'AbortError' ? 'Request timeout; keep the same send key when retrying' : error.message, error.name === 'AbortError' ? 408 : 0);
+      throw new MailatError('Request failed', 0);
+    } finally { clearTimeout(timeout); }
   }
 
-  /**
-   * Verify a webhook signature
-   *
-   * @param payload - The raw request body as a string
-   * @param signature - The X-Webhook-Signature header value
-   * @param secret - Your webhook secret
-   * @param tolerance - Maximum age of the webhook in seconds (default: 300 = 5 minutes)
-   *
-   * @example
-   * ```typescript
-   * const isValid = Mailat.verifyWebhookSignature(
-   *   req.body,
-   *   req.headers['x-webhook-signature'],
-   *   'whsec_your_secret'
-   * );
-   * ```
-   */
-  static verifyWebhookSignature(
-    payload: string,
-    signature: string,
-    secret: string,
-    tolerance: number = 300
-  ): boolean {
-    // Parse signature: t=timestamp,v1=signature
-    const parts = signature.split(',');
-    let timestamp: number | null = null;
-    let v1Sig: string | null = null;
-
-    for (const part of parts) {
-      const [key, value] = part.split('=');
-      if (key === 't') {
-        timestamp = parseInt(value, 10);
-      } else if (key === 'v1') {
-        v1Sig = value;
-      }
+  /** Verify the exact raw bytes, before parsing JSON. Requires await and Web Crypto (Node20+/browsers). */
+  static async verifyWebhookSignature(payload: string | Uint8Array, signature: string, secret: string, tolerance = 300): Promise<boolean> {
+    if (!secret || !Number.isFinite(tolerance) || tolerance < 0) return false;
+    const fields = new Map<string, string>();
+    for (const part of signature.split(',')) {
+      const match = /^(t|v1)=([^=]+)$/.exec(part.trim());
+      if (!match || fields.has(match[1])) return false;
+      fields.set(match[1], match[2]);
     }
-
-    if (!timestamp || !v1Sig) {
-      return false;
-    }
-
-    // Check timestamp tolerance
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - timestamp) > tolerance) {
-      return false;
-    }
-
-    // Compute expected signature
-    const signedPayload = `${timestamp}.${payload}`;
-    const expectedSig = hmacSha256(signedPayload, secret);
-
-    // Timing-safe comparison
-    return timingSafeEqual(v1Sig, expectedSig);
+    const timestamp = fields.get('t') ?? ''; const digest = fields.get('v1') ?? '';
+    if (!/^[0-9]{1,13}$/.test(timestamp) || !/^[0-9a-f]{64}$/.test(digest)) return false;
+    const seconds = Number(timestamp);
+    if (!Number.isSafeInteger(seconds) || seconds <= 0 || Math.abs(Date.now()/1000-seconds) > tolerance) return false;
+    const encoder = new TextEncoder(); const raw = typeof payload === 'string' ? encoder.encode(payload) : payload;
+    const prefix = encoder.encode(timestamp + '.'); const signed = new Uint8Array(prefix.length + raw.length); signed.set(prefix); signed.set(raw, prefix.length);
+    const bytes = Uint8Array.from(digest.match(/../g)!, hex => parseInt(hex, 16));
+    const key = await globalThis.crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+    // Native cryptographic verification avoids an application-level timing-sensitive comparison.
+    return globalThis.crypto.subtle.verify('HMAC', key, bytes, signed);
   }
 
-  /**
-   * Parse a verified webhook payload
-   *
-   * @param payload - The raw request body as a string
-   * @param signature - The X-Webhook-Signature header value
-   * @param secret - Your webhook secret
-   *
-   * @throws {MailatError} If signature verification fails
-   *
-   * @example
-   * ```typescript
-   * const event = Mailat.parseWebhookPayload(
-   *   req.body,
-   *   req.headers['x-webhook-signature'],
-   *   'whsec_your_secret'
-   * );
-   *
-   * switch (event.type) {
-   *   case 'email.sent':
-   *     console.log('Email sent:', event.data.email_id);
-   *     break;
-   * }
-   * ```
-   */
-  static parseWebhookPayload(
-    payload: string,
-    signature: string,
-    secret: string
-  ): WebhookPayload {
-    if (!Mailat.verifyWebhookSignature(payload, signature, secret)) {
-      throw new MailatError('Invalid webhook signature', 401);
-    }
-
-    return JSON.parse(payload) as WebhookPayload;
+  /** Optional claimEvent must atomically persist/deduplicate event IDs across workers. */
+  static async parseWebhookPayload(payload: string | Uint8Array, signature: string, secret: string, claimEvent?: (id: string) => Promise<boolean>): Promise<WebhookPayload> {
+    if (!await Mailat.verifyWebhookSignature(payload, signature, secret)) throw new MailatError('Invalid webhook signature', 401);
+    let event: WebhookPayload;
+    try { event = JSON.parse(typeof payload === 'string' ? payload : new TextDecoder('utf-8', { fatal: true }).decode(payload)); } catch { throw new MailatError('Invalid webhook JSON', 400); }
+    if (!event || event.version !== '1' || typeof event.id !== 'string' || !event.id || typeof event.type !== 'string' || !Number.isFinite(Date.parse(event.createdAt)) || !event.data || typeof event.data !== 'object' || Array.isArray(event.data)) throw new MailatError('Invalid webhook event envelope', 400);
+    if (claimEvent && !await claimEvent(event.id)) throw new MailatError('Webhook event already processed', 409);
+    return event;
   }
 }
-
-// HMAC-SHA256 implementation using Web Crypto API
-async function hmacSha256Async(message: string, secret: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(message);
-
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyData,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-
-  const signature = await crypto.subtle.sign('HMAC', key, messageData);
-  const hashArray = Array.from(new Uint8Array(signature));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-// Synchronous HMAC-SHA256 for Node.js environments
-function hmacSha256(message: string, secret: string): string {
-  // Check if we're in Node.js
-  if (typeof globalThis.crypto?.subtle === 'undefined') {
-    // Node.js environment - use crypto module
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const crypto = require('crypto');
-    return crypto.createHmac('sha256', secret).update(message).digest('hex');
-  }
-
-  // Browser/Edge runtime - this is a simplified sync version
-  // In production, use the async version
-  console.warn('Using simplified HMAC in browser. Consider using async verification.');
-
-  // Simple hash for browser compatibility (not cryptographically secure for this use)
-  // In production, the async version should be used
-  let hash = 0;
-  const combined = secret + message;
-  for (let i = 0; i < combined.length; i++) {
-    const char = combined.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return Math.abs(hash).toString(16).padStart(64, '0');
-}
-
-// Timing-safe string comparison
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return result === 0;
-}
-
-// Default export
 export default Mailat;

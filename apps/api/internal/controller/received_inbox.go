@@ -69,7 +69,7 @@ func (c *ReceivedInboxController) GetEmail(r *ghttp.Request) {
 
 	email, err := c.inboxService.GetReceivedEmail(r.Context(), claims.UserID, emailUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		mailboxError(r, err)
 		return
 	}
 
@@ -98,7 +98,7 @@ func (c *ReceivedInboxController) MarkEmails(r *ghttp.Request) {
 
 	err := c.inboxService.MarkReceivedEmails(r.Context(), claims.UserID, req.EmailUUIDs, req.IsRead)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		mailboxError(r, err)
 		return
 	}
 
@@ -127,7 +127,7 @@ func (c *ReceivedInboxController) StarEmails(r *ghttp.Request) {
 
 	err := c.inboxService.StarReceivedEmails(r.Context(), claims.UserID, req.EmailUUIDs, req.IsStarred)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		mailboxError(r, err)
 		return
 	}
 
@@ -161,7 +161,7 @@ func (c *ReceivedInboxController) MoveEmails(r *ghttp.Request) {
 
 	err := c.inboxService.MoveReceivedEmails(r.Context(), claims.UserID, req.EmailUUIDs, req.Folder)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		mailboxError(r, err)
 		return
 	}
 
@@ -190,7 +190,7 @@ func (c *ReceivedInboxController) TrashEmails(r *ghttp.Request) {
 
 	err := c.inboxService.TrashReceivedEmails(r.Context(), claims.UserID, req.EmailUUIDs, req.Permanent)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		mailboxError(r, err)
 		return
 	}
 

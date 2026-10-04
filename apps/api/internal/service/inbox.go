@@ -413,7 +413,7 @@ func (s *InboxService) GetEmail(ctx context.Context, userID int64, emailID strin
 	}
 
 	if len(emails) == 0 {
-		return nil, fmt.Errorf("email not found")
+		return nil, ErrMailboxNotFound
 	}
 
 	email := emails[0]
@@ -954,6 +954,9 @@ func (s *InboxService) ListReceivedEmails(ctx context.Context, userID int64, req
 
 // GetReceivedEmail returns a single received email by UUID
 func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, emailUUID string) (*model.ReceivedEmail, error) {
+	if _, err := uuid.Parse(emailUUID); err != nil {
+		return nil, ErrInvalidMailboxInput
+	}
 	var email model.ReceivedEmail
 	var inReplyTo, threadID, fromName, snippet, textBody, htmlBody sql.NullString
 	var rawS3Key, rawS3Bucket sql.NullString
@@ -988,7 +991,7 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 		&email.ReceivedAt, &readAt, &trashedAt, &email.CreatedAt, &email.UpdatedAt, pq.Array(&email.EnvelopeRecipients), &email.Direction, &email.SendStatus, &sendError, &email.DraftVersion,
 	)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("email not found")
+		return nil, ErrMailboxNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get email: %w", err)
@@ -1058,17 +1061,7 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 		return nil, err
 	}
 
-	// Mark as read if not already
-	if !email.IsRead {
-		now := time.Now()
-		s.db.ExecContext(ctx, `
-			UPDATE received_emails
-			SET is_read = true, read_at = $1, updated_at = $1
-			WHERE id = $2
-		`, now, email.ID)
-		email.IsRead = true
-		email.ReadAt = &now
-	}
+	// Reading a message is non-mutating; the inbox UI marks it explicitly.
 
 	return &email, nil
 }
@@ -1077,20 +1070,24 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 // cross-user selections cannot silently mutate the permitted subset.
 func (s *InboxService) ownedMessageTransaction(ctx context.Context, userID int64, ids []string) (*sql.Tx, error) {
 	if len(ids) == 0 || len(ids) > 500 {
-		return nil, fmt.Errorf("select between 1 and 500 messages")
+		return nil, fmt.Errorf("%w: select between 1 and 500 messages", ErrInvalidMailboxInput)
 	}
 	unique := map[string]bool{}
 	for _, id := range ids {
 		if _, err := uuid.Parse(id); err != nil {
-			return nil, fmt.Errorf("invalid message id")
+			return nil, ErrInvalidMailboxInput
 		}
 		if unique[id] {
-			return nil, fmt.Errorf("duplicate message id")
+			return nil, fmt.Errorf("%w: duplicate message id", ErrInvalidMailboxInput)
 		}
 		unique[id] = true
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return nil, err
+	}
+	if err = lockMailboxLabels(ctx, tx, userID); err != nil {
+		tx.Rollback()
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT re.uuid,re.send_status FROM received_emails re JOIN identities i ON i.id=re.identity_id WHERE i.user_id=$1 AND re.uuid=ANY($2::uuid[]) FOR UPDATE OF re`, userID, pq.Array(ids))
@@ -1114,13 +1111,13 @@ func (s *InboxService) ownedMessageTransaction(ctx context.Context, userID int64
 	rows.Close()
 	if err != nil || count != len(ids) {
 		tx.Rollback()
-		return nil, fmt.Errorf("message not found or access denied")
+		return nil, ErrMailboxNotFound
 	}
 	// The provider may already be accepting this message. Preserve its durable
 	// outbox record until the send completes or is marked uncertain.
 	if sending {
 		tx.Rollback()
-		return nil, fmt.Errorf("message is currently sending; try again after it completes")
+		return nil, ErrMailboxConflict
 	}
 	return tx, nil
 }
@@ -1145,9 +1142,9 @@ func (s *InboxService) StarReceivedEmails(ctx context.Context, userID int64, ids
 }
 func (s *InboxService) MoveReceivedEmails(ctx context.Context, userID int64, ids []string, folder string) error {
 	switch folder {
-	case "inbox", "archive", "spam", "trash":
+	case "inbox", "archive", "spam", "trash", DMARCReportsFolder:
 	default:
-		return fmt.Errorf("invalid destination folder")
+		return fmt.Errorf("%w: invalid destination folder", ErrInvalidMailboxInput)
 	}
 	return s.updateReceived(ctx, userID, ids, "folder=$1::varchar,is_archived=($1::varchar='archive'),is_spam=($1::varchar='spam'),is_trashed=($1::varchar='trash'),trashed_at=CASE WHEN $1::varchar='trash' THEN NOW() ELSE NULL END", folder)
 }
@@ -1221,9 +1218,29 @@ func (s *InboxService) GetReceivedEmailCounts(ctx context.Context, userID, ident
  COUNT(*) FILTER(WHERE folder='sent' AND NOT is_trashed),
  COUNT(*) FILTER(WHERE folder='drafts' AND NOT is_trashed),
  COUNT(*) FILTER(WHERE (folder='spam' OR is_spam) AND NOT is_trashed),
- COUNT(*) FILTER(WHERE is_trashed)
- FROM received_emails re JOIN identities i ON re.identity_id=i.id WHERE i.user_id=$1 AND ($2::bigint=0 OR re.identity_id=$2)`, userID, identityID).Scan(&result.Inbox, &result.Unread, &result.Starred, &result.Sent, &result.Drafts, &result.Spam, &result.Trash)
-	return result, err
+ COUNT(*) FILTER(WHERE is_trashed),
+ COUNT(*) FILTER(WHERE folder='inbox' AND NOT is_read AND NOT is_trashed AND NOT is_archived),
+ COUNT(*) FILTER(WHERE folder='dmarc-reports' AND NOT is_trashed AND NOT is_spam AND NOT is_archived),
+ COUNT(*) FILTER(WHERE folder='dmarc-reports' AND NOT is_read AND NOT is_trashed AND NOT is_spam AND NOT is_archived)
+ FROM received_emails re JOIN identities i ON re.identity_id=i.id WHERE i.user_id=$1 AND ($2::bigint=0 OR re.identity_id=$2)`, userID, identityID).Scan(&result.Inbox, &result.Unread, &result.Starred, &result.Sent, &result.Drafts, &result.Spam, &result.Trash, &result.InboxUnread, &result.DMARCReports, &result.DMARCReportsUnread)
+
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT label,COUNT(*) FROM received_emails re JOIN identities i ON re.identity_id=i.id CROSS JOIN LATERAL unnest(re.labels) AS label WHERE i.user_id=$1 AND ($2::bigint=0 OR re.identity_id=$2) AND NOT re.is_trashed GROUP BY label`, userID, identityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var label string
+		var count int
+		if err = rows.Scan(&label, &count); err != nil {
+			return nil, err
+		}
+		result.Labels[label] = count
+	}
+	return result, rows.Err()
 }
 
 func receivedListQuery(userID int64, req *model.InboxListRequest) (string, []interface{}, error) {
@@ -1244,6 +1261,8 @@ func receivedListQuery(userID int64, req *model.InboxListRequest) (string, []int
 		query += " AND re.folder='inbox' AND NOT re.is_trashed AND NOT re.is_archived"
 	case "sent", "drafts", "outbox":
 		add(" AND re.folder=$%d AND NOT re.is_trashed", req.Folder)
+	case DMARCReportsFolder:
+		add(" AND re.folder=$%d AND NOT re.is_trashed AND NOT re.is_spam AND NOT re.is_archived", req.Folder)
 	case "spam":
 		query += " AND (re.folder='spam' OR re.is_spam) AND NOT re.is_trashed"
 	case "trash":

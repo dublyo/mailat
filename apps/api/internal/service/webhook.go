@@ -1,61 +1,54 @@
 package service
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"time"
-
+	"github.com/dublyo/mailat/api/internal/config"
+	"github.com/dublyo/mailat/api/internal/eventoutbox"
+	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
-
-	"github.com/dublyo/mailat/api/internal/config"
-	"github.com/dublyo/mailat/api/internal/model"
-	"github.com/dublyo/mailat/api/internal/worker"
+	"net/http"
+	"strings"
+	"time"
 )
 
 // WebhookService handles webhook operations
 type WebhookService struct {
-	db          *sql.DB
-	cfg         *config.Config
-	queueClient *worker.QueueClient
-	httpClient  *http.Client
+	httpClient *http.Client
+	db         *sql.DB
+	cfg        *config.Config
+	userID     int64
 }
 
-// NewWebhookService creates a new webhook service
 func NewWebhookService(db *sql.DB, cfg *config.Config) *WebhookService {
-	queueClient, _ := worker.NewQueueClient(cfg)
-
-	return &WebhookService{
-		db:          db,
-		cfg:         cfg,
-		queueClient: queueClient,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-	}
+	return &WebhookService{db: db, cfg: cfg}
 }
 
 // CreateWebhook creates a new webhook endpoint
 func (s *WebhookService) CreateWebhook(ctx context.Context, orgID int64, req *model.CreateWebhookRequest) (*model.WebhookResponse, error) {
+	if err := eventoutbox.ValidateDestination(req.URL); err != nil {
+		return nil, err
+	}
+	for _, kind := range req.Events {
+		if !eventoutbox.KnownType(kind) {
+			return nil, fmt.Errorf("unsupported event type")
+		}
+	}
 	webhookUUID := uuid.New().String()
 	secret := generateWebhookSecret()
 
 	var webhook model.WebhookResponse
 
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO webhooks (uuid, org_id, name, url, secret, events, active, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
+		INSERT INTO webhooks (uuid, org_id, name, url, secret, events, active, updated_at,user_id)
+		VALUES ($1, $2, $3, $4, $5, $6, true, NOW(),NULLIF($7,0))
 		RETURNING id, uuid, name, url, events, active, created_at, updated_at
-	`, webhookUUID, orgID, req.Name, req.URL, secret, pq.Array(req.Events)).Scan(
+	`, webhookUUID, orgID, req.Name, req.URL, secret, pq.Array(req.Events), s.userID).Scan(
 		&webhook.ID, &webhook.UUID, &webhook.Name, &webhook.URL,
 		pq.Array(&webhook.Events), &webhook.Active, &webhook.CreatedAt, &webhook.UpdatedAt,
 	)
@@ -70,6 +63,9 @@ func (s *WebhookService) CreateWebhook(ctx context.Context, orgID int64, req *mo
 
 // GetWebhook retrieves a webhook by UUID
 func (s *WebhookService) GetWebhook(ctx context.Context, orgID int64, webhookUUID string) (*model.WebhookResponse, error) {
+	if err := s.authorize(ctx, orgID, webhookUUID); err != nil {
+		return nil, err
+	}
 	var webhook model.WebhookResponse
 
 	err := s.db.QueryRowContext(ctx, `
@@ -99,15 +95,15 @@ func (s *WebhookService) ListWebhooks(ctx context.Context, orgID int64) ([]*mode
 		SELECT id, uuid, name, url, events, active, success_count, failure_count,
 		       last_triggered_at, last_success_at, last_failure_at, created_at, updated_at
 		FROM webhooks
-		WHERE org_id = $1
+		WHERE org_id = $1 AND ($2=0 OR user_id=$2)
 		ORDER BY created_at DESC
-	`, orgID)
+	`, orgID, s.userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list webhooks: %w", err)
 	}
 	defer rows.Close()
 
-	var webhooks []*model.WebhookResponse
+	webhooks := []*model.WebhookResponse{}
 	for rows.Next() {
 		var webhook model.WebhookResponse
 		if err := rows.Scan(
@@ -116,16 +112,24 @@ func (s *WebhookService) ListWebhooks(ctx context.Context, orgID int64) ([]*mode
 			&webhook.LastTriggeredAt, &webhook.LastSuccessAt, &webhook.LastFailureAt,
 			&webhook.CreatedAt, &webhook.UpdatedAt,
 		); err != nil {
-			continue
+			return nil, err
 		}
 		webhooks = append(webhooks, &webhook)
 	}
 
-	return webhooks, nil
+	return webhooks, rows.Err()
 }
 
 // UpdateWebhook updates a webhook
 func (s *WebhookService) UpdateWebhook(ctx context.Context, orgID int64, webhookUUID string, req *model.UpdateWebhookRequest) (*model.WebhookResponse, error) {
+	if err := s.authorize(ctx, orgID, webhookUUID); err != nil {
+		return nil, err
+	}
+	for _, kind := range req.Events {
+		if !eventoutbox.KnownType(kind) {
+			return nil, fmt.Errorf("unsupported event type")
+		}
+	}
 	updates := []string{}
 	args := []interface{}{}
 	argIndex := 1
@@ -136,6 +140,9 @@ func (s *WebhookService) UpdateWebhook(ctx context.Context, orgID int64, webhook
 		argIndex++
 	}
 	if req.URL != "" {
+		if err := eventoutbox.ValidateDestination(req.URL); err != nil {
+			return nil, err
+		}
 		updates = append(updates, fmt.Sprintf("url = $%d", argIndex))
 		args = append(args, req.URL)
 		argIndex++
@@ -173,6 +180,9 @@ func (s *WebhookService) UpdateWebhook(ctx context.Context, orgID int64, webhook
 
 // DeleteWebhook deletes a webhook
 func (s *WebhookService) DeleteWebhook(ctx context.Context, orgID int64, webhookUUID string) error {
+	if err := s.authorize(ctx, orgID, webhookUUID); err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM webhooks WHERE uuid = $1 AND org_id = $2
 	`, webhookUUID, orgID)
@@ -190,6 +200,9 @@ func (s *WebhookService) DeleteWebhook(ctx context.Context, orgID int64, webhook
 
 // RotateSecret generates a new secret for a webhook
 func (s *WebhookService) RotateSecret(ctx context.Context, orgID int64, webhookUUID string) (string, error) {
+	if err := s.authorize(ctx, orgID, webhookUUID); err != nil {
+		return "", err
+	}
 	newSecret := generateWebhookSecret()
 
 	result, err := s.db.ExecContext(ctx, `
@@ -210,25 +223,24 @@ func (s *WebhookService) RotateSecret(ctx context.Context, orgID int64, webhookU
 
 // GetWebhookCalls returns recent webhook calls for a webhook
 func (s *WebhookService) GetWebhookCalls(ctx context.Context, orgID int64, webhookUUID string, limit int) ([]*model.WebhookCallResponse, error) {
+	if err := s.authorize(ctx, orgID, webhookUUID); err != nil {
+		return nil, err
+	}
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT wc.id, wc.event_type, wc.payload, wc.response_status, wc.response_body,
-		       wc.response_time_ms, wc.status, wc.attempts, wc.error, wc.created_at, wc.completed_at
-		FROM webhook_calls wc
-		JOIN webhooks w ON wc.webhook_id = w.id
-		WHERE w.uuid = $1 AND w.org_id = $2
-		ORDER BY wc.created_at DESC
-		LIMIT $3
-	`, webhookUUID, orgID, limit)
+ SELECT a.id,e.event_type,e.payload,a.http_status,a.response_body,a.duration_ms,
+ CASE WHEN a.http_status BETWEEN 200 AND 299 AND a.error='' THEN 'success' ELSE 'failed' END,a.attempt,a.error,a.created_at,a.created_at
+ FROM webhook_delivery_attempts a JOIN webhook_deliveries d ON d.id=a.delivery_id JOIN webhook_events e ON e.id=d.event_id JOIN webhooks w ON w.id=d.webhook_id
+ WHERE w.uuid=$1 AND w.org_id=$2 ORDER BY a.created_at DESC,a.id DESC LIMIT $3`, webhookUUID, orgID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get webhook calls: %w", err)
 	}
 	defer rows.Close()
 
-	var calls []*model.WebhookCallResponse
+	calls := []*model.WebhookCallResponse{}
 	for rows.Next() {
 		var call model.WebhookCallResponse
 		var payload, responseBody, errorMsg sql.NullString
@@ -239,7 +251,7 @@ func (s *WebhookService) GetWebhookCalls(ctx context.Context, orgID int64, webho
 			&call.ID, &call.EventType, &payload, &responseStatus, &responseBody,
 			&responseTimeMs, &call.Status, &call.Attempts, &errorMsg, &call.CreatedAt, &completedAt,
 		); err != nil {
-			continue
+			return nil, err
 		}
 
 		if payload.Valid {
@@ -264,298 +276,101 @@ func (s *WebhookService) GetWebhookCalls(ctx context.Context, orgID int64, webho
 		calls = append(calls, &call)
 	}
 
-	return calls, nil
+	return calls, rows.Err()
 }
 
-// DeliverWebhook delivers a webhook event
+// DeliverWebhook queues legacy callers through the same durable delivery engine.
 func (s *WebhookService) DeliverWebhook(ctx context.Context, webhookID int64, eventType string, payload map[string]interface{}) error {
-	// Get webhook details
-	var url, secret string
-	var active bool
-	err := s.db.QueryRowContext(ctx, `
-		SELECT url, secret, active FROM webhooks WHERE id = $1
-	`, webhookID).Scan(&url, &secret, &active)
+	var orgID, userID int64
+	if err := s.db.QueryRowContext(ctx, `SELECT org_id,COALESCE(user_id,0) FROM webhooks WHERE id=$1`, webhookID).Scan(&orgID, &userID); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to get webhook: %w", err)
+		return err
 	}
-
-	if !active {
-		return nil // Skip inactive webhooks
-	}
-
-	// Create webhook call record
-	payloadJSON, _ := json.Marshal(payload)
-	var callID int64
-	err = s.db.QueryRowContext(ctx, `
-		INSERT INTO webhook_calls (webhook_id, event_type, payload, status, attempts)
-		VALUES ($1, $2, $3, 'pending', 0)
-		RETURNING id
-	`, webhookID, eventType, string(payloadJSON)).Scan(&callID)
+	defer tx.Rollback()
+	_, _, err = eventoutbox.QueueTarget(ctx, tx, eventoutbox.Event{Type: eventType, OrgID: orgID, UserID: userID, Data: payload}, webhookID, 0)
 	if err != nil {
-		return fmt.Errorf("failed to create webhook call record: %w", err)
+		return err
 	}
+	return tx.Commit()
+}
 
-	// Deliver the webhook
-	go s.executeWebhookDelivery(context.Background(), callID, webhookID, url, secret, eventType, payload)
+func (s *WebhookService) TestDelivery(ctx context.Context, orgID int64, webhookUUID string) (*eventoutbox.Result, error) {
+	webhook, err := s.GetWebhook(ctx, orgID, webhookUUID)
+	if err != nil {
+		return nil, err
+	}
+	if !webhook.Active {
+		return nil, fmt.Errorf("activate this endpoint before testing")
+	}
+	var userID int64
+	if err = s.db.QueryRowContext(ctx, `SELECT COALESCE(user_id,0) FROM webhooks WHERE id=$1`, webhook.ID).Scan(&userID); err != nil {
+		return nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	eventID, delivery, err := eventoutbox.QueueTarget(ctx, tx, eventoutbox.Event{Type: "webhook.test", OrgID: orgID, UserID: userID, Data: map[string]any{"test": true}}, webhook.ID, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	dispatcher := eventoutbox.NewDispatcher(s.db)
+	if s.httpClient != nil {
+		dispatcher.Client = s.httpClient
+	}
+	result, err := dispatcher.DispatchOne(ctx, delivery)
+	if result == nil && err == nil {
+		return &eventoutbox.Result{EventID: eventID, DeliveryID: delivery, Status: "pending"}, nil
+	}
+	return result, err
+}
 
+func (s *WebhookService) ForUser(userID int64) *WebhookService {
+	copy := *s
+	copy.userID = userID
+	return &copy
+}
+func (s *WebhookService) authorize(ctx context.Context, orgID int64, id string) error {
+	if s.userID == 0 {
+		return nil
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM webhooks WHERE uuid::text=$1 AND org_id=$2 AND user_id=$3)`, id, orgID, s.userID).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("could not check webhook ownership")
+	}
+	if !exists {
+		return fmt.Errorf("webhook not found")
+	}
 	return nil
 }
 
-// executeWebhookDelivery performs the actual webhook delivery with retries
-func (s *WebhookService) executeWebhookDelivery(ctx context.Context, callID, webhookID int64, url, secret, eventType string, payload map[string]interface{}) {
-	maxRetries := 5
-	var lastError error
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			// Exponential backoff: 5s, 30s, 2m, 10m, 30m
-			delays := []time.Duration{
-				5 * time.Second,
-				30 * time.Second,
-				2 * time.Minute,
-				10 * time.Minute,
-				30 * time.Minute,
-			}
-			delay := delays[attempt-1]
-			time.Sleep(delay)
-		}
-
-		// Update attempt count
-		s.db.ExecContext(ctx, `
-			UPDATE webhook_calls SET attempts = $1 WHERE id = $2
-		`, attempt+1, callID)
-
-		// Build and sign payload
-		webhookPayload := map[string]interface{}{
-			"type":       eventType,
-			"created_at": time.Now().Unix(),
-			"data":       payload,
-		}
-
-		payloadBytes, _ := json.Marshal(webhookPayload)
-		timestamp := time.Now().Unix()
-		signature := s.signPayload(payloadBytes, timestamp, secret)
-
-		// Create request
-		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payloadBytes))
-		if err != nil {
-			lastError = err
-			continue
-		}
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Webhook-Signature", signature)
-		req.Header.Set("X-Webhook-Timestamp", fmt.Sprintf("%d", timestamp))
-		req.Header.Set("User-Agent", "Mailat-Webhook/1.0")
-
-		// Send request
-		startTime := time.Now()
-		resp, err := s.httpClient.Do(req)
-		duration := time.Since(startTime)
-
-		if err != nil {
-			lastError = err
-			s.recordWebhookAttempt(ctx, callID, 0, "", int(duration.Milliseconds()), err.Error())
-			continue
-		}
-
-		// Read response
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		s.recordWebhookAttempt(ctx, callID, resp.StatusCode, string(body), int(duration.Milliseconds()), "")
-
-		// Check if successful (2xx status)
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			// Success
-			s.db.ExecContext(ctx, `
-				UPDATE webhook_calls
-				SET status = 'success', completed_at = NOW()
-				WHERE id = $1
-			`, callID)
-
-			s.db.ExecContext(ctx, `
-				UPDATE webhooks
-				SET success_count = success_count + 1,
-				    last_triggered_at = NOW(),
-				    last_success_at = NOW()
-				WHERE id = $1
-			`, webhookID)
-
-			return
-		}
-
-		lastError = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	// All retries exhausted
-	s.db.ExecContext(ctx, `
-		UPDATE webhook_calls
-		SET status = 'failed', error = $2, completed_at = NOW()
-		WHERE id = $1
-	`, callID, lastError.Error())
-
-	s.db.ExecContext(ctx, `
-		UPDATE webhooks
-		SET failure_count = failure_count + 1,
-		    last_triggered_at = NOW(),
-		    last_failure_at = NOW()
-		WHERE id = $1
-	`, webhookID)
+// VerifySignature is kept for compatibility; all producers use this same format.
+func VerifySignature(payload []byte, signature, secret string, tolerance time.Duration) bool {
+	return eventoutbox.Verify(payload, signature, secret, tolerance)
 }
-
-// recordWebhookAttempt records a webhook delivery attempt
-func (s *WebhookService) recordWebhookAttempt(ctx context.Context, callID int64, status int, body string, durationMs int, errMsg string) {
-	s.db.ExecContext(ctx, `
-		UPDATE webhook_calls
-		SET response_status = $2, response_body = $3, response_time_ms = $4, error = $5
-		WHERE id = $1
-	`, callID, status, truncateString(body, 5000), durationMs, errMsg)
-}
-
-// signPayload creates a HMAC-SHA256 signature for the webhook payload
-func (s *WebhookService) signPayload(payload []byte, timestamp int64, secret string) string {
-	// Stripe-style signature: t=timestamp,v1=signature
-	signedPayload := fmt.Sprintf("%d.%s", timestamp, string(payload))
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(signedPayload))
-	signature := hex.EncodeToString(mac.Sum(nil))
-	return fmt.Sprintf("t=%d,v1=%s", timestamp, signature)
-}
-
-// VerifySignature verifies a webhook signature (for external use)
-func VerifySignature(payload []byte, signature string, secret string, tolerance time.Duration) bool {
-	// Parse signature
-	var timestamp int64
-	var v1Sig string
-
-	parts := splitStringByChar(signature, ',')
-	for _, part := range parts {
-		kv := splitStringByChar(part, '=')
-		if len(kv) != 2 {
-			continue
-		}
-		switch kv[0] {
-		case "t":
-			fmt.Sscanf(kv[1], "%d", &timestamp)
-		case "v1":
-			v1Sig = kv[1]
-		}
-	}
-
-	if timestamp == 0 || v1Sig == "" {
-		return false
-	}
-
-	// Check timestamp tolerance (default 5 minutes)
-	if tolerance == 0 {
-		tolerance = 5 * time.Minute
-	}
-	if time.Since(time.Unix(timestamp, 0)) > tolerance {
-		return false
-	}
-
-	// Compute expected signature
-	signedPayload := fmt.Sprintf("%d.%s", timestamp, string(payload))
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(signedPayload))
-	expectedSig := hex.EncodeToString(mac.Sum(nil))
-
-	return hmac.Equal([]byte(v1Sig), []byte(expectedSig))
-}
-
-// TriggerEmailEvent triggers webhooks for an email event
-func (s *WebhookService) TriggerEmailEvent(ctx context.Context, orgID, emailID int64, eventType string) error {
-	// Get email details
-	var emailUUID, from, subject, status string
-	var toAddresses string
-	var sentAt, deliveredAt sql.NullTime
-
-	err := s.db.QueryRowContext(ctx, `
-		SELECT uuid, from_address, to_addresses, subject, status, sent_at, delivered_at
-		FROM transactional_emails
-		WHERE id = $1 AND org_id = $2
-	`, emailID, orgID).Scan(&emailUUID, &from, &toAddresses, &subject, &status, &sentAt, &deliveredAt)
-	if err != nil {
-		return fmt.Errorf("failed to get email: %w", err)
-	}
-
-	// Build event payload
-	payload := map[string]interface{}{
-		"email_id":   emailUUID,
-		"from":       from,
-		"to":         splitAddresses(toAddresses),
-		"subject":    subject,
-		"status":     status,
-		"event_type": eventType,
-		"timestamp":  time.Now().Unix(),
-	}
-
-	if sentAt.Valid {
-		payload["sent_at"] = sentAt.Time.Unix()
-	}
-	if deliveredAt.Valid {
-		payload["delivered_at"] = deliveredAt.Time.Unix()
-	}
-
-	// Find webhooks that are subscribed to this event
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id FROM webhooks
-		WHERE org_id = $1 AND active = true AND $2 = ANY(events)
-	`, orgID, "email."+eventType)
-	if err != nil {
-		return fmt.Errorf("failed to query webhooks: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var webhookID int64
-		if err := rows.Scan(&webhookID); err != nil {
-			continue
-		}
-
-		// Deliver webhook
-		s.DeliverWebhook(ctx, webhookID, "email."+eventType, payload)
-	}
-
-	return nil
-}
-
-// Helper functions
-
 func generateWebhookSecret() string {
-	bytes := make([]byte, 32)
-	rand.Read(bytes)
-	return "whsec_" + hex.EncodeToString(bytes)
+	data := make([]byte, 32)
+	if _, err := rand.Read(data); err != nil {
+		panic("secure random source unavailable")
+	}
+	return "whsec_" + hex.EncodeToString(data)
 }
+func joinStringsWithSep(strs []string, sep string) string { return strings.Join(strs, sep) }
 
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen]
+func (s *WebhookService) Deliveries(ctx context.Context, org, user int64, status string, page, size int) (*eventoutbox.DeliveryPage, error) {
+	return eventoutbox.List(ctx, s.db, org, user, status, page, size)
 }
-
-func joinStringsWithSep(strs []string, sep string) string {
-	if len(strs) == 0 {
-		return ""
-	}
-	result := strs[0]
-	for i := 1; i < len(strs); i++ {
-		result += sep + strs[i]
-	}
-	return result
+func (s *WebhookService) Delivery(ctx context.Context, org, user int64, id string) (*eventoutbox.Delivery, []eventoutbox.Attempt, error) {
+	return eventoutbox.Get(ctx, s.db, org, user, id)
 }
-
-func splitStringByChar(s string, sep byte) []string {
-	var result []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == sep {
-			result = append(result, s[start:i])
-			start = i + 1
-		}
-	}
-	result = append(result, s[start:])
-	return result
+func (s *WebhookService) Replay(ctx context.Context, org, user int64, id string) error {
+	return eventoutbox.Replay(ctx, s.db, org, user, id)
 }

@@ -35,7 +35,9 @@ class ApiClient {
       (error) => {
         // Invalid credentials belong to the login form; a redirect would erase
         // its error and the protected route the user was trying to open.
-        if (error.response?.status === 401 && error.config?.url !== '/api/v1/auth/login') {
+        const requestToken = error.config?.headers?.Authorization
+        const belongsToCurrentSession = !requestToken || requestToken === `Bearer ${this.getToken()}`
+        if (error.response?.status === 401 && belongsToCurrentSession && !['/api/v1/auth/login', '/api/v1/auth/2fa/challenge'].includes(error.config?.url)) {
           this.setToken(null)
           window.location.href = '/login'
         }
@@ -268,9 +270,11 @@ export interface CampaignStats {
 
 // ============ Auth API ============
 
+export type LoginResponse = { token: string; user: User; requiresTwoFactor?: false } | { requiresTwoFactor: true; challengeToken: string }
+
 export const authApi = {
   login: (email: string, password: string) =>
-    api.post<{ token: string; user: User }>('/api/v1/auth/login', { email, password }),
+    api.post<LoginResponse>('/api/v1/auth/login', { email, password }),
 
   register: (data: { email: string; password: string; name: string }) =>
     api.post<{ token: string; user: User }>('/api/v1/auth/register', data),
@@ -278,6 +282,10 @@ export const authApi = {
   registerStatus: () => api.get<{ open: boolean }>('/api/v1/auth/register-status'),
 
   me: () => api.get<User>('/api/v1/auth/me'),
+  completeChallenge: (challengeToken: string, code: string) =>
+    api.post<{ token: string; user: User }>('/api/v1/auth/2fa/challenge', { challengeToken, code }),
+  logout: (token: string) => api.post<void>('/api/v1/auth/logout', undefined, { Authorization: `Bearer ${token}` }),
+  streamToken: () => api.post<{ token: string; expiresAt: string }>('/api/v1/auth/stream-token'),
 }
 
 // ============ Inbox API ============
@@ -393,6 +401,16 @@ export interface DomainDMARCStatus {
   suggestedValue: string
 }
 
+export interface DomainSendingReadiness {
+  domainUuid: string
+  storageReady: boolean
+  feedbackConfigured: boolean
+  subscriptionStatus: 'not_configured' | 'pending' | 'active'
+  feedbackReady: boolean
+  reason: string
+  checkedAt: string
+}
+
 export const domainApi = {
   list: () => api.get<Domain[]>('/api/v1/domains'),
 
@@ -415,6 +433,12 @@ export const domainApi = {
 
   inspectDMARC: (uuid: string, signal?: AbortSignal) =>
     api.get<DomainDMARCStatus>(`/api/v1/domains/${uuid}/dmarc`, signal),
+
+  sendingStatus: (uuid: string, signal?: AbortSignal) =>
+    api.get<DomainSendingReadiness>(`/api/v1/domains/${uuid}/sending-status`, signal),
+
+  setupSending: (uuid: string) =>
+    api.post<DomainSendingReadiness>(`/api/v1/domains/${uuid}/setup-sending`),
 
   // SES Integration
   initiateSES: async (uuid: string): Promise<{ domain: Domain; dnsRecords: DNSRecord[]; sesRecords: Array<{ type: string; name: string; value: string }> }> => {
@@ -883,6 +907,12 @@ export interface WebhookCall {
   createdAt: string
 }
 
+export interface WebhookDelivery {
+  id: string; eventId: string; type: string; status: string; attempts: number; replayCount: number; httpStatus: number; error?: string; createdAt: string; nextAttemptAt: string
+}
+export interface WebhookAttempt { attempt: number; replay: number; httpStatus: number; error?: string; responseBody?: string; durationMs: number; createdAt: string }
+export interface WebhookTestResult { eventId: string; deliveryId: string; status: string; httpStatus: number; error?: string }
+
 export const webhookApi = {
   list: () => api.get<Webhook[]>('/api/v1/webhooks'),
 
@@ -902,7 +932,10 @@ export const webhookApi = {
   getCalls: (uuid: string) =>
     api.get<WebhookCall[]>(`/api/v1/webhooks/${uuid}/calls`),
 
-  test: (uuid: string) => api.post(`/api/v1/webhooks/${uuid}/test`),
+  test: (uuid: string) => api.post<WebhookTestResult>(`/api/v1/webhooks/${uuid}/test`),
+  deliveries: (page = 1, status = '') => api.get<{ deliveries: WebhookDelivery[]; total: number; page: number; pageSize: number }>(`/api/v1/webhook-deliveries?page=${page}&pageSize=20&status=${encodeURIComponent(status)}`),
+  delivery: (uuid: string) => api.get<{ delivery: WebhookDelivery; attempts: WebhookAttempt[] }>(`/api/v1/webhook-deliveries/${uuid}`),
+  replay: (uuid: string) => api.post(`/api/v1/webhook-deliveries/${uuid}/replay`),
 }
 
 // ============ Received Inbox Types ============
@@ -987,6 +1020,10 @@ export interface InboxListResponse {
 
 export interface InboxCounts {
   inbox: number
+  inboxUnread: number
+  dmarcReports: number
+  dmarcReportsUnread: number
+  // Global unread remains independent of the Inbox and report folder badges.
   unread: number
   starred: number
   sent: number
@@ -1156,8 +1193,9 @@ export class InboxSSE {
   private reconnectTimeout: number | null = null
   private reconnectDelay = 1000
   private maxReconnectDelay = 30000
+  private connectionGeneration = 0
 
-  connect(handlers: {
+  async connect(handlers: {
     onNewEmail?: (data: ReceivedEmail) => void
     onEmailUpdate?: (data: { uuid: string; updates: Record<string, unknown> }) => void
     onEmailDeleted?: (data: { uuids: string[] }) => void
@@ -1172,8 +1210,21 @@ export class InboxSSE {
       return
     }
 
+    const generation = this.connectionGeneration
+    let ticket: { token: string }
+    try {
+      ticket = await authApi.streamToken()
+    } catch {
+      if (generation === this.connectionGeneration && api.getToken() === token) {
+        handlers.onError?.(new Event('error'))
+        this.scheduleReconnect(handlers)
+      }
+      return
+    }
+    // A late ticket from a logged-out account must never reopen its stream.
+    if (generation !== this.connectionGeneration || api.getToken() !== token) return
     const baseUrl = import.meta.env.VITE_API_URL || ''
-    const url = `${baseUrl}/api/v1/sse/connect?token=${encodeURIComponent(token)}`
+    const url = `${baseUrl}/api/v1/sse/connect?token=${encodeURIComponent(ticket.token)}`
 
     const source = new EventSource(url)
     this.eventSource = source
@@ -1235,6 +1286,7 @@ export class InboxSSE {
   }
 
   disconnect() {
+    this.connectionGeneration++
     if (this.eventSource) {
       this.eventSource.close()
       this.eventSource = null

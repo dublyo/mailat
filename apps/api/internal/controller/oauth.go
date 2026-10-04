@@ -4,10 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"time"
 
 	"github.com/gogf/gf/v2/net/ghttp"
-	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/dublyo/mailat/api/internal/config"
 	"github.com/dublyo/mailat/api/internal/middleware"
@@ -147,15 +145,16 @@ func (c *OAuthController) HandleCallback(r *ghttp.Request) {
 		UserAgent:   r.UserAgent(),
 	})
 
-	// Generate JWT token
-	token, err := c.generateJWT(userID, orgID, userInfo.Email, "member") // Role will be fetched from DB in real scenario
+	result, err := c.oauthService.AuthenticateLogin(r.Context(), userID)
 	if err != nil {
-		c.redirectWithError(r, "Failed to generate authentication token")
+		c.redirectWithError(r, "Unable to sign in to this account")
 		return
 	}
-
-	// Redirect to frontend with token
-	redirectURL := fmt.Sprintf("%s/auth/callback?token=%s&new_user=%t", c.cfg.WebUrl, token, isNewUser)
+	// Fragments never reach the server access log or Referer header.
+	redirectURL := c.cfg.WebUrl + "/login#session=" + result.Token
+	if result.RequiresTwoFactor {
+		redirectURL = c.cfg.WebUrl + "/login#challenge=" + result.ChallengeToken
+	}
 	r.Response.RedirectTo(redirectURL)
 }
 
@@ -263,19 +262,4 @@ func generateState() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// generateJWT generates a JWT token for a user
-func (c *OAuthController) generateJWT(userID, orgID int64, email, role string) (string, error) {
-	claims := jwt.MapClaims{
-		"user_id": userID,
-		"org_id":  orgID,
-		"email":   email,
-		"role":    role,
-		"exp":     time.Now().Add(7 * 24 * time.Hour).Unix(),
-		"iat":     time.Now().Unix(),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(c.cfg.JWTSecret))
 }

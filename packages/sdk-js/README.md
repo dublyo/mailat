@@ -1,313 +1,58 @@
-# @mailat/sdk
+# Mailat JavaScript / TypeScript SDK
 
-Official JavaScript/TypeScript SDK for [mailat.co](https://mailat.co) API.
+Requires Node 20+ or a browser with Web Crypto and Fetch. Build from this package with `npm install && npm run build`; run `npm test` for signature and HTTP contract tests.
 
-## Installation
-
-```bash
-npm install @mailat/sdk
-# or
-pnpm add @mailat/sdk
-# or
-yarn add @mailat/sdk
-```
-
-## Quick Start
-
-```typescript
+```ts
 import { Mailat } from '@mailat/sdk';
-
-const client = new Mailat({
-  apiKey: 'ue_your_api_key_here'
-});
-
-// Send an email
-const result = await client.emails.send({
-  from: 'sender@yourdomain.com',
-  to: ['recipient@example.com'],
-  subject: 'Hello!',
-  html: '<p>Welcome to our service!</p>'
-});
-
-console.log('Email sent:', result.id);
+const client = new Mailat({apiKey: process.env.MAILAT_API_KEY!, baseUrl: 'https://mail.dublyo.com/api/v1'});
+const sent = await client.emails.send({
+  from: 'hello@yourdomain.com', to: ['recipient@example.com'], subject: 'Hello', text: 'Hello',
+  attachments: [{name: 'hello.txt', content: 'SGVsbG8=', type: 'text/plain'}]
+}, {idempotencyKey: 'order-123-confirmation'});
+const status = await client.emails.get(sent.id);
+const batch = await client.emails.sendBatch([
+  {from:'hello@yourdomain.com', to:['recipient@example.com'], subject:'Hello', text:'Hello'}
+], {idempotencyKey:'batch-order-123'});
+const inbox = await client.inbox.list({folder:'inbox', page:1, pageSize:20});
+const detail = await client.inbox.get('message-uuid');
+await client.inbox.mark(['message-uuid'], true);
+const changes = await client.inbox.changes(savedCursor, 100); // Persist the returned cursor only after processing.
+const bytes = await client.inbox.attachment('message-uuid', 'attachment-uuid');
 ```
 
-## Configuration
+Namespaces: `emails`, `inbox` (including `labels` and `filters`), `compose`, `domains`, `identities`, `templates`, `webhooks`, `triggers`, and `deliveries`. Inbox actions include `mark`, `star`, `move`, `trash`, `assignLabels` (label names), and `testFilter`. Reply and forward context use `compose.replyContext` / `forwardContext`; construct `compose.send` with `fromEmail` and a stable key. Sending context's `from` object is not the compose send request.
 
-```typescript
-const client = new Mailat({
-  apiKey: 'ue_your_api_key',      // Required
-  baseUrl: 'https://api.mailat.co/api/v1', // Optional, defaults to production
-  timeout: 30000,                  // Optional, request timeout in ms
-});
+```ts
+const outcome = await client.triggers.test('trigger-uuid');
+const history = await client.deliveries.list({page:1, pageSize:20});
+await client.deliveries.replay('delivery-uuid');
+// Both verification helpers are async. rawBody is a string or Uint8Array.
+const valid = await Mailat.verifyWebhookSignature(rawBody, signature, secret);
+const event = await Mailat.parseWebhookPayload(rawBody, signature, secret, async id => atomicallyClaim(id));
 ```
 
-## Sending Emails
+`MailatError` exposes `status`, `code`, and `retryAfter`.
 
-### Single Email
+Every send needs a stable 8–128 character idempotency key. Reuse the same key and unchanged payload after a timeout. A changed payload under the same key returns 409. An `unknown` result must be reconciled using email status; changing the key can cause a duplicate. Batch retries retain the complete original body and order, including per-item keys. The SDK does not retry automatically. `sent` means provider acceptance, while `delivered` means recipient-server delivery.
 
-```typescript
-const result = await client.emails.send({
-  from: 'sender@yourdomain.com',
-  to: ['recipient@example.com'],
-  cc: ['cc@example.com'],
-  bcc: ['bcc@example.com'],
-  replyTo: 'reply@yourdomain.com',
-  subject: 'Hello {{firstName}}!',
-  html: '<p>Welcome, {{firstName}}!</p>',
-  text: 'Welcome, {{firstName}}!',
-  variables: {
-    firstName: 'John'
-  },
-  tags: ['welcome', 'onboarding'],
-  metadata: {
-    userId: '12345'
-  }
-});
+API keys are scoped and limited per minute. 403 means a missing permission; 429 includes `Retry-After`. Use `email:send`, `email:read`, and `email:manage` for mail automation, with domain/identity/webhook scopes only when needed. API keys cannot create more keys or change account security.
+
+Webhooks use `{version:"1", id, type, createdAt, data}` and `X-Webhook-Signature: t=<unix>,v1=<HMAC-SHA256(timestamp.rawBody)>`, with a dot between timestamp and exact raw body. Verification enforces a five-minute window. Do not parse and reserialize before verifying. Atomically deduplicate `id` in durable storage; retries retain the event ID. Optional claim callbacks support that check, but your application must ensure failed processing is retried safely. Save a job and the claim in one transaction before acknowledging.
+
+Events: `email.received`, `email.sent`, `email.delivered`, `email.failed`, `email.unknown`, `email.bounced`, `email.complained`, and `webhook.test`. Fetch content through the inbox API using `data.messageUuid`. A webhook test returning `status: retry` and `httpStatus: 500` means the receiver failed, even when Mailat's API returned HTTP 200.
+
+Domain creation and `setupSending` / `setup_sending` / `SetupSending` keep receiving opt-in and do not replace root MX. Existing valid DMARC is preserved. Core resource bodies retain documented camelCase keys. See your instance's `/api-docs` and `/api/v1/openapi.json` for field definitions.
+
+DMARC reports use the built-in `dmarc-reports` folder. `MailboxFolder`, `InboxView`, `MailboxMoveDestination`, and `InboxCounts` are exported types; existing generic methods remain available.
+
+```ts
+import { DMARC_REPORTS_FOLDER } from '@mailat/sdk';
+const reports = await client.inbox.list({folder: DMARC_REPORTS_FOLDER, isRead: false});
+const counts = await client.inbox.folderCounts(); // Optional owned identityId argument.
+console.log(counts.inboxUnread, counts.dmarcReports, counts.dmarcReportsUnread);
+await client.inbox.move(['message-uuid'], 'inbox');
 ```
 
-### With Idempotency Key
+`unread` remains the global non-trash count (including Spam and DMARC reports); use `inboxUnread` for the Inbox badge. Explicit filter destinations override automatic report sorting. Received events include the final `data.folder`; historical moves create mailbox changes without another received event.
 
-```typescript
-const result = await client.emails.send(
-  {
-    from: 'sender@yourdomain.com',
-    to: ['recipient@example.com'],
-    subject: 'Order Confirmation',
-    html: '<p>Your order has been confirmed.</p>'
-  },
-  {
-    idempotencyKey: 'order-123-confirmation'
-  }
-);
-```
-
-### Batch Send
-
-```typescript
-const result = await client.emails.sendBatch([
-  {
-    from: 'sender@yourdomain.com',
-    to: ['user1@example.com'],
-    subject: 'Hello User 1',
-    html: '<p>Message for user 1</p>'
-  },
-  {
-    from: 'sender@yourdomain.com',
-    to: ['user2@example.com'],
-    subject: 'Hello User 2',
-    html: '<p>Message for user 2</p>'
-  }
-]);
-
-result.results.forEach(r => {
-  if (r.error) {
-    console.error(`Email ${r.index} failed:`, r.error);
-  } else {
-    console.log(`Email ${r.index} queued:`, r.id);
-  }
-});
-```
-
-### Get Email Status
-
-```typescript
-const status = await client.emails.get('email-uuid');
-console.log('Status:', status.status);
-console.log('Events:', status.events);
-```
-
-### Cancel Scheduled Email
-
-```typescript
-await client.emails.cancel('email-uuid');
-```
-
-## Templates
-
-### Create Template
-
-```typescript
-const template = await client.templates.create({
-  name: 'Welcome Email',
-  description: 'Sent to new users',
-  subject: 'Welcome, {{firstName}}!',
-  html: '<h1>Welcome to {{company}}</h1><p>Hello {{firstName}},</p>',
-  text: 'Welcome to {{company}}. Hello {{firstName}},'
-});
-```
-
-### List Templates
-
-```typescript
-const templates = await client.templates.list();
-```
-
-### Use Template in Email
-
-```typescript
-const result = await client.emails.send({
-  from: 'sender@yourdomain.com',
-  to: ['recipient@example.com'],
-  templateId: 'template-uuid',
-  variables: {
-    firstName: 'John',
-    company: 'Acme Inc'
-  }
-});
-```
-
-### Preview Template
-
-```typescript
-const preview = await client.templates.preview('template-uuid', {
-  firstName: 'John',
-  company: 'Acme Inc'
-});
-
-console.log('Subject:', preview.subject);
-console.log('HTML:', preview.html);
-```
-
-## Webhooks
-
-### Create Webhook
-
-```typescript
-const webhook = await client.webhooks.create({
-  name: 'My Webhook',
-  url: 'https://myapp.com/webhooks/email',
-  events: ['email.sent', 'email.delivered', 'email.bounced']
-});
-
-// Save the secret securely!
-console.log('Webhook secret:', webhook.secret);
-```
-
-### List Webhooks
-
-```typescript
-const webhooks = await client.webhooks.list();
-```
-
-### Update Webhook
-
-```typescript
-const updated = await client.webhooks.update('webhook-uuid', {
-  events: ['email.sent', 'email.delivered', 'email.bounced', 'email.opened']
-});
-```
-
-### Rotate Secret
-
-```typescript
-const newSecret = await client.webhooks.rotateSecret('webhook-uuid');
-```
-
-### Get Webhook Calls
-
-```typescript
-const calls = await client.webhooks.getCalls('webhook-uuid', 50);
-calls.forEach(call => {
-  console.log(`${call.eventType}: ${call.status}`);
-});
-```
-
-## Webhook Verification
-
-### Verify Signature
-
-```typescript
-import { Mailat } from '@mailat/sdk';
-
-// In your webhook handler
-app.post('/webhooks/email', (req, res) => {
-  const signature = req.headers['x-webhook-signature'];
-  const payload = req.body; // raw string body
-
-  const isValid = Mailat.verifyWebhookSignature(
-    payload,
-    signature,
-    'whsec_your_secret'
-  );
-
-  if (!isValid) {
-    return res.status(401).send('Invalid signature');
-  }
-
-  // Process the webhook
-  const event = JSON.parse(payload);
-  console.log('Event type:', event.type);
-  console.log('Data:', event.data);
-
-  res.status(200).send('OK');
-});
-```
-
-### Parse Webhook Payload
-
-```typescript
-import { Mailat } from '@mailat/sdk';
-
-// Automatically verifies and parses
-const event = Mailat.parseWebhookPayload(
-  req.body,
-  req.headers['x-webhook-signature'],
-  'whsec_your_secret'
-);
-
-switch (event.type) {
-  case 'email.sent':
-    console.log('Email sent:', event.data.email_id);
-    break;
-  case 'email.delivered':
-    console.log('Email delivered:', event.data.email_id);
-    break;
-  case 'email.bounced':
-    console.log('Email bounced:', event.data.email_id, event.data.bounce_type);
-    break;
-}
-```
-
-## Error Handling
-
-```typescript
-import { Mailat, MailatError } from '@mailat/sdk';
-
-try {
-  await client.emails.send({
-    from: 'sender@yourdomain.com',
-    to: ['invalid'],
-    subject: 'Test',
-    html: '<p>Test</p>'
-  });
-} catch (error) {
-  if (error instanceof MailatError) {
-    console.error('API Error:', error.message);
-    console.error('Status:', error.status);
-    console.error('Code:', error.code);
-  } else {
-    console.error('Unknown error:', error);
-  }
-}
-```
-
-## TypeScript Support
-
-This SDK is written in TypeScript and includes full type definitions:
-
-```typescript
-import {
-  Mailat,
-  SendEmailRequest,
-  SendEmailResponse,
-  Template,
-  Webhook,
-  WebhookEvent,
-  EmailStatus,
-} from '@mailat/sdk';
-```
-
-## License
-
-MIT
+The human-session-only settings contract adds `autoOrganizeDmarcReports`, default `true`. `DMARCReportsSettings` and `UpdateDMARCReportsSettings` describe the field. Omit it in `PUT /settings` to preserve the preference; `false` disables sorting future arrivals without moving existing reports or altering DNS/receiving setup. API keys cannot update account settings.

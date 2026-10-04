@@ -231,7 +231,7 @@ type ComposeEmailRequest struct {
 	DraftID      string            `json:"draftId"`
 	DraftVersion int               `json:"draftVersion"`
 	IdentityID   int64             `json:"identityId" v:"required"`
-	To           []EmailAddressDTO `json:"to" v:"required"`
+	To           []EmailAddressDTO `json:"to"`
 	Cc           []EmailAddressDTO `json:"cc"`
 	Bcc          []EmailAddressDTO `json:"bcc"`
 	ReplyTo      []EmailAddressDTO `json:"replyTo"`
@@ -328,7 +328,7 @@ type EmailTemplate struct {
 	Subject     string    `json:"subject"`
 	HTMLBody    string    `json:"htmlBody"`
 	TextBody    string    `json:"textBody,omitempty"`
-	Variables   []string  `json:"variables,omitempty"` // List of variable names
+	Variables   []string  `json:"variables"` // List of variable names
 	IsActive    bool      `json:"isActive"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
@@ -362,7 +362,7 @@ type Webhook struct {
 
 type SendEmailRequest struct {
 	From           string            `json:"from" v:"required|email"`
-	To             []string          `json:"to" v:"required"`
+	To             []string          `json:"to"`
 	Cc             []string          `json:"cc"`
 	Bcc            []string          `json:"bcc"`
 	ReplyTo        string            `json:"replyTo"`
@@ -374,8 +374,8 @@ type SendEmailRequest struct {
 	Attachments    []AttachmentDTO   `json:"attachments"`
 	Tags           []string          `json:"tags"`
 	Metadata       map[string]string `json:"metadata"`
-	ScheduledFor   *string           `json:"scheduledFor"` // RFC3339 timestamp
-	IdempotencyKey string            `json:"-"`            // Set from header
+	ScheduledFor   *string           `json:"scheduledFor"`             // RFC3339 timestamp
+	IdempotencyKey string            `json:"idempotencyKey,omitempty"` // Header or per-item batch key
 }
 
 type SendEmailResponse struct {
@@ -386,7 +386,8 @@ type SendEmailResponse struct {
 }
 
 type BatchSendRequest struct {
-	Emails []SendEmailRequest `json:"emails" v:"required"`
+	IdempotencyKey string             `json:"-"` // Whole-batch key from the Idempotency-Key header.
+	Emails         []SendEmailRequest `json:"emails" v:"required"`
 }
 
 type BatchSendResponse struct {
@@ -1069,14 +1070,17 @@ type InboxListResponse struct {
 
 // InboxCountsResponse for folder/label counts
 type InboxCountsResponse struct {
-	Inbox   int            `json:"inbox"`
-	Unread  int            `json:"unread"`
-	Starred int            `json:"starred"`
-	Sent    int            `json:"sent"`
-	Drafts  int            `json:"drafts"`
-	Spam    int            `json:"spam"`
-	Trash   int            `json:"trash"`
-	Labels  map[string]int `json:"labels,omitempty"`
+	Inbox              int            `json:"inbox"`
+	InboxUnread        int            `json:"inboxUnread"`
+	DMARCReports       int            `json:"dmarcReports"`
+	DMARCReportsUnread int            `json:"dmarcReportsUnread"`
+	Unread             int            `json:"unread"`
+	Starred            int            `json:"starred"`
+	Sent               int            `json:"sent"`
+	Drafts             int            `json:"drafts"`
+	Spam               int            `json:"spam"`
+	Trash              int            `json:"trash"`
+	Labels             map[string]int `json:"labels,omitempty"`
 }
 
 // MarkEmailsRequest for marking emails as read/unread

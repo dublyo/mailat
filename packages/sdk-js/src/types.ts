@@ -7,7 +7,7 @@ export interface MailatConfig {
 
 // Common types
 export interface ApiResponse<T> {
-  success: boolean;
+  code: number;
   message?: string;
   data: T;
 }
@@ -36,12 +36,14 @@ export interface SendEmailRequest {
   tags?: string[];
   metadata?: Record<string, string>;
   scheduledFor?: string; // RFC3339 timestamp
+  idempotencyKey?: string;
 }
 
 export interface Attachment {
-  filename: string;
+  name: string;
   content: string; // Base64 encoded
-  contentType: string;
+  type: string;
+  disposition?: 'attachment' | 'inline';
   cid?: string; // Content-ID for inline attachments
 }
 
@@ -82,6 +84,9 @@ export interface EmailStatusResponse {
 }
 
 export type EmailStatus =
+  | 'accepted'
+  | 'unknown'
+  | 'complained'
   | 'queued'
   | 'sending'
   | 'sent'
@@ -174,12 +179,13 @@ export interface Webhook {
 }
 
 export type WebhookEvent =
+  | 'email.received'
+  | 'email.unknown'
+  | 'webhook.test'
   | 'email.sent'
   | 'email.delivered'
   | 'email.bounced'
   | 'email.complained'
-  | 'email.opened'
-  | 'email.clicked'
   | 'email.failed';
 
 export interface WebhookCall {
@@ -210,7 +216,10 @@ export interface Domain {
   uuid: string;
   name: string;
   status: 'pending' | 'active' | 'suspended';
-  verificationToken: string;
+  verificationToken?: string;
+  emailProvider: string;
+  sesVerified: boolean;
+  receivingEnabled: boolean;
   dkimSelector: string;
   dkimPublicKey?: string;
   mxVerified: boolean;
@@ -222,6 +231,8 @@ export interface Domain {
   updatedAt: string;
   dnsRecords?: DnsRecord[];
 }
+
+export interface DomainDetails { domain: Domain; dnsRecords: DnsRecord[] }
 
 export interface DnsRecord {
   id: number;
@@ -235,12 +246,13 @@ export interface DnsRecord {
 
 // Identity types
 export interface CreateIdentityRequest {
-  domainId: number;
+  domainId: string;
   email: string;
   displayName: string;
-  password: string;
+  password?: string;
   quotaBytes?: number;
   isDefault?: boolean;
+  isCatchAll?: boolean;
 }
 
 export interface Identity {
@@ -249,6 +261,10 @@ export interface Identity {
   email: string;
   displayName: string;
   isDefault: boolean;
+  isCatchAll: boolean;
+  canSend: boolean;
+  canReceive: boolean;
+  domainId: number;
   quotaBytes: number;
   usedBytes: number;
   status: string;
@@ -259,7 +275,8 @@ export interface Identity {
 // API Key types
 export interface CreateApiKeyRequest {
   name: string;
-  permissions?: string[];
+  permissions: string[];
+  rateLimit?: number;
   expiresAt?: string;
 }
 
@@ -277,26 +294,54 @@ export interface ApiKey {
 
 // Error types
 export interface ApiError {
-  success: false;
   message: string;
-  code?: string;
+  code: number;
 }
 
 export class MailatError extends Error {
   public readonly status: number;
-  public readonly code?: string;
+  public readonly code?: string | number;
+  public readonly retryAfter?: string;
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string | number, retryAfter?: string) {
     super(message);
     this.name = 'MailatError';
     this.status = status;
     this.code = code;
+    this.retryAfter = retryAfter;
   }
 }
 
 // Webhook signature verification
 export interface WebhookPayload {
+  version: '1';
+  id: string;
   type: string;
-  created_at: number;
-  data: Record<string, unknown>;
+  createdAt: string;
+  data: Record<string, unknown> & { messageUuid?: string };
 }
+
+export interface WebhookTestResult { eventId: string; deliveryId: string; status: 'delivered' | 'retry' | 'dead_letter' | 'pending'; httpStatus?: number; error?: string }
+/** Built-in folder key. Automatic classification does not change DNS or receiving setup. */
+export const DMARC_REPORTS_FOLDER = 'dmarc-reports' as const;
+export type MailboxFolder = 'inbox' | 'dmarc-reports' | 'sent' | 'drafts' | 'outbox' | 'archive' | 'spam' | 'trash';
+export type InboxView = MailboxFolder | 'all' | 'starred';
+export type MailboxMoveDestination = 'inbox' | 'dmarc-reports' | 'archive' | 'spam' | 'trash';
+export interface InboxCounts {
+  inbox: number;
+  inboxUnread: number;
+  dmarcReports: number;
+  dmarcReportsUnread: number;
+  /** Global unread total; use inboxUnread for the Inbox badge. */
+  unread: number;
+  starred: number;
+  sent: number;
+  drafts: number;
+  spam: number;
+  trash: number;
+  labels?: Record<string, number>;
+}
+/** GET /settings is human-session-only; API keys cannot change this preference. */
+export interface DMARCReportsSettings { autoOrganizeDmarcReports: boolean; }
+/** Omit to preserve the preference; false explicitly opts out of future sorting. */
+export interface UpdateDMARCReportsSettings { autoOrganizeDmarcReports?: boolean; }

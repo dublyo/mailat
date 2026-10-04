@@ -72,7 +72,7 @@ func (s *SessionService) CreateSession(ctx context.Context, input *CreateSession
 		&session.Browser, &session.OS, &session.IPAddress, &session.Location, &session.Active,
 		&session.LastSeenAt, &session.ExpiresAt, &session.CreatedAt, &session.RevokedAt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create session: %w", err)
+		return nil, fmt.Errorf("failed to create session")
 	}
 
 	return &session, nil
@@ -94,7 +94,7 @@ func (s *SessionService) GetSessionByToken(ctx context.Context, token string) (*
 		return nil, fmt.Errorf("session not found or expired")
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to get session: %w", err)
+		return nil, fmt.Errorf("failed to get session")
 	}
 
 	return &session, nil
@@ -123,18 +123,18 @@ func (s *SessionService) ListUserSessions(ctx context.Context, userID int64, cur
 		ORDER BY last_seen_at DESC
 	`, userID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list sessions: %w", err)
+		return nil, fmt.Errorf("failed to list sessions")
 	}
 	defer rows.Close()
 
-	var sessions []*UserSession
+	sessions := make([]*UserSession, 0)
 	for rows.Next() {
 		var session UserSession
 		var tokenHash string
 		if err := rows.Scan(&session.ID, &session.UUID, &session.UserID, &session.OrgID, &session.DeviceName,
 			&session.DeviceType, &session.Browser, &session.OS, &session.IPAddress, &session.Location,
 			&session.Active, &session.LastSeenAt, &session.ExpiresAt, &session.CreatedAt, &session.RevokedAt, &tokenHash); err != nil {
-			continue
+			return nil, fmt.Errorf("unable to read sessions")
 		}
 
 		// Mark current session
@@ -143,6 +143,9 @@ func (s *SessionService) ListUserSessions(ctx context.Context, userID int64, cur
 		sessions = append(sessions, &session)
 	}
 
+	if rows.Err() != nil {
+		return nil, fmt.Errorf("unable to read sessions")
+	}
 	return sessions, nil
 }
 
@@ -154,7 +157,7 @@ func (s *SessionService) RevokeSession(ctx context.Context, userID int64, sessio
 		WHERE uuid = $1 AND user_id = $2 AND active = true
 	`, sessionUUID, userID)
 	if err != nil {
-		return fmt.Errorf("failed to revoke session: %w", err)
+		return fmt.Errorf("failed to revoke session")
 	}
 
 	rowsAffected, _ := result.RowsAffected()
@@ -175,7 +178,7 @@ func (s *SessionService) RevokeAllSessions(ctx context.Context, userID int64, ex
 		WHERE user_id = $1 AND active = true AND token_hash != $2
 	`, userID, exceptHash)
 	if err != nil {
-		return 0, fmt.Errorf("failed to revoke sessions: %w", err)
+		return 0, fmt.Errorf("failed to revoke sessions")
 	}
 
 	rowsAffected, _ := result.RowsAffected()
@@ -199,7 +202,7 @@ func (s *SessionService) CleanupExpiredSessions(ctx context.Context) (int, error
 		WHERE expires_at < NOW() - INTERVAL '30 days'
 	`)
 	if err != nil {
-		return 0, fmt.Errorf("failed to cleanup sessions: %w", err)
+		return 0, fmt.Errorf("failed to cleanup sessions")
 	}
 
 	rowsAffected, _ := result.RowsAffected()
@@ -214,7 +217,7 @@ func (s *SessionService) GetActiveSessionCount(ctx context.Context, userID int64
 		WHERE user_id = $1 AND active = true AND expires_at > NOW()
 	`, userID).Scan(&count)
 	if err != nil {
-		return 0, fmt.Errorf("failed to count sessions: %w", err)
+		return 0, fmt.Errorf("failed to count sessions")
 	}
 	return count, nil
 }
@@ -230,7 +233,7 @@ func (s *SessionService) ChangePassword(ctx context.Context, userID int64, curre
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("user not found")
 		}
-		return fmt.Errorf("failed to get user: %w", err)
+		return fmt.Errorf("failed to get user")
 	}
 
 	// Verify current password
@@ -241,18 +244,24 @@ func (s *SessionService) ChangePassword(ctx context.Context, userID int64, curre
 	// Hash the new password
 	newHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("failed to hash password: %w", err)
+		return fmt.Errorf("failed to hash password")
 	}
 
-	// Update the password
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2
-	`, string(newHash), userID)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to update password: %w", err)
+		return fmt.Errorf("unable to change password")
 	}
-
-	return nil
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE users SET password_hash=$1,auth_version=auth_version+1,updated_at=now() WHERE id=$2`, string(newHash), userID); err != nil {
+		return fmt.Errorf("unable to change password")
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE user_sessions SET active=false,revoked_at=now() WHERE user_id=$1 AND active`, userID); err != nil {
+		return fmt.Errorf("unable to revoke sessions")
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM auth_challenges WHERE user_id=$1`, userID); err != nil {
+		return fmt.Errorf("unable to revoke verification challenges")
+	}
+	return tx.Commit()
 }
 
 // hashToken creates a SHA256 hash of a token

@@ -78,6 +78,10 @@ func (c *SESWebhookController) HandleIncoming(r *ghttp.Request) {
 			r.Response.WriteStatus(http.StatusBadGateway)
 			return
 		}
+		if err = c.receivingService.ConfirmNotificationSubscription(r.Context(), auth); err != nil {
+			r.Response.WriteStatus(http.StatusServiceUnavailable)
+			return
+		}
 		response.Success(r, map[string]string{"status": "subscription_confirmed"})
 	case "Notification":
 		payload, parseErr := parseSESNotification(notification.Message)

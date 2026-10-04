@@ -5,6 +5,7 @@ import type {
   WebhookCall,
   RotateSecretResponse,
   ApiResponse,
+  WebhookTestResult,
 } from '../types';
 
 export class Webhooks {
@@ -30,7 +31,7 @@ export class Webhooks {
   async get(uuid: string): Promise<Webhook> {
     const response = await this.request<ApiResponse<Webhook>>(
       'GET',
-      `/webhooks/${uuid}`
+      `/webhooks/${encodeURIComponent(uuid)}`
     );
     return response.data;
   }
@@ -43,7 +44,7 @@ export class Webhooks {
       'GET',
       '/webhooks'
     );
-    return response.data;
+    return response.data ?? [];
   }
 
   /**
@@ -54,7 +55,7 @@ export class Webhooks {
   async update(uuid: string, data: UpdateWebhookRequest): Promise<Webhook> {
     const response = await this.request<ApiResponse<Webhook>>(
       'PUT',
-      `/webhooks/${uuid}`,
+      `/webhooks/${encodeURIComponent(uuid)}`,
       data
     );
     return response.data;
@@ -65,7 +66,7 @@ export class Webhooks {
    * @param uuid - The webhook UUID
    */
   async delete(uuid: string): Promise<void> {
-    await this.request<ApiResponse<null>>('DELETE', `/webhooks/${uuid}`);
+    await this.request<ApiResponse<null>>('DELETE', `/webhooks/${encodeURIComponent(uuid)}`);
   }
 
   /**
@@ -75,7 +76,7 @@ export class Webhooks {
   async rotateSecret(uuid: string): Promise<string> {
     const response = await this.request<ApiResponse<RotateSecretResponse>>(
       'POST',
-      `/webhooks/${uuid}/rotate-secret`
+      `/webhooks/${encodeURIComponent(uuid)}/rotate-secret`
     );
     return response.data.secret;
   }
@@ -89,7 +90,7 @@ export class Webhooks {
     const query = limit ? `?limit=${limit}` : '';
     const response = await this.request<ApiResponse<WebhookCall[]>>(
       'GET',
-      `/webhooks/${uuid}/calls${query}`
+      `/webhooks/${encodeURIComponent(uuid)}/calls${query}`
     );
     return response.data;
   }
@@ -98,7 +99,8 @@ export class Webhooks {
    * Send a test webhook event
    * @param uuid - The webhook UUID
    */
-  async test(uuid: string): Promise<void> {
-    await this.request<ApiResponse<null>>('POST', `/webhooks/${uuid}/test`);
+  async test(uuid: string): Promise<WebhookTestResult> {
+    const result = await this.request<ApiResponse<WebhookTestResult>>('POST', `/webhooks/${encodeURIComponent(uuid)}/test`);
+    return result.data;
   }
 }

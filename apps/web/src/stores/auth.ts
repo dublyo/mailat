@@ -9,6 +9,7 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
   const token = ref<string | null>(null)
   const isLoading = ref(false)
+  const challengeToken = ref<string | null>(null)
   const isInitialized = ref(false)
 
   const isAuthenticated = computed(() => !!user.value && !!token.value)
@@ -17,9 +18,18 @@ export const useAuthStore = defineStore('auth', () => {
     isLoading.value = true
     try {
       const response = await authApi.login(email, password)
+      if (response.requiresTwoFactor) {
+        challengeToken.value = response.challengeToken
+        token.value = null
+        user.value = null
+        api.setToken(null)
+        return false
+      }
+      challengeToken.value = null
       token.value = response.token
       user.value = response.user
       api.setToken(response.token)
+      return true
     } finally {
       isLoading.value = false
     }
@@ -37,7 +47,19 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function verifyChallenge(code: string) {
+    if (!challengeToken.value) throw new Error('Sign in again to request a verification code.')
+    const result = await authApi.completeChallenge(challengeToken.value, code)
+    challengeToken.value = null
+    token.value = result.token
+    user.value = result.user
+    api.setToken(result.token)
+  }
+
   function logout() {
+    const currentToken = api.getToken()
+    if (currentToken) void authApi.logout(currentToken).catch(() => { /* Local logout remains possible offline. */ })
+    challengeToken.value = null
     useReceivedInboxStore().reset()
     useInboxStore().closeCompose()
     useDomainsStore().reset()
@@ -72,6 +94,8 @@ export const useAuthStore = defineStore('auth', () => {
     isInitialized,
     isAuthenticated,
     login,
+    challengeToken,
+    verifyChallenge,
     register,
     logout,
     checkAuth

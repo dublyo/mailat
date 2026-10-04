@@ -3,11 +3,16 @@
 import hashlib
 import hmac
 import time
-from typing import Any, Dict, List, Optional, Union
+import re
+import math
+from urllib.parse import quote
+from mailat.core import Inbox, Compose, Domains, Identities, Triggers, Deliveries, send_headers
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import httpx
 
 from mailat.models import (
+    Attachment,
     BatchSendResponse,
     CreateTemplateRequest,
     CreateWebhookRequest,
@@ -51,6 +56,7 @@ class Emails:
         metadata: Optional[Dict[str, str]] = None,
         scheduled_for: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        attachments: Optional[List[Attachment]] = None,
     ) -> SendEmailResponse:
         """
         Send a single transactional email.
@@ -100,14 +106,14 @@ class Emails:
         if scheduled_for:
             data["scheduledFor"] = scheduled_for
 
-        headers = {}
-        if idempotency_key:
-            headers["Idempotency-Key"] = idempotency_key
+        if attachments is not None:
+            data["attachments"] = [a.model_dump(by_alias=True, exclude_none=True) for a in attachments]
+        headers = send_headers(idempotency_key)
 
         response = self._client._request("POST", "/emails", data, headers)
         return SendEmailResponse(**response["data"])
 
-    def send_batch(self, emails: List[SendEmailRequest]) -> BatchSendResponse:
+    def send_batch(self, emails: List[SendEmailRequest], idempotency_key: Optional[str] = None) -> BatchSendResponse:
         """
         Send multiple emails in a batch (up to 100).
 
@@ -117,11 +123,11 @@ class Emails:
         Returns:
             BatchSendResponse with results for each email
         """
-        if len(emails) > 100:
+        if not emails or len(emails) > 100:
             raise ValueError("Batch size cannot exceed 100 emails")
 
         data = {"emails": [e.model_dump(by_alias=True, exclude_none=True) for e in emails]}
-        response = self._client._request("POST", "/emails/batch", data)
+        response = self._client._request("POST", "/emails/batch", data, send_headers(idempotency_key))
         return BatchSendResponse(**response["data"])
 
     def get(self, email_id: str) -> EmailStatusResponse:
@@ -134,7 +140,7 @@ class Emails:
         Returns:
             EmailStatusResponse with status and events
         """
-        response = self._client._request("GET", f"/emails/{email_id}")
+        response = self._client._request("GET", f"/emails/{quote(email_id, safe='')}")
         return EmailStatusResponse(**response["data"])
 
     def cancel(self, email_id: str) -> None:
@@ -147,7 +153,7 @@ class Emails:
         Raises:
             MailatError if email is not in queued status
         """
-        self._client._request("DELETE", f"/emails/{email_id}")
+        self._client._request("DELETE", f"/emails/{quote(email_id, safe='')}")
 
 
 class Templates:
@@ -180,13 +186,13 @@ class Templates:
 
     def get(self, uuid: str) -> Template:
         """Get a template by UUID."""
-        response = self._client._request("GET", f"/templates/{uuid}")
+        response = self._client._request("GET", f"/templates/{quote(uuid, safe='')}")
         return Template(**response["data"])
 
     def list(self) -> List[Template]:
         """List all templates."""
         response = self._client._request("GET", "/templates")
-        return [Template(**t) for t in response["data"]]
+        return [Template(**t) for t in (response["data"] or [])]
 
     def update(
         self,
@@ -213,19 +219,19 @@ class Templates:
         if is_active is not None:
             data["isActive"] = is_active
 
-        response = self._client._request("PUT", f"/templates/{uuid}", data)
+        response = self._client._request("PUT", f"/templates/{quote(uuid, safe='')}", data)
         return Template(**response["data"])
 
     def delete(self, uuid: str) -> None:
         """Delete a template."""
-        self._client._request("DELETE", f"/templates/{uuid}")
+        self._client._request("DELETE", f"/templates/{quote(uuid, safe='')}")
 
     def preview(
         self, uuid: str, variables: Optional[Dict[str, str]] = None
     ) -> PreviewTemplateResponse:
         """Preview a template with variables."""
         data = {"variables": variables or {}}
-        response = self._client._request("POST", f"/templates/{uuid}/preview", data)
+        response = self._client._request("POST", f"/templates/{quote(uuid, safe='')}/preview", data)
         return PreviewTemplateResponse(**response["data"])
 
 
@@ -247,13 +253,13 @@ class Webhooks:
 
     def get(self, uuid: str) -> Webhook:
         """Get a webhook by UUID."""
-        response = self._client._request("GET", f"/webhooks/{uuid}")
+        response = self._client._request("GET", f"/webhooks/{quote(uuid, safe='')}")
         return Webhook(**response["data"])
 
     def list(self) -> List[Webhook]:
         """List all webhooks."""
         response = self._client._request("GET", "/webhooks")
-        return [Webhook(**w) for w in response["data"]]
+        return [Webhook(**w) for w in (response["data"] or [])]
 
     def update(
         self,
@@ -274,26 +280,26 @@ class Webhooks:
         if active is not None:
             data["active"] = active
 
-        response = self._client._request("PUT", f"/webhooks/{uuid}", data)
+        response = self._client._request("PUT", f"/webhooks/{quote(uuid, safe='')}", data)
         return Webhook(**response["data"])
 
     def delete(self, uuid: str) -> None:
         """Delete a webhook."""
-        self._client._request("DELETE", f"/webhooks/{uuid}")
+        self._client._request("DELETE", f"/webhooks/{quote(uuid, safe='')}")
 
     def rotate_secret(self, uuid: str) -> str:
         """Rotate the webhook secret."""
-        response = self._client._request("POST", f"/webhooks/{uuid}/rotate-secret")
+        response = self._client._request("POST", f"/webhooks/{quote(uuid, safe='')}/rotate-secret")
         return response["data"]["secret"]
 
     def get_calls(self, uuid: str, limit: int = 50) -> List[WebhookCall]:
         """Get recent webhook delivery attempts."""
-        response = self._client._request("GET", f"/webhooks/{uuid}/calls?limit={limit}")
-        return [WebhookCall(**c) for c in response["data"]]
+        response = self._client._request("GET", f"/webhooks/{quote(uuid, safe='')}/calls?limit={limit}")
+        return [WebhookCall(**c) for c in (response["data"] or [])]
 
-    def test(self, uuid: str) -> None:
-        """Send a test webhook event."""
-        self._client._request("POST", f"/webhooks/{uuid}/test")
+    def test(self, uuid: str) -> Dict[str, Any]:
+        """Return the actual delivery status, including receiver failure."""
+        return self._client._request("POST", f"/webhooks/{quote(uuid, safe='')}/test")["data"]
 
 
 class Mailat:
@@ -306,7 +312,7 @@ class Mailat:
         ...     from_address="sender@yourdomain.com",
         ...     to=["recipient@example.com"],
         ...     subject="Hello!",
-        ...     html="<p>Welcome!</p>"
+        ...     html="<p>Welcome!</p>", idempotency_key="welcome-123"
         ... )
     """
 
@@ -328,7 +334,7 @@ class Mailat:
             raise ValueError("API key is required")
 
         self._api_key = api_key
-        self._base_url = base_url
+        self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._client = httpx.Client(
             timeout=timeout,
@@ -343,6 +349,12 @@ class Mailat:
         self.emails = Emails(self)
         self.templates = Templates(self)
         self.webhooks = Webhooks(self)
+        self.inbox = Inbox(self)
+        self.compose = Compose(self)
+        self.domains = Domains(self)
+        self.identities = Identities(self)
+        self.triggers = Triggers(self)
+        self.deliveries = Deliveries(self)
 
     def _request(
         self,
@@ -350,7 +362,8 @@ class Mailat:
         path: str,
         data: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, Any]:
+        binary: bool = False,
+    ) -> Any:
         """Make an API request."""
         url = f"{self._base_url}{path}"
 
@@ -361,19 +374,25 @@ class Mailat:
                 json=data,
                 headers=headers,
             )
-            result = response.json()
+            if response.is_success and binary:
+                return response.content
+            try:
+                result = response.json() if response.content else {}
+            except ValueError:
+                raise MailatError("Unexpected non-JSON API response", response.status_code)
 
             if not response.is_success:
                 raise MailatError(
                     result.get("message", "Request failed"),
                     response.status_code,
                     result.get("code"),
+                    response.headers.get("Retry-After"),
                 )
 
             return result
 
         except httpx.TimeoutException:
-            raise MailatError("Request timeout", 408)
+            raise MailatError("Request timeout; keep the same send key when retrying", 408)
         except httpx.RequestError as e:
             raise MailatError(str(e), 0)
 
@@ -406,43 +425,30 @@ class Mailat:
         Returns:
             True if the signature is valid
         """
-        if isinstance(payload, bytes):
-            payload = payload.decode("utf-8")
-
-        # Parse signature: t=timestamp,v1=signature
-        parts = dict(p.split("=", 1) for p in signature.split(",") if "=" in p)
-        timestamp_str = parts.get("t")
-        v1_sig = parts.get("v1")
-
-        if not timestamp_str or not v1_sig:
+        if not secret or not math.isfinite(tolerance) or tolerance < 0:
             return False
-
-        try:
-            timestamp = int(timestamp_str)
-        except ValueError:
+        fields = {}
+        for part in signature.split(","):
+            match = re.fullmatch(r"(t|v1)=([^=]+)", part.strip())
+            if not match or match[1] in fields:
+                return False
+            fields[match[1]] = match[2]
+        timestamp = fields.get("t", "")
+        digest = fields.get("v1", "")
+        if not re.fullmatch(r"[0-9]{1,13}", timestamp) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             return False
-
-        # Check timestamp tolerance
-        now = int(time.time())
-        if abs(now - timestamp) > tolerance:
+        if int(timestamp) <= 0 or abs(time.time() - int(timestamp)) > tolerance:
             return False
-
-        # Compute expected signature
-        signed_payload = f"{timestamp}.{payload}"
-        expected_sig = hmac.new(
-            secret.encode("utf-8"),
-            signed_payload.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-
-        # Timing-safe comparison
-        return hmac.compare_digest(v1_sig, expected_sig)
+        raw = payload.encode("utf-8") if isinstance(payload, str) else payload
+        expected = hmac.new(secret.encode("utf-8"), timestamp.encode("ascii") + b"." + raw, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(digest, expected)
 
     @staticmethod
     def parse_webhook_payload(
         payload: Union[str, bytes],
         signature: str,
         secret: str,
+        claim_event: Optional[Callable[[str], bool]] = None,
     ) -> WebhookPayload:
         """
         Verify and parse a webhook payload.
@@ -465,5 +471,13 @@ class Mailat:
             payload = payload.decode("utf-8")
 
         import json
-        data = json.loads(payload)
-        return WebhookPayload(**data)
+        try:
+            event = WebhookPayload(**json.loads(payload))
+        except (ValueError, TypeError):
+            raise MailatError("Invalid webhook event envelope", 400)
+        if event.version != "1" or not event.id or not event.type:
+            raise MailatError("Invalid webhook event envelope", 400)
+        # Consumers can atomically claim durable IDs before processing retries.
+        if claim_event is not None and not claim_event(event.id):
+            raise MailatError("Webhook event already processed", 409)
+        return event

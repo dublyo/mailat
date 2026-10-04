@@ -16,7 +16,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/dublyo/mailat/api/internal/config"
-	"github.com/dublyo/mailat/api/internal/database"
+	"github.com/dublyo/mailat/api/internal/middleware"
 	"github.com/dublyo/mailat/api/internal/model"
 )
 
@@ -36,7 +36,7 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 	var userCount int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&userCount)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check existing users: %w", err)
+		return nil, fmt.Errorf("failed to check existing users")
 	}
 	if userCount > 0 {
 		return nil, fmt.Errorf("registration is closed — contact your admin for an invite")
@@ -51,7 +51,7 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 	// Hash password
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return nil, fmt.Errorf("failed to hash password: %w", err)
+		return nil, fmt.Errorf("failed to hash password")
 	}
 
 	// Generate org slug
@@ -60,9 +60,20 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 	// Start transaction
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return nil, fmt.Errorf("failed to start transaction")
 	}
 	defer tx.Rollback()
+
+	// Serialize initial setup so concurrent registrations cannot create extra owners.
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(20261004,1)`); err != nil {
+		return nil, fmt.Errorf("unable to check registration")
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&userCount); err != nil {
+		return nil, fmt.Errorf("unable to check registration")
+	}
+	if userCount > 0 {
+		return nil, fmt.Errorf("registration is closed — contact your admin for an invite")
+	}
 
 	// Create organization (matching Prisma schema) with configurable limits
 	var orgID int64
@@ -78,7 +89,7 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 		s.cfg.DefaultMaxContacts,
 	).Scan(&orgID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create organization: %w", err)
+		return nil, fmt.Errorf("failed to create organization")
 	}
 
 	// Create user (matching Prisma schema)
@@ -93,18 +104,18 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 		&user.Role, &user.Status, &user.EmailVerified, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		return nil, fmt.Errorf("failed to create user")
 	}
 
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+		return nil, fmt.Errorf("failed to commit transaction")
 	}
 
 	// Generate JWT token
-	token, err := s.generateToken(&user)
+	token, err := s.issueSession(ctx, &user, 0, false)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate token: %w", err)
+		return nil, fmt.Errorf("failed to generate token")
 	}
 
 	return &model.AuthResponse{
@@ -114,50 +125,14 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 }
 
 // Login authenticates a user and returns a JWT token
-func (s *AuthService) Login(ctx context.Context, req *model.LoginRequest) (*model.AuthResponse, error) {
-	var user model.User
+func (s *AuthService) Login(ctx context.Context, req *model.LoginRequest) (*model.LoginResponse, error) {
+	var id, version int64
 	var passwordHash string
-
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, uuid, org_id, email, password_hash, name, role, status, email_verified,
-		       last_login_at, created_at, updated_at
-		FROM users
-		WHERE email = $1 AND status = 'active'
-	`, strings.ToLower(req.Email)).Scan(
-		&user.ID, &user.UUID, &user.OrgID, &user.Email, &passwordHash, &user.Name,
-		&user.Role, &user.Status, &user.EmailVerified, &user.LastLoginAt,
-		&user.CreatedAt, &user.UpdatedAt,
-	)
-
-	if err == sql.ErrNoRows {
+	err := s.db.QueryRowContext(ctx, `SELECT id,password_hash,auth_version FROM users WHERE email=$1 AND status='active'`, strings.ToLower(strings.TrimSpace(req.Email))).Scan(&id, &passwordHash, &version)
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)) != nil {
 		return nil, fmt.Errorf("invalid email or password")
 	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to query user: %w", err)
-	}
-
-	// Verify password
-	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
-		return nil, fmt.Errorf("invalid email or password")
-	}
-
-	// Update last login
-	go func() {
-		database.DB.ExecContext(context.Background(), `
-			UPDATE users SET last_login_at = NOW() WHERE id = $1
-		`, user.ID)
-	}()
-
-	// Generate JWT token
-	token, err := s.generateToken(&user)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate token: %w", err)
-	}
-
-	return &model.AuthResponse{
-		Token: token,
-		User:  &user,
-	}, nil
+	return s.authenticateUser(ctx, id, &version)
 }
 
 // GetUserByID retrieves a user by ID
@@ -168,7 +143,7 @@ func (s *AuthService) GetUserByID(ctx context.Context, userID int64) (*model.Use
 		SELECT id, uuid, org_id, email, name, role, status, email_verified,
 		       last_login_at, created_at, updated_at
 		FROM users
-		WHERE id = $1
+		WHERE id = $1 AND status='active'
 	`, userID).Scan(
 		&user.ID, &user.UUID, &user.OrgID, &user.Email, &user.Name,
 		&user.Role, &user.Status, &user.EmailVerified, &user.LastLoginAt,
@@ -179,7 +154,7 @@ func (s *AuthService) GetUserByID(ctx context.Context, userID int64) (*model.Use
 		return nil, fmt.Errorf("user not found")
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to query user: %w", err)
+		return nil, fmt.Errorf("failed to query user")
 	}
 
 	return &user, nil
@@ -187,10 +162,26 @@ func (s *AuthService) GetUserByID(ctx context.Context, userID int64) (*model.Use
 
 // CreateAPIKey generates a new API key for the organization
 func (s *AuthService) CreateAPIKey(ctx context.Context, orgID int64, userID int64, req *model.CreateApiKeyRequest) (*model.ApiKeyResponse, error) {
+	// Validate the advertised contract before creating a credential. Unknown scopes
+	// must not become accidentally privileged when new routes are added later.
+	if len(req.Permissions) == 0 {
+		return nil, fmt.Errorf("select at least one permission")
+	}
+	seen := map[string]bool{}
+	for _, permission := range req.Permissions {
+		if !middleware.APIKeyPermissions[permission] || seen[permission] {
+			return nil, fmt.Errorf("invalid or duplicate API permission")
+		}
+		seen[permission] = true
+	}
+	var allowed bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND org_id=$2 AND status='active' AND role IN ('owner','admin'))`, userID, orgID).Scan(&allowed); err != nil || !allowed {
+		return nil, fmt.Errorf("only workspace administrators can create API keys")
+	}
 	// Generate API key
 	keyBytes := make([]byte, 32)
 	if _, err := rand.Read(keyBytes); err != nil {
-		return nil, fmt.Errorf("failed to generate key: %w", err)
+		return nil, fmt.Errorf("failed to generate key")
 	}
 	apiKey := "ue_" + hex.EncodeToString(keyBytes)
 	keyPrefix := apiKey[:10]
@@ -203,18 +194,19 @@ func (s *AuthService) CreateAPIKey(ctx context.Context, orgID int64, userID int6
 	var expiresAt sql.NullTime
 	if req.ExpiresAt != nil {
 		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
-		if err == nil {
-			expiresAt = sql.NullTime{Time: t, Valid: true}
+		if err != nil || !t.After(time.Now()) {
+			return nil, fmt.Errorf("expiresAt must be a future RFC3339 timestamp")
 		}
+		expiresAt = sql.NullTime{Time: t, Valid: true}
 	}
 
 	// Set default rate limit if not provided
 	rateLimit := req.RateLimit
-	if rateLimit <= 0 {
-		rateLimit = 100 // default 100 requests per minute
+	if rateLimit == 0 {
+		rateLimit = 100
 	}
-	if rateLimit > 10000 {
-		rateLimit = 10000 // max 10000 requests per minute
+	if rateLimit < 1 || rateLimit > 10000 {
+		return nil, fmt.Errorf("rateLimit must be between 1 and 10000 requests per minute")
 	}
 
 	// Insert into database
@@ -229,7 +221,7 @@ func (s *AuthService) CreateAPIKey(ctx context.Context, orgID int64, userID int6
 		pq.Array(&result.Permissions), &result.RateLimit, &result.ExpiresAt, &result.CreatedAt,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create API key: %w", err)
+		return nil, fmt.Errorf("unable to create API key")
 	}
 
 	// Only return full key on creation
@@ -247,17 +239,17 @@ func (s *AuthService) ListAPIKeys(ctx context.Context, orgID int64) ([]*model.Ap
 		ORDER BY created_at DESC
 	`, orgID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query API keys: %w", err)
+		return nil, fmt.Errorf("unable to list API keys")
 	}
 	defer rows.Close()
 
-	var keys []*model.ApiKeyResponse
+	keys := make([]*model.ApiKeyResponse, 0)
 	for rows.Next() {
 		var key model.ApiKeyResponse
 		var lastUsedAt sql.NullTime
 		if err := rows.Scan(&key.ID, &key.UUID, &key.Name, &key.KeyPrefix,
 			pq.Array(&key.Permissions), &key.RateLimit, &lastUsedAt, &key.ExpiresAt, &key.CreatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan API key: %w", err)
+			return nil, fmt.Errorf("failed to scan API key")
 		}
 		if lastUsedAt.Valid {
 			key.LastUsedAt = &lastUsedAt.Time
@@ -265,6 +257,9 @@ func (s *AuthService) ListAPIKeys(ctx context.Context, orgID int64) ([]*model.Ap
 		keys = append(keys, &key)
 	}
 
+	if rows.Err() != nil {
+		return nil, fmt.Errorf("unable to list API keys")
+	}
 	return keys, nil
 }
 
@@ -275,7 +270,7 @@ func (s *AuthService) DeleteAPIKey(ctx context.Context, orgID int64, keyUUID str
 		WHERE uuid = $1 AND org_id = $2
 	`, keyUUID, orgID)
 	if err != nil {
-		return fmt.Errorf("failed to delete API key: %w", err)
+		return fmt.Errorf("unable to revoke API key")
 	}
 
 	rows, _ := result.RowsAffected()
@@ -291,31 +286,21 @@ func (s *AuthService) IsRegistrationOpen(ctx context.Context) (bool, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
 	if err != nil {
-		return false, fmt.Errorf("failed to check users: %w", err)
+		return false, fmt.Errorf("failed to check users")
 	}
 	return count == 0, nil
 }
 
+func (s *AuthService) sessionExpiry() time.Time {
+	expiry := 7 * 24 * time.Hour
+	if d, err := time.ParseDuration(s.cfg.JWTExpiresIn); err == nil && d > 0 {
+		expiry = d
+	}
+	return time.Now().Add(expiry).Truncate(time.Second)
+}
 func (s *AuthService) generateToken(user *model.User) (string, error) {
-	// Parse expiry duration (e.g., "7d")
-	expiry := 7 * 24 * time.Hour // default 7 days
-	if s.cfg.JWTExpiresIn != "" {
-		if d, err := time.ParseDuration(s.cfg.JWTExpiresIn); err == nil {
-			expiry = d
-		}
-	}
-
-	claims := jwt.MapClaims{
-		"userId": user.ID,
-		"orgId":  user.OrgID,
-		"email":  user.Email,
-		"role":   user.Role,
-		"exp":    time.Now().Add(expiry).Unix(),
-		"iat":    time.Now().Unix(),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.cfg.JWTSecret))
+	claims := model.AccessClaims{UserID: user.ID, OrgID: user.OrgID, Purpose: "session", RegisteredClaims: jwt.RegisteredClaims{Issuer: "mailat", Audience: jwt.ClaimStrings{"mailat-api"}, ID: uuid.NewString(), IssuedAt: jwt.NewNumericDate(time.Now()), ExpiresAt: jwt.NewNumericDate(s.sessionExpiry())}}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.cfg.JWTSecret))
 }
 
 func generateSlug(name string) string {

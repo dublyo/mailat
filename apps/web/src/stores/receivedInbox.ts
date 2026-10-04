@@ -250,6 +250,8 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
       // SSE has no replay log. Catch up after both first connect and reconnect,
       // including mail committed while a deployment interrupted the stream.
       onConnected: () => { if (active()) { sseConnected.value = true; refreshSoon() } },
+      // Refresh the final folder and all counts, including DMARC Reports.
+      // This path intentionally creates no Inbox arrival toast for filed mail.
       onNewEmail: changed,
       onEmailUpdate: changed,
       onEmailDeleted: changed,

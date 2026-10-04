@@ -2,9 +2,55 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, AliasChoices, ConfigDict, Field, field_validator
+
+def _camel(name: str) -> str:
+    head, *tail = name.split("_")
+    return head + "".join(part.capitalize() for part in tail)
+
+class WireModel(BaseModel):
+    model_config = ConfigDict(alias_generator=_camel, populate_by_name=True)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def empty_lists(cls, value, info):
+        annotation = cls.model_fields[info.field_name].annotation
+        if value is None and getattr(annotation, "__origin__", None) is list:
+            return []
+        return value
+
+
+DMARC_REPORTS_FOLDER = "dmarc-reports"
+MailboxFolder = Literal["inbox", "dmarc-reports", "sent", "drafts", "outbox", "archive", "spam", "trash"]
+InboxView = Literal["inbox", "dmarc-reports", "sent", "drafts", "outbox", "archive", "spam", "trash", "all", "starred"]
+MailboxMoveDestination = Literal["inbox", "dmarc-reports", "archive", "spam", "trash"]
+
+
+class InboxCounts(WireModel):
+    inbox: int
+    inbox_unread: int
+    dmarc_reports: int
+    dmarc_reports_unread: int
+    unread: int  # Global total; use inbox_unread for the main Inbox badge.
+    starred: int
+    sent: int
+    drafts: int
+    spam: int
+    trash: int
+    labels: Dict[str, int] = Field(default_factory=dict)
+
+
+class DMARCReportsSettings(WireModel):
+    """Human-session-only preference; API keys cannot update account settings."""
+    auto_organize_dmarc_reports: bool
+
+
+class UpdateDMARCReportsSettings(WireModel):
+    """Serialize with exclude_none=True: omission preserves, False opts out."""
+    auto_organize_dmarc_reports: Optional[bool] = None
+
 
 
 class EmailStatus(str, Enum):
@@ -16,30 +62,35 @@ class EmailStatus(str, Enum):
     BOUNCED = "bounced"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+    ACCEPTED = "accepted"
+    COMPLAINED = "complained"
 
 
 class WebhookEvent(str, Enum):
     """Webhook event types."""
+    EMAIL_RECEIVED = "email.received"
+    EMAIL_UNKNOWN = "email.unknown"
+    WEBHOOK_TEST = "webhook.test"
     EMAIL_SENT = "email.sent"
     EMAIL_DELIVERED = "email.delivered"
     EMAIL_BOUNCED = "email.bounced"
     EMAIL_COMPLAINED = "email.complained"
-    EMAIL_OPENED = "email.opened"
-    EMAIL_CLICKED = "email.clicked"
     EMAIL_FAILED = "email.failed"
 
 
 # Request models
 
-class Attachment(BaseModel):
+class Attachment(WireModel):
     """Email attachment."""
-    filename: str
+    name: str = Field(validation_alias=AliasChoices("name", "filename"))
     content: str  # Base64 encoded
-    content_type: str
+    type: str = Field(validation_alias=AliasChoices("type", "content_type", "contentType"))
+    disposition: Optional[str] = None
     cid: Optional[str] = None
 
 
-class SendEmailRequest(BaseModel):
+class SendEmailRequest(WireModel):
     """Request to send an email."""
     from_address: str = Field(alias="from")
     to: List[str]
@@ -55,12 +106,11 @@ class SendEmailRequest(BaseModel):
     tags: Optional[List[str]] = None
     metadata: Optional[Dict[str, str]] = None
     scheduled_for: Optional[str] = None
-
-    class Config:
-        populate_by_name = True
+    idempotency_key: Optional[str] = None
 
 
-class CreateTemplateRequest(BaseModel):
+
+class CreateTemplateRequest(WireModel):
     """Request to create a template."""
     name: str
     description: Optional[str] = None
@@ -69,7 +119,7 @@ class CreateTemplateRequest(BaseModel):
     text: Optional[str] = None
 
 
-class UpdateTemplateRequest(BaseModel):
+class UpdateTemplateRequest(WireModel):
     """Request to update a template."""
     name: Optional[str] = None
     description: Optional[str] = None
@@ -79,14 +129,14 @@ class UpdateTemplateRequest(BaseModel):
     is_active: Optional[bool] = None
 
 
-class CreateWebhookRequest(BaseModel):
+class CreateWebhookRequest(WireModel):
     """Request to create a webhook."""
     name: str
     url: str
     events: List[WebhookEvent]
 
 
-class UpdateWebhookRequest(BaseModel):
+class UpdateWebhookRequest(WireModel):
     """Request to update a webhook."""
     name: Optional[str] = None
     url: Optional[str] = None
@@ -96,7 +146,7 @@ class UpdateWebhookRequest(BaseModel):
 
 # Response models
 
-class DeliveryEvent(BaseModel):
+class DeliveryEvent(WireModel):
     """Email delivery event."""
     id: int
     email_id: int
@@ -107,7 +157,7 @@ class DeliveryEvent(BaseModel):
     user_agent: Optional[str] = None
 
 
-class SendEmailResponse(BaseModel):
+class SendEmailResponse(WireModel):
     """Response from sending an email."""
     id: str
     message_id: str
@@ -115,7 +165,7 @@ class SendEmailResponse(BaseModel):
     accepted_at: datetime
 
 
-class BatchEmailResult(BaseModel):
+class BatchEmailResult(WireModel):
     """Result for a single email in a batch."""
     index: int
     id: Optional[str] = None
@@ -124,12 +174,12 @@ class BatchEmailResult(BaseModel):
     error: Optional[str] = None
 
 
-class BatchSendResponse(BaseModel):
+class BatchSendResponse(WireModel):
     """Response from batch sending emails."""
     results: List[BatchEmailResult]
 
 
-class EmailStatusResponse(BaseModel):
+class EmailStatusResponse(WireModel):
     """Response with email status and events."""
     id: str
     message_id: str
@@ -142,11 +192,9 @@ class EmailStatusResponse(BaseModel):
     sent_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
 
-    class Config:
-        populate_by_name = True
 
 
-class Template(BaseModel):
+class Template(WireModel):
     """Email template."""
     id: int
     uuid: str
@@ -161,14 +209,14 @@ class Template(BaseModel):
     updated_at: datetime
 
 
-class PreviewTemplateResponse(BaseModel):
+class PreviewTemplateResponse(WireModel):
     """Response from previewing a template."""
     subject: str
     html: str
     text: str
 
 
-class Webhook(BaseModel):
+class Webhook(WireModel):
     """Webhook endpoint."""
     id: int
     uuid: str
@@ -177,8 +225,8 @@ class Webhook(BaseModel):
     events: List[WebhookEvent]
     active: bool
     secret: Optional[str] = None  # Only on creation
-    success_count: int
-    failure_count: int
+    success_count: int = 0
+    failure_count: int = 0
     last_triggered_at: Optional[datetime] = None
     last_success_at: Optional[datetime] = None
     last_failure_at: Optional[datetime] = None
@@ -186,7 +234,7 @@ class Webhook(BaseModel):
     updated_at: datetime
 
 
-class WebhookCall(BaseModel):
+class WebhookCall(WireModel):
     """Webhook delivery attempt."""
     id: int
     event_type: str
@@ -201,10 +249,12 @@ class WebhookCall(BaseModel):
     completed_at: Optional[datetime] = None
 
 
-class WebhookPayload(BaseModel):
+class WebhookPayload(WireModel):
     """Webhook event payload."""
+    version: str
+    id: str
     type: str
-    created_at: int
+    created_at: datetime
     data: Dict[str, Any]
 
 
@@ -213,10 +263,11 @@ class WebhookPayload(BaseModel):
 class MailatError(Exception):
     """Exception raised for API errors."""
 
-    def __init__(self, message: str, status: int, code: Optional[str] = None):
+    def __init__(self, message: str, status: int, code: Any = None, retry_after: Optional[str] = None):
         self.message = message
         self.status = status
         self.code = code
+        self.retry_after = retry_after
         super().__init__(message)
 
     def __str__(self) -> str:

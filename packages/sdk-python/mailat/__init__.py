@@ -10,7 +10,7 @@ Example:
     ...     from_address="sender@yourdomain.com",
     ...     to=["recipient@example.com"],
     ...     subject="Hello!",
-    ...     html="<p>Welcome!</p>"
+    ...     html="<p>Welcome!</p>", idempotency_key="welcome-123"
     ... )
 """
 
@@ -25,6 +25,10 @@ from mailat.models import (
     WebhookCall,
     DeliveryEvent,
     MailatError,
+    InboxCounts,
+    DMARC_REPORTS_FOLDER,
+    DMARCReportsSettings,
+    UpdateDMARCReportsSettings,
 )
 
 __version__ = "0.1.0"
@@ -39,4 +43,8 @@ __all__ = [
     "WebhookCall",
     "DeliveryEvent",
     "MailatError",
+    "InboxCounts",
+    "DMARC_REPORTS_FOLDER",
+    "DMARCReportsSettings",
+    "UpdateDMARCReportsSettings",
 ]

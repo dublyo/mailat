@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"errors"
+
 	"github.com/gogf/gf/v2/net/ghttp"
 
 	"github.com/dublyo/mailat/api/internal/middleware"
@@ -34,12 +36,16 @@ func (c *DomainController) Create(r *ghttp.Request) {
 
 	domain, err := c.domainService.CreateDomain(r.Context(), claims.OrgID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, domainOperationMessage(err))
 		return
 	}
 
 	// Get DNS records
-	records, _ := c.domainService.GetDNSRecords(r.Context(), domain.ID)
+	records, err := c.domainService.GetDNSRecords(r.Context(), domain.ID)
+	if err != nil {
+		response.InternalError(r, "Unable to load domain DNS records")
+		return
+	}
 
 	response.SuccessWithMessage(r, "Domain created. Please add the DNS records shown below.", map[string]interface{}{
 		"domain":     domain,
@@ -58,14 +64,18 @@ func (c *DomainController) List(r *ghttp.Request) {
 
 	domains, err := c.domainService.ListDomains(r.Context(), claims.OrgID)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		response.InternalError(r, "Unable to load domain data")
 		return
 	}
 
 	// Include DNS records for each domain
 	result := make([]map[string]interface{}, 0, len(domains))
 	for _, domain := range domains {
-		records, _ := c.domainService.GetDNSRecords(r.Context(), domain.ID)
+		records, err := c.domainService.GetDNSRecords(r.Context(), domain.ID)
+		if err != nil {
+			response.InternalError(r, "Unable to load domain DNS records")
+			return
+		}
 		result = append(result, map[string]interface{}{
 			"id":                domain.ID,
 			"uuid":              domain.UUID,
@@ -108,11 +118,15 @@ func (c *DomainController) Get(r *ghttp.Request) {
 
 	domain, err := c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		domainReadError(r, err)
 		return
 	}
 
-	records, _ := c.domainService.GetDNSRecords(r.Context(), domain.ID)
+	records, err := c.domainService.GetDNSRecords(r.Context(), domain.ID)
+	if err != nil {
+		response.InternalError(r, "Unable to load domain DNS records")
+		return
+	}
 
 	response.Success(r, map[string]interface{}{
 		"domain":     domain,
@@ -135,7 +149,7 @@ func (c *DomainController) DMARC(r *ghttp.Request) {
 	}
 	inspection, err := c.domainService.GetDMARC(r.Context(), claims.OrgID, domainUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		domainReadError(r, err)
 		return
 	}
 	r.Response.Header().Set("Cache-Control", "no-store")
@@ -159,19 +173,27 @@ func (c *DomainController) Verify(r *ghttp.Request) {
 
 	domain, err := c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		domainReadError(r, err)
 		return
 	}
 
 	results, err := c.domainService.VerifyDNS(r.Context(), domain.ID)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		response.InternalError(r, "Unable to load domain data")
 		return
 	}
 
 	// Reload domain to get updated status
-	domain, _ = c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
-	records, _ := c.domainService.GetDNSRecords(r.Context(), domain.ID)
+	domain, err = c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
+	if err != nil {
+		domainReadError(r, err)
+		return
+	}
+	records, err := c.domainService.GetDNSRecords(r.Context(), domain.ID)
+	if err != nil {
+		response.InternalError(r, "Unable to load domain DNS records")
+		return
+	}
 
 	response.Success(r, map[string]interface{}{
 		"domain":              domain,
@@ -197,7 +219,7 @@ func (c *DomainController) Delete(r *ghttp.Request) {
 
 	err := c.domainService.DeleteDomain(r.Context(), claims.OrgID, domainUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		domainReadError(r, err)
 		return
 	}
 
@@ -221,20 +243,28 @@ func (c *DomainController) InitiateSES(r *ghttp.Request) {
 
 	domain, err := c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		domainReadError(r, err)
 		return
 	}
 
 	// Initiate SES verification
 	sesRecords, err := c.domainService.InitiateSESVerification(r.Context(), domain.ID)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, domainOperationMessage(err))
 		return
 	}
 
 	// Reload domain to get updated status
-	domain, _ = c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
-	records, _ := c.domainService.GetDNSRecords(r.Context(), domain.ID)
+	domain, err = c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
+	if err != nil {
+		domainReadError(r, err)
+		return
+	}
+	records, err := c.domainService.GetDNSRecords(r.Context(), domain.ID)
+	if err != nil {
+		response.InternalError(r, "Unable to load domain DNS records")
+		return
+	}
 
 	response.SuccessWithMessage(r, "SES verification initiated. Add the DKIM records to your DNS.", map[string]interface{}{
 		"domain":     domain,
@@ -260,18 +290,22 @@ func (c *DomainController) CheckSESStatus(r *ghttp.Request) {
 
 	domain, err := c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		domainReadError(r, err)
 		return
 	}
 
 	status, err := c.domainService.CheckSESVerificationStatus(r.Context(), domain.ID)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, domainOperationMessage(err))
 		return
 	}
 
 	// Reload domain to get updated status
-	domain, _ = c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
+	domain, err = c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
+	if err != nil {
+		domainReadError(r, err)
+		return
+	}
 
 	response.Success(r, map[string]interface{}{
 		"domain":    domain,
@@ -310,14 +344,14 @@ func (c *DomainController) AddDNSToCloudflare(r *ghttp.Request) {
 
 	domain, err := c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		domainReadError(r, err)
 		return
 	}
 
 	// Add DNS records to Cloudflare
 	results, err := c.domainService.AddDNSToCloudflare(r.Context(), domain.ID, req.APIToken, req.ZoneID)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, domainOperationMessage(err))
 		return
 	}
 
@@ -350,9 +384,26 @@ func (c *DomainController) GetCloudflareZones(r *ghttp.Request) {
 
 	zones, err := c.domainService.GetCloudflareZones(r.Context(), req.APIToken)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, domainOperationMessage(err))
 		return
 	}
 
 	response.Success(r, zones)
+}
+
+// Keep missing resources distinguishable without returning driver errors or SQL
+// details. Other domain operations retain plain validation errors only.
+func domainReadError(r *ghttp.Request, err error) {
+	if errors.Is(err, service.ErrDomainNotFound) {
+		response.NotFound(r, "Domain not found")
+		return
+	}
+	response.InternalError(r, "Unable to load domain data")
+}
+
+func domainOperationMessage(err error) string {
+	if errors.Unwrap(err) != nil {
+		return "Unable to complete domain operation"
+	}
+	return err.Error()
 }

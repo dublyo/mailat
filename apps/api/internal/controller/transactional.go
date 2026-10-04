@@ -1,10 +1,15 @@
 package controller
 
 import (
+	"errors"
 	"github.com/gogf/gf/v2/net/ghttp"
+	"github.com/google/uuid"
+	"net/http"
+	"strings"
 
 	"github.com/dublyo/mailat/api/internal/middleware"
 	"github.com/dublyo/mailat/api/internal/model"
+	"github.com/dublyo/mailat/api/internal/provider"
 	"github.com/dublyo/mailat/api/internal/service"
 	"github.com/dublyo/mailat/api/pkg/response"
 )
@@ -20,6 +25,7 @@ func NewTransactionalController(transactionalService *service.TransactionalServi
 // SendEmail sends a single transactional email
 // POST /api/v1/emails
 func (c *TransactionalController) SendEmail(r *ghttp.Request) {
+	r.Request.Body = http.MaxBytesReader(r.Response.Writer, r.Request.Body, 18*1024*1024)
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
@@ -32,24 +38,33 @@ func (c *TransactionalController) SendEmail(r *ghttp.Request) {
 		return
 	}
 
-	// Get idempotency key from header
-	req.IdempotencyKey = r.Header.Get("Idempotency-Key")
+	if header := r.Header.Get("Idempotency-Key"); header != "" {
+		if req.IdempotencyKey != "" && req.IdempotencyKey != header {
+			response.BadRequest(r, "header and body idempotency keys must match")
+			return
+		}
+		req.IdempotencyKey = header
+	}
+	if !validHTTPSubmissionKey(req.IdempotencyKey) {
+		response.BadRequest(r, "an Idempotency-Key of 8 to 128 characters is required")
+		return
+	}
 
 	// Validate at least one recipient
-	if len(req.To) == 0 {
+	if len(req.To)+len(req.Cc)+len(req.Bcc) == 0 {
 		response.BadRequest(r, "At least one recipient required")
 		return
 	}
 
 	// Validate body or template
-	if req.HTML == "" && req.Text == "" && req.TemplateID == "" {
+	if req.HTML == "" && req.Text == "" && req.TemplateID == "" && len(req.Attachments) == 0 {
 		response.BadRequest(r, "Email body or templateId required")
 		return
 	}
 
 	result, err := c.transactionalService.SendEmailForUser(r.Context(), claims.OrgID, claims.UserID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		writeTransactionalError(r, err)
 		return
 	}
 
@@ -59,6 +74,7 @@ func (c *TransactionalController) SendEmail(r *ghttp.Request) {
 // BatchSendEmail sends multiple emails in batch
 // POST /api/v1/emails/batch
 func (c *TransactionalController) BatchSendEmail(r *ghttp.Request) {
+	r.Request.Body = http.MaxBytesReader(r.Response.Writer, r.Request.Body, 18*1024*1024)
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
@@ -71,6 +87,11 @@ func (c *TransactionalController) BatchSendEmail(r *ghttp.Request) {
 		return
 	}
 
+	req.IdempotencyKey = r.Header.Get("Idempotency-Key")
+	if !validHTTPSubmissionKey(req.IdempotencyKey) {
+		response.BadRequest(r, "an Idempotency-Key header of 8 to 128 characters is required")
+		return
+	}
 	if len(req.Emails) == 0 {
 		response.BadRequest(r, "At least one email required")
 		return
@@ -78,7 +99,7 @@ func (c *TransactionalController) BatchSendEmail(r *ghttp.Request) {
 
 	result, err := c.transactionalService.BatchSendEmailForUser(r.Context(), claims.OrgID, claims.UserID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		writeTransactionalError(r, err)
 		return
 	}
 
@@ -95,14 +116,18 @@ func (c *TransactionalController) GetEmailStatus(r *ghttp.Request) {
 	}
 
 	emailID := r.Get("id").String()
-	if emailID == "" {
-		response.BadRequest(r, "Email ID required")
+	if _, err := uuid.Parse(emailID); err != nil {
+		response.BadRequest(r, "A valid email UUID is required")
 		return
 	}
 
-	result, err := c.transactionalService.GetEmailStatus(r.Context(), claims.OrgID, emailID)
+	result, err := c.transactionalService.GetEmailStatusForUser(r.Context(), claims.OrgID, claims.UserID, emailID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		if err.Error() == "email not found" {
+			response.NotFound(r, "email not found")
+		} else {
+			writeTransactionalError(r, err)
+		}
 		return
 	}
 
@@ -119,14 +144,18 @@ func (c *TransactionalController) CancelEmail(r *ghttp.Request) {
 	}
 
 	emailID := r.Get("id").String()
-	if emailID == "" {
-		response.BadRequest(r, "Email ID required")
+	if _, err := uuid.Parse(emailID); err != nil {
+		response.BadRequest(r, "A valid email UUID is required")
 		return
 	}
 
-	err := c.transactionalService.CancelEmail(r.Context(), claims.OrgID, emailID)
+	err := c.transactionalService.CancelEmailForUser(r.Context(), claims.OrgID, claims.UserID, emailID)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		if err.Error() == "email not found or cannot be cancelled" {
+			response.BadRequest(r, "email not found or cannot be cancelled")
+		} else {
+			writeTransactionalError(r, err)
+		}
 		return
 	}
 
@@ -283,4 +312,22 @@ func (c *TransactionalController) PreviewTemplate(r *ghttp.Request) {
 	}
 
 	response.Success(r, preview)
+}
+
+func validHTTPSubmissionKey(key string) bool {
+	return len(key) >= 8 && len(key) <= 128 && !strings.ContainsAny(key, "\r\n")
+}
+func writeTransactionalError(r *ghttp.Request, err error) {
+	if errors.Is(err, service.ErrSubmissionConflict) {
+		r.Response.Status = http.StatusConflict
+		response.Error(r, http.StatusConflict, err.Error())
+		return
+	}
+	var validation *provider.MailValidationError
+	if errors.As(err, &validation) {
+		response.BadRequest(r, validation.Error())
+		return
+	}
+	r.Response.Status = http.StatusServiceUnavailable
+	response.Error(r, http.StatusServiceUnavailable, "Mail service is temporarily unavailable; retry unchanged content with the same idempotency key")
 }

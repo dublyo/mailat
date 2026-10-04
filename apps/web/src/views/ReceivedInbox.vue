@@ -22,6 +22,7 @@ const downloading = ref('')
 let inlineSequence = 0
 const filterForm = ref({ identity: '', domain: '', read: '', starred: '', attachments: '', sender: '', after: '', before: '' })
 const folder = computed(() => String(route.query.folder || route.params.folder || 'inbox'))
+const folderTitle = computed(() => ({ 'dmarc-reports': 'DMARC Reports', all: 'All Mail', inbox: 'Inbox', starred: 'Starred', sent: 'Sent', drafts: 'Drafts', outbox: 'Outbox', archive: 'Archive', spam: 'Spam', trash: 'Trash' })[folder.value] || folder.value)
 const identityId = computed(() => Number(route.query.identity) || 0)
 const current = computed(() => mailbox.currentEmail)
 const selectedIndex = computed(() => mailbox.emails.findIndex(e => e.uuid === selectedUuid.value))
@@ -39,7 +40,7 @@ const queryOptions = computed<InboxListOptions>(() => ({
 const chips = computed(() => Object.entries(route.query).filter(([key, value]) => ['q', 'identity', 'domain', 'read', 'starred', 'attachments', 'sender', 'after', 'before'].includes(key) && value).map(([key, value]) => ({ key, label: key === 'identity' ? domains.identities.find(i => String(i.id) === value)?.email || String(value) : key === 'domain' ? domains.domains.find(d => String(d.id) === value)?.name || String(value) : key === 'q' ? `Search: ${value}` : key === 'starred' ? 'Starred' : key === 'attachments' ? (value === 'true' ? 'With attachments' : 'Without attachments') : `${key}: ${value}` })))
 const range = computed(() => mailbox.total ? `${(mailbox.page - 1) * mailbox.pageSize + 1}–${Math.min(mailbox.page * mailbox.pageSize, mailbox.total)} of ${mailbox.total}` : '0 messages')
 const sanitizedHtml = computed(() => {
-  if (!current.value?.htmlBody) return ''
+  if (!current.value?.htmlBody?.trim()) return ''
   let html = current.value.htmlBody
   for (const attachment of current.value.attachments || []) {
     if (attachment.contentId && inlineUrls.value[attachment.uuid]) html = html.split(`cid:${attachment.contentId.replace(/[<>]/g, '')}`).join(escapeHtml(inlineUrls.value[attachment.uuid]))
@@ -120,7 +121,7 @@ function compose(mode: 'reply' | 'replyAll' | 'forward' | 'draft') {
   if (composer.isComposeOpen) { mailbox.notice = 'Close or save your current composition first.'; return }
   composer.openCompose(mode, convert(current.value))
 }
-async function perform(action: 'read' | 'unread' | 'star' | 'unstar' | 'archive' | 'spam' | 'restore' | 'trash') {
+async function perform(action: 'read' | 'unread' | 'star' | 'unstar' | 'archive' | 'spam' | 'restore' | 'trash' | 'dmarc-reports') {
   const ids = [...actionIds.value]
   if (!ids.length || mailbox.isMutating) return
   const permanent = action === 'trash' && folder.value === 'trash'
@@ -134,10 +135,10 @@ async function perform(action: 'read' | 'unread' | 'star' | 'unstar' | 'archive'
     else await mailbox.moveEmails(ids, action === 'restore' ? 'inbox' : action)
     mailbox.clearSelection()
     if (mailbox.page !== (Number(route.query.page) || 1)) void router.replace({ query: { ...route.query, page: String(mailbox.page) } })
-    if (['archive', 'spam', 'restore', 'trash'].includes(action)) {
+    if (['archive', 'spam', 'restore', 'trash', 'dmarc-reports'].includes(action)) {
       if (selectedUuid.value && next && mailbox.emails.some(e => e.uuid === next.uuid)) await openEmail(next)
       else closeEmail()
-      mailbox.notice = permanent ? 'Messages permanently deleted.' : action === 'restore' ? 'Messages restored to Inbox.' : `Messages moved to ${action === 'trash' ? 'Trash' : action}.`
+      mailbox.notice = permanent ? 'Messages permanently deleted.' : action === 'restore' ? 'Messages restored to Inbox.' : `Messages moved to ${action === 'trash' ? 'Trash' : action === 'dmarc-reports' ? 'DMARC Reports' : action}.`
     } else if (action === 'unread') closeEmail()
   } catch { /* Keep selection so a failed operation is easy to retry. */ }
 }
@@ -159,10 +160,11 @@ function formatDate(value: string, full = false) {
       <div class="flex flex-wrap items-center gap-2 px-3 py-2 border-b bg-white">
         <button v-if="selectedUuid" @click="closeEmail" class="mail-action" title="Back to message list"><ArrowLeft class="w-5 h-5" /></button>
         <label v-else class="flex items-center gap-2 p-2 text-xs"><input type="checkbox" :checked="mailbox.allSelected" :indeterminate="mailbox.someSelected" @change="mailbox.selectAll" aria-label="Select all messages on this page" class="w-4 h-4" /><span v-if="mailbox.selectedEmailUuids.length">{{ mailbox.selectedEmailUuids.length }} selected</span></label>
-        <h1 v-if="!actionIds.length" class="text-base font-medium capitalize mr-1">{{ folder === 'all' ? 'All mail' : folder }}</h1>
+        <h1 v-if="!actionIds.length" class="text-base font-medium capitalize mr-1">{{ folderTitle }}</h1>
         <div v-if="actionIds.length" class="flex items-center gap-1 flex-wrap">
-          <button v-if="['archive', 'trash', 'spam'].includes(folder)" @click="perform('restore')" :disabled="mailbox.isMutating" class="mail-action" title="Restore to Inbox"><Inbox class="w-4 h-4" /></button>
-          <button v-else-if="!['drafts', 'outbox'].includes(folder)" @click="perform('archive')" :disabled="mailbox.isMutating" class="mail-action" title="Archive"><Archive class="w-4 h-4" /></button>
+          <button v-if="!['inbox', 'sent', 'drafts', 'outbox'].includes(folder)" @click="perform('restore')" :disabled="mailbox.isMutating" class="mail-action" title="Move to Inbox" aria-label="Move to Inbox"><Inbox class="w-4 h-4" /></button>
+          <button v-if="!['archive', 'drafts', 'outbox'].includes(folder)" @click="perform('archive')" :disabled="mailbox.isMutating" class="mail-action" title="Archive"><Archive class="w-4 h-4" /></button>
+          <button v-if="!['dmarc-reports', 'sent', 'drafts', 'outbox'].includes(folder)" @click="perform('dmarc-reports')" :disabled="mailbox.isMutating" class="mail-action" title="Move to DMARC Reports" aria-label="Move to DMARC Reports"><FileText class="w-4 h-4" /></button>
           <button @click="perform('trash')" :disabled="mailbox.isMutating" class="mail-action" :title="folder === 'trash' ? 'Delete permanently' : 'Move to Trash'"><Trash2 class="w-4 h-4" /></button>
           <button @click="perform('read')" :disabled="mailbox.isMutating" class="mail-action" title="Mark as read"><MailOpen class="w-4 h-4" /></button>
           <button @click="perform('unread')" :disabled="mailbox.isMutating" class="mail-action" title="Mark as unread"><Mail class="w-4 h-4" /></button>
@@ -185,14 +187,14 @@ function formatDate(value: string, full = false) {
         <label class="flex items-center gap-2 self-center"><input v-model="filterForm.starred" type="checkbox" true-value="true" false-value="" />Starred only</label>
         <div class="col-span-2 lg:col-span-4 flex gap-3"><button type="submit" class="px-4 py-2 rounded-full bg-gmail-blue text-white">Apply filters</button><button type="button" @click="clearFilters" class="px-3 py-2 text-gray-600">Clear all</button></div>
       </form>
-      <div v-if="chips.length && !selectedUuid" class="flex flex-wrap gap-2 px-3 py-2 border-b" aria-label="Active filters"><button v-for="chip in chips" :key="chip.key" @click="updateQuery({ [chip.key]: undefined })" class="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 text-xs px-3 py-1" :aria-label="`Remove ${chip.label}`">{{ chip.label }}<X class="w-3 h-3" /></button><button @click="clearFilters" class="text-xs text-gray-500 underline">Clear all</button></div>
+      <div v-if="chips.length && !selectedUuid" class="flex flex-wrap gap-2 px-3 py-2 border-b" aria-label="Active filters"><button v-for="chip in chips" :key="chip.key" @click="updateQuery({ [chip.key]: undefined })" class="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 text-xs px-3 py-1" :aria-label="`Remove ${chip.label}`">{{ chip.label }}<X class="w-3 h-3" /></button><button v-if="route.query.q && folder !== 'all'" @click="updateQuery({ folder: 'all' })" class="text-xs text-blue-600 underline">Search All Mail</button><button @click="clearFilters" class="text-xs text-gray-500 underline">Clear all</button></div>
       <div v-if="mailbox.error" role="alert" class="px-4 py-3 text-sm bg-red-50 text-red-700 flex gap-3"><span class="flex-1">{{ mailbox.error }}</span><button @click="selectedUuid ? mailbox.fetchEmail(selectedUuid) : load(true)" class="underline">Retry</button></div>
       <div v-if="mailbox.notice" role="status" class="px-4 py-2 text-sm bg-blue-50 text-blue-800 flex gap-3"><span class="flex-1">{{ mailbox.notice }}</span><button @click="mailbox.notice = ''" aria-label="Dismiss message"><X class="w-4 h-4" /></button></div>
       <div v-if="mailbox.isLoading" class="h-0.5 bg-blue-100 overflow-hidden"><div class="w-1/3 h-full bg-blue-500 animate-pulse" /></div>
       <div class="flex-1 flex min-h-0 overflow-hidden">
         <div :class="['overflow-y-auto min-w-0', selectedUuid ? 'hidden lg:block w-80 shrink-0 border-r' : 'flex-1']">
           <div v-if="mailbox.isLoading && !mailbox.emails.length" class="p-4 space-y-4" role="status" aria-label="Loading messages"><div v-for="n in 8" :key="n" class="h-12 bg-gray-100 rounded animate-pulse" /></div>
-          <div v-else-if="!mailbox.emails.length" class="h-full min-h-60 flex flex-col items-center justify-center p-6 text-center"><Mail class="w-12 h-12 text-gray-300 mb-4" /><h2 class="text-lg font-medium">{{ chips.length ? 'No messages match these filters' : `No messages in ${folder}` }}</h2><p class="text-sm text-gray-500 mt-2">{{ chips.length ? 'Try a different search or clear your filters.' : folder === 'drafts' ? 'Saved drafts appear here when you compose a message.' : folder === 'sent' ? 'Messages accepted by SES are saved here.' : 'Mail for all your identities appears together here.' }}</p><button v-if="chips.length" @click="clearFilters" class="text-blue-600 text-sm mt-4">Clear filters</button></div>
+          <div v-else-if="!mailbox.emails.length" class="h-full min-h-60 flex flex-col items-center justify-center p-6 text-center"><Mail class="w-12 h-12 text-gray-300 mb-4" /><h2 class="text-lg font-medium">{{ chips.length ? 'No messages match these filters' : `No messages in ${folderTitle}` }}</h2><p class="text-sm text-gray-500 mt-2">{{ chips.length ? 'Try a different search or clear your filters.' : folder === 'dmarc-reports' ? 'Reports appear here when your domain’s existing DMARC policy requests reports and Mailat receives them. Automatic organization does not change your DNS or enable receiving.' : folder === 'drafts' ? 'Saved drafts appear here when you compose a message.' : folder === 'sent' ? 'Messages accepted by SES are saved here.' : 'Mail for all your identities appears together here.' }}</p><button v-if="chips.length" @click="clearFilters" class="text-blue-600 text-sm mt-4">Clear filters</button></div>
           <ul v-else class="divide-y divide-gray-100">
             <li v-for="email in mailbox.emails" :key="email.uuid" :class="['group flex items-center gap-2 px-3 py-3 sm:py-2.5 border-l-4', selectedUuid === email.uuid ? 'bg-blue-100 border-blue-500' : email.isRead ? 'bg-white border-transparent hover:bg-gray-50' : 'bg-blue-50/60 border-transparent']">
               <input v-if="!selectedUuid" type="checkbox" :checked="mailbox.selectedEmailUuids.includes(email.uuid)" @change="mailbox.toggleSelect(email.uuid)" :aria-label="`Select ${email.subject || 'message'}`" class="w-4 h-4 shrink-0" />
@@ -205,11 +207,12 @@ function formatDate(value: string, full = false) {
                 </div>
                 <div class="flex gap-2 items-center mt-0.5 leading-5 min-w-0">
                   <span :class="['text-sm truncate', !selectedUuid ? 'sm:max-w-[55%] sm:shrink-0' : '', !email.isRead ? 'font-medium' : 'text-gray-700']">{{ email.subject || '(no subject)' }}</span>
+                  <span v-if="folder !== 'dmarc-reports' && email.folder === 'dmarc-reports'" class="text-[10px] text-gray-600 rounded bg-gray-100 px-1.5 shrink-0">DMARC Reports</span>
                   <Paperclip v-if="email.hasAttachments" class="w-3 h-3 shrink-0 text-gray-400" />
                   <span v-if="email.sendStatus && email.sendStatus !== 'received'" class="text-[10px] text-gray-500 shrink-0">{{ email.sendStatus }}</span>
-                  <span v-if="!selectedUuid" class="hidden sm:block text-xs text-gray-500 truncate min-w-0">— {{ email.snippet }}</span>
+                  <span v-if="!selectedUuid" class="hidden sm:block text-xs text-gray-500 truncate min-w-0">— {{ email.snippet || (email.hasAttachments ? 'Content is in the attachment.' : '') }}</span>
                 </div>
-                <p class="sm:hidden text-xs text-gray-500 truncate mt-1">{{ email.snippet }}</p>
+                <p class="sm:hidden text-xs text-gray-500 truncate mt-1">{{ email.snippet || (email.hasAttachments ? 'Content is in the attachment.' : '') }}</p>
                 <p v-if="identityId === 0" class="sm:hidden text-[10px] text-gray-400 truncate mt-1"><span class="inline-block w-1.5 h-1.5 rounded-full mr-1" :style="{ backgroundColor: email.identityColor || '#9ca3af' }" />{{ email.identityEmail }}</p>
               </button>
             </li>
@@ -221,7 +224,7 @@ function formatDate(value: string, full = false) {
             <header class="px-4 sm:px-6 py-4 border-b break-words"><h2 class="text-xl mb-3">{{ current.subject || '(no subject)' }}</h2><div class="flex flex-wrap items-start justify-between gap-2 text-sm"><div class="min-w-0"><p class="font-medium break-all">{{ current.fromName }} &lt;{{ current.fromEmail }}&gt;</p><p class="text-gray-500 break-all mt-1">To: {{ current.toEmails?.join(', ') }}</p><p v-if="current.ccEmails?.length" class="text-gray-500 break-all">Cc: {{ current.ccEmails.join(', ') }}</p><p v-if="current.replyTo" class="text-gray-500 break-all">Reply to: {{ current.replyTo }}</p></div><time class="text-xs text-gray-500">{{ formatDate(current.receivedAt || current.createdAt, true) }}</time></div><p v-if="current.sendStatus !== 'received' && (current.sendStatus || current.deliveryStatus)" class="text-xs text-gray-500 mt-3">Send: {{ current.sendStatus || 'accepted' }}<span v-if="current.deliveryStatus"> · Delivery: {{ current.deliveryStatus }}</span></p></header>
             <div class="flex-1 min-h-0 overflow-y-auto">
               <iframe v-if="sanitizedHtml" :srcdoc="sanitizedHtml" sandbox="allow-popups allow-popups-to-escape-sandbox" title="Email message" class="w-full min-h-[50vh] border-0 bg-white" referrerpolicy="no-referrer" />
-              <div v-else class="p-4 sm:p-6 text-sm whitespace-pre-wrap break-words leading-relaxed">{{ current.textBody || 'No message content available.' }}</div>
+              <div v-else class="p-4 sm:p-6 text-sm whitespace-pre-wrap break-words leading-relaxed">{{ current.textBody?.trim() ? current.textBody : current.attachments?.length ? 'This message has no text body. Its content is in the attachment below.' : 'This message has no text body.' }}</div>
               <div v-if="current.attachments?.length" class="p-4 border-t"><h3 class="text-sm font-medium mb-2">Attachments</h3><div class="flex flex-wrap gap-2"><button v-for="attachment in current.attachments" :key="attachment.uuid" @click="downloadAttachment(attachment)" :disabled="downloading === attachment.uuid" class="max-w-full flex items-center gap-2 text-sm border rounded-lg p-2 hover:bg-gray-50"><Paperclip class="w-4 h-4 shrink-0" /><span class="truncate">{{ attachment.filename }}</span><span class="text-xs text-gray-500 shrink-0">{{ downloading === attachment.uuid ? 'Downloading…' : `${Math.ceil(attachment.sizeBytes / 1024)} KB` }}</span></button></div></div>
             </div>
             <footer class="flex flex-wrap gap-2 px-4 py-3 border-t bg-gray-50"><template v-if="current.folder !== 'drafts'"><button @click="compose('reply')" class="mail-reply"><Reply class="w-4 h-4" />Reply</button><button @click="compose('replyAll')" class="mail-reply"><ReplyAll class="w-4 h-4" />Reply all</button><button @click="compose('forward')" class="mail-reply"><Forward class="w-4 h-4" />Forward</button></template><button v-else @click="compose('draft')" class="mail-reply"><FileText class="w-4 h-4" />Edit draft</button></footer>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 )
 
 // EmailsService handles email operations.
@@ -18,9 +19,19 @@ type SendOptions struct {
 
 // Send sends a single transactional email.
 func (s *EmailsService) Send(ctx context.Context, req *SendEmailRequest, opts *SendOptions) (*SendEmailResponse, error) {
-	headers := make(map[string]string)
+	if req == nil {
+		return nil, fmt.Errorf("email request required")
+	}
+	key := req.IdempotencyKey
 	if opts != nil && opts.IdempotencyKey != "" {
-		headers["Idempotency-Key"] = opts.IdempotencyKey
+		if key != "" && key != opts.IdempotencyKey {
+			return nil, fmt.Errorf("idempotency keys must match")
+		}
+		key = opts.IdempotencyKey
+	}
+	headers, err := sendHeaders(key)
+	if err != nil {
+		return nil, err
 	}
 
 	data, err := s.client.request(ctx, "POST", "/emails", req, headers)
@@ -37,13 +48,21 @@ func (s *EmailsService) Send(ctx context.Context, req *SendEmailRequest, opts *S
 }
 
 // SendBatch sends multiple emails in a batch (up to 100).
-func (s *EmailsService) SendBatch(ctx context.Context, emails []SendEmailRequest) (*BatchSendResponse, error) {
-	if len(emails) > 100 {
+func (s *EmailsService) SendBatch(ctx context.Context, emails []SendEmailRequest, options ...*SendOptions) (*BatchSendResponse, error) {
+	if len(emails) == 0 || len(emails) > 100 {
 		return nil, fmt.Errorf("batch size cannot exceed 100 emails")
 	}
 
+	key := ""
+	if len(options) > 0 && options[0] != nil {
+		key = options[0].IdempotencyKey
+	}
+	headers, err := sendHeaders(key)
+	if err != nil {
+		return nil, err
+	}
 	req := BatchSendRequest{Emails: emails}
-	data, err := s.client.request(ctx, "POST", "/emails/batch", req, nil)
+	data, err := s.client.request(ctx, "POST", "/emails/batch", req, headers)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +77,7 @@ func (s *EmailsService) SendBatch(ctx context.Context, emails []SendEmailRequest
 
 // Get retrieves the status and events for an email.
 func (s *EmailsService) Get(ctx context.Context, emailID string) (*EmailStatusResponse, error) {
-	data, err := s.client.request(ctx, "GET", "/emails/"+emailID, nil, nil)
+	data, err := s.client.request(ctx, "GET", "/emails/"+url.PathEscape(emailID), nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -73,6 +92,6 @@ func (s *EmailsService) Get(ctx context.Context, emailID string) (*EmailStatusRe
 
 // Cancel cancels a scheduled email.
 func (s *EmailsService) Cancel(ctx context.Context, emailID string) error {
-	_, err := s.client.request(ctx, "DELETE", "/emails/"+emailID, nil, nil)
+	_, err := s.client.request(ctx, "DELETE", "/emails/"+url.PathEscape(emailID), nil, nil)
 	return err
 }

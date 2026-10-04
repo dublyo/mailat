@@ -5,201 +5,201 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"strings"
-	"time"
-
-	"github.com/gogf/gf/v2/net/ghttp"
-	"github.com/golang-jwt/jwt/v5"
-
+	"fmt"
 	"github.com/dublyo/mailat/api/internal/config"
 	"github.com/dublyo/mailat/api/internal/database"
 	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/pkg/response"
+	"github.com/gogf/gf/v2/net/ghttp"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/lib/pq"
+	"strings"
+	"time"
 )
 
 type contextKey string
 
 const (
-	UserContextKey   contextKey = "user"
-	ClaimsContextKey contextKey = "claims"
+	UserContextKey       contextKey = "user"
+	ClaimsContextKey     contextKey = "claims"
+	credentialContextKey contextKey = "credential"
 )
 
-// Auth middleware validates JWT tokens or API keys
+type credential struct {
+	SessionHash string
+	KeyID       int64
+	ExpiresAt   time.Time
+}
+
+func tokenHash(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
 func Auth(r *ghttp.Request) {
-	var token string
-
-	// First check Authorization header
-	authHeader := r.Header.Get("Authorization")
-	if authHeader != "" {
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) == 2 && parts[0] == "Bearer" {
-			token = parts[1]
-		}
+	token := ExtractToken(r)
+	// EventSource cannot set Authorization. Only a short-lived, audience-restricted
+	// stream ticket may be supplied here; a session JWT/API key in a URL is rejected.
+	query := false
+	if token == "" && r.Method == "GET" && r.URL.Path == "/api/v1/sse/connect" {
+		token = r.URL.Query().Get("token")
+		query = token != ""
 	}
-
-	// If no header, check query parameter (for SSE connections)
-	if token == "" {
-		token = r.Get("token").String()
-	}
-
 	if token == "" {
 		response.Unauthorized(r, "Authorization required")
 		return
 	}
-
-	// Check if it's an API key (starts with "ue_")
 	if strings.HasPrefix(token, "ue_") {
+		if query {
+			response.Unauthorized(r, "Use an Authorization header for API keys")
+			return
+		}
 		validateAPIKey(r, token)
 		return
 	}
-
-	// Otherwise, validate as JWT
-	validateJWT(r, token)
+	validateJWT(r, token, query)
 }
-
-func validateJWT(r *ghttp.Request, tokenString string) {
-	cfg := config.Cfg
-
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, jwt.ErrSignatureInvalid
-		}
-		return []byte(cfg.JWTSecret), nil
-	})
-
-	if err != nil || !token.Valid {
+func validateJWT(r *ghttp.Request, raw string, query bool) {
+	claims := &model.AccessClaims{}
+	audience := "mailat-api"
+	if query {
+		audience = "mailat-sse"
+	}
+	parsed, err := jwt.ParseWithClaims(raw, claims, func(*jwt.Token) (interface{}, error) { return []byte(config.Cfg.JWTSecret), nil }, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired(), jwt.WithIssuer("mailat"), jwt.WithAudience(audience))
+	if err != nil || !parsed.Valid || claims.UserID <= 0 || claims.OrgID <= 0 || claims.ID == "" || (!query && claims.Purpose != "session") || (query && claims.Purpose != "stream") {
 		response.Unauthorized(r, "Invalid or expired token")
 		return
 	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		response.Unauthorized(r, "Invalid token claims")
+	hash := tokenHash(raw)
+	if query {
+		hash = claims.SessionHash
+	}
+	if hash == "" {
+		response.Unauthorized(r, "Invalid session")
 		return
 	}
-
-	// Extract user info from claims
-	userID, _ := claims["userId"].(float64)
-	orgID, _ := claims["orgId"].(float64)
-	email, _ := claims["email"].(string)
-	role, _ := claims["role"].(string)
-
-	jwtClaims := &model.JWTClaims{
-		UserID: int64(userID),
-		OrgID:  int64(orgID),
-		Email:  email,
-		Role:   role,
+	user := &model.JWTClaims{}
+	err = database.DB.QueryRowContext(r.Context(), `SELECT u.id,u.org_id,u.email,u.role FROM user_sessions s JOIN users u ON u.id=s.user_id AND u.org_id=s.org_id WHERE s.token_hash=$1 AND s.active AND s.expires_at>now() AND u.status='active' AND u.id=$2 AND u.org_id=$3`, hash, claims.UserID, claims.OrgID).Scan(&user.UserID, &user.OrgID, &user.Email, &user.Role)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			response.InternalError(r, "Unable to validate session")
+		} else {
+			response.Unauthorized(r, "Session expired or revoked")
+		}
+		return
 	}
-
-	// Set claims in context
-	ctx := context.WithValue(r.Context(), ClaimsContextKey, jwtClaims)
+	ctx := context.WithValue(r.Context(), ClaimsContextKey, user)
+	ctx = context.WithValue(ctx, credentialContextKey, credential{SessionHash: hash, ExpiresAt: claims.ExpiresAt.Time})
 	r.SetCtx(ctx)
-
 	r.Middleware.Next()
 }
-
-func validateAPIKey(r *ghttp.Request, apiKey string) {
-	// Hash the API key
-	hash := sha256.Sum256([]byte(apiKey))
-	keyHash := hex.EncodeToString(hash[:])
-
-	// Lookup in database
-	var orgID int64
-	var userID sql.NullInt64
-	var expiresAt sql.NullTime
-
-	err := database.DB.QueryRowContext(r.Context(), `
-		SELECT org_id, user_id, expires_at
-		FROM api_keys
-		WHERE key_hash = $1
-	`, keyHash).Scan(&orgID, &userID, &expiresAt)
-
+func validateAPIKey(r *ghttp.Request, raw string) {
+	var id int64
+	var expires sql.NullTime
+	var permissions []string
+	claims := &model.JWTClaims{Role: "api"}
+	err := database.DB.QueryRowContext(r.Context(), `SELECT k.id,k.org_id,k.user_id,k.expires_at,k.permissions,u.email FROM api_keys k JOIN users u ON u.id=k.user_id AND u.org_id=k.org_id WHERE k.key_hash=$1 AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.status='active'`, tokenHash(raw)).Scan(&id, &claims.OrgID, &claims.UserID, &expires, pq.Array(&permissions), &claims.Email)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			response.Unauthorized(r, "Invalid, expired, or revoked API key")
+		} else {
+			response.InternalError(r, "Unable to validate API key")
+		}
+		return
+	}
+	// Atomic fixed-minute window: no replica-local counters and no asynchronous
+	// last-used write that could race revocation or overwhelm the database.
+	var remaining int
+	var retry int
+	err = database.DB.QueryRowContext(r.Context(), `UPDATE api_keys SET request_count=CASE WHEN request_window=date_trunc('minute',now()) THEN request_count+1 ELSE 1 END,request_window=date_trunc('minute',now()),last_used_at=now() WHERE id=$1 AND EXISTS(SELECT 1 FROM users u WHERE u.id=api_keys.user_id AND u.org_id=api_keys.org_id AND u.status='active') AND (expires_at IS NULL OR expires_at>now()) AND (request_window IS DISTINCT FROM date_trunc('minute',now()) OR request_count<rate_limit) RETURNING GREATEST(0,rate_limit-request_count),GREATEST(1,ceil(extract(epoch FROM date_trunc('minute',now())+interval '1 minute'-now()))::integer)`, id).Scan(&remaining, &retry)
 	if err == sql.ErrNoRows {
-		response.Unauthorized(r, "Invalid API key")
+		// A revoke/disable racing the rate update is an authentication failure,
+		// not a retryable limit error.
+		var active bool
+		checkErr := database.DB.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM api_keys k JOIN users u ON u.id=k.user_id AND u.org_id=k.org_id WHERE k.id=$1 AND u.status='active' AND (k.expires_at IS NULL OR k.expires_at>now()))`, id).Scan(&active)
+		if checkErr != nil {
+			response.InternalError(r, "Unable to validate API key")
+			return
+		}
+		if !active {
+			response.Unauthorized(r, "Invalid, expired, or revoked API key")
+			return
+		}
+		retry = 60 - time.Now().Second()
+		r.Response.Header().Set("Retry-After", fmt.Sprint(retry))
+		r.Response.Status = 429
+		response.Error(r, 429, "API key request limit exceeded")
 		return
 	}
 	if err != nil {
-		response.InternalError(r, "Failed to validate API key")
+		response.InternalError(r, "Unable to enforce API request limit")
 		return
 	}
-
-	if expiresAt.Valid && expiresAt.Time.Before(time.Now()) {
-		response.Unauthorized(r, "API key has expired")
-		return
-	}
-
-	// Update last used timestamp (async)
-	go func() {
-		database.DB.ExecContext(context.Background(), `
-			UPDATE api_keys SET last_used_at = NOW() WHERE key_hash = $1
-		`, keyHash)
-	}()
-
-	// Create claims for API key auth
-	claims := &model.JWTClaims{
-		OrgID: orgID,
-		Role:  "api",
-	}
-	if userID.Valid {
-		claims.UserID = userID.Int64
-	} else {
-		// API key has no user binding — resolve to org's primary user
-		// (Mailat only allows one registration per org, so this is safe)
-		var adminUserID int64
-		err2 := database.DB.QueryRowContext(r.Context(),
-			`SELECT id FROM users WHERE org_id = $1 ORDER BY id LIMIT 1`, orgID,
-		).Scan(&adminUserID)
-		if err2 == nil {
-			claims.UserID = adminUserID
+	r.Response.Header().Set("X-RateLimit-Remaining", fmt.Sprint(remaining))
+	scope, ok := APIKeyScope(r.Method, r.URL.Path)
+	allowed := false
+	for _, p := range permissions {
+		if p == scope {
+			allowed = true
 		}
 	}
-
+	if !ok || !allowed {
+		response.Forbidden(r, "API key is not permitted for this operation")
+		return
+	}
+	cred := credential{KeyID: id}
+	if expires.Valid {
+		cred.ExpiresAt = expires.Time
+	}
 	ctx := context.WithValue(r.Context(), ClaimsContextKey, claims)
+	ctx = context.WithValue(ctx, credentialContextKey, cred)
 	r.SetCtx(ctx)
-
 	r.Middleware.Next()
 }
 
-// GetClaims extracts JWT claims from request context
-func GetClaims(r *ghttp.Request) *model.JWTClaims {
-	claims, ok := r.Context().Value(ClaimsContextKey).(*model.JWTClaims)
+// CredentialActive is used by long-running streams so revocation also stops
+// already-open connections at the next heartbeat.
+func CredentialActive(ctx context.Context) bool {
+	c, ok := ctx.Value(credentialContextKey).(credential)
 	if !ok {
-		return nil
+		return false
 	}
-	return claims
+	if !c.ExpiresAt.IsZero() && !time.Now().Before(c.ExpiresAt) {
+		return false
+	}
+	var active bool
+	var err error
+	if c.KeyID > 0 {
+		err = database.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM api_keys k JOIN users u ON u.id=k.user_id AND u.org_id=k.org_id WHERE k.id=$1 AND u.status='active' AND (k.expires_at IS NULL OR k.expires_at>now()))`, c.KeyID).Scan(&active)
+	} else {
+		err = database.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_sessions s JOIN users u ON u.id=s.user_id AND u.org_id=s.org_id WHERE s.token_hash=$1 AND s.active AND s.expires_at>now() AND u.status='active')`, c.SessionHash).Scan(&active)
+	}
+	return err == nil && active
 }
-
-// ExtractToken extracts the raw token from the Authorization header
+func GetClaims(r *ghttp.Request) *model.JWTClaims {
+	c, _ := r.Context().Value(ClaimsContextKey).(*model.JWTClaims)
+	return c
+}
 func ExtractToken(r *ghttp.Request) string {
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		return ""
+	p := strings.Fields(r.Header.Get("Authorization"))
+	if len(p) == 2 && strings.EqualFold(p[0], "Bearer") {
+		return p[1]
 	}
-
-	parts := strings.SplitN(authHeader, " ", 2)
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		return ""
-	}
-
-	return parts[1]
+	return ""
 }
-
-// RequireRole middleware checks if user has required role
-func RequireRole(roles ...string) func(r *ghttp.Request) {
+func RequireRole(roles ...string) func(*ghttp.Request) {
 	return func(r *ghttp.Request) {
-		claims := GetClaims(r)
-		if claims == nil {
+		c := GetClaims(r)
+		if c == nil {
 			response.Unauthorized(r, "Authentication required")
 			return
 		}
-
 		for _, role := range roles {
-			if claims.Role == role {
+			if c.Role == role {
 				r.Middleware.Next()
 				return
 			}
 		}
-
 		response.Forbidden(r, "Insufficient permissions")
 	}
 }

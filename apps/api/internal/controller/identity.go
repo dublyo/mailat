@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 
 	"github.com/gogf/gf/v2/net/ghttp"
 
@@ -93,7 +94,7 @@ func (c *IdentityController) List(r *ghttp.Request) {
 
 	identities, err := c.identityService.ListIdentities(r.Context(), claims.UserID)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		response.InternalError(r, "Unable to load identities")
 		return
 	}
 
@@ -117,7 +118,11 @@ func (c *IdentityController) Get(r *ghttp.Request) {
 
 	identity, err := c.identityService.GetIdentity(r.Context(), claims.UserID, identityUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		if errors.Is(err, service.ErrIdentityNotFound) {
+			response.NotFound(r, "Identity not found")
+		} else {
+			response.InternalError(r, "Unable to load identity")
+		}
 		return
 	}
 

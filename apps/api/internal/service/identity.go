@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,8 @@ import (
 	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/pkg/crypto"
 )
+
+var ErrIdentityNotFound = errors.New("identity not found")
 
 type IdentityService struct {
 	db       *sql.DB
@@ -322,7 +325,7 @@ func (s *IdentityService) GetIdentity(ctx context.Context, userID int64, identit
 	var colorNull sql.NullString
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, uuid, user_id, domain_id, email, display_name, is_default, is_catch_all, color,
+		SELECT id, uuid, user_id, domain_id, email, COALESCE(display_name, ''), is_default, is_catch_all, color,
 		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive
 		FROM identities
 		WHERE uuid = $1 AND user_id = $2
@@ -334,7 +337,7 @@ func (s *IdentityService) GetIdentity(ctx context.Context, userID int64, identit
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("identity not found")
+		return nil, ErrIdentityNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query identity: %w", err)
@@ -354,7 +357,7 @@ func (s *IdentityService) GetIdentity(ctx context.Context, userID int64, identit
 // ListIdentities returns all identities for a user
 func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*model.Identity, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, uuid, user_id, domain_id, email, display_name, is_default, is_catch_all, color,
+		SELECT id, uuid, user_id, domain_id, email, COALESCE(display_name, ''), is_default, is_catch_all, color,
 		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive
 		FROM identities
 		WHERE user_id = $1

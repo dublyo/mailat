@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Inbox, Star, Send, FileText, Trash2, AlertCircle,
@@ -14,6 +13,8 @@ const receivedInboxStore = useReceivedInboxStore()
 
 const mainNavItems = [
   { id: 'inbox', label: 'Inbox', icon: Inbox, route: '/received', folder: 'inbox' },
+  { id: 'dmarc-reports', label: 'DMARC Reports', icon: FileText, route: '/received?folder=dmarc-reports', folder: 'dmarc-reports' },
+  { id: 'all', label: 'All Mail', icon: Mail, route: '/received?folder=all', folder: 'all' },
   { id: 'starred', label: 'Starred', icon: Star, route: '/received?folder=starred', folder: 'starred' },
   { id: 'sent', label: 'Sent', icon: Send, route: '/received?folder=sent', folder: 'sent' },
   { id: 'drafts', label: 'Drafts', icon: FileText, route: '/received?folder=drafts', folder: 'drafts' },
@@ -54,7 +55,9 @@ const getUnreadCount = (folderId: string) => {
   const counts = receivedInboxStore.counts
   if (!counts) return 0
   switch (folderId) {
-    case 'inbox': return counts.unread || 0
+    case 'inbox': return counts.inboxUnread ?? 0
+    case 'dmarc-reports': return counts.dmarcReportsUnread ?? 0
+    case 'all': return counts.unread ?? 0
     case 'starred': return counts.starred || 0
     case 'drafts': return counts.drafts || 0
     default: return 0
@@ -86,12 +89,13 @@ const emit = defineEmits<{
         <li v-for="item in mainNavItems" :key="item.id">
           <button
             @click="navigateTo(item)"
+            :aria-current="isActive(item.route, item.folder) ? 'page' : undefined"
             :class="{ 'active': isActive(item.route, item.folder) }"
             class="nav-item w-full"
           >
             <component :is="item.icon" class="w-5 h-5 text-gmail-gray" />
             <span class="flex-1 text-left text-sm">{{ item.label }}</span>
-            <span v-if="getUnreadCount(item.id) > 0" class="text-xs font-medium">
+            <span v-if="getUnreadCount(item.id) > 0" :aria-label="`${getUnreadCount(item.id)} ${item.id === 'drafts' || item.id === 'starred' ? 'messages' : 'unread'}`" class="text-xs font-medium">
               {{ getUnreadCount(item.id) }}
             </span>
           </button>

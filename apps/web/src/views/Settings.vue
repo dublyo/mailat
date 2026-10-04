@@ -6,7 +6,7 @@ import Button from '@/components/common/Button.vue'
 import Modal from '@/components/common/Modal.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
-import { webhookApi, type Webhook as WebhookType } from '@/lib/api'
+import { webhookApi, type Webhook as WebhookType, type WebhookDelivery, type WebhookAttempt } from '@/lib/api'
 
 const authStore = useAuthStore()
 const settingsStore = useSettingsStore()
@@ -71,15 +71,53 @@ const webhookUrl = ref('')
 const webhookEvents = ref<string[]>([])
 
 const availableEvents = [
+  { value: 'email.received', label: 'Email Received' },
   { value: 'email.sent', label: 'Email Sent' },
   { value: 'email.delivered', label: 'Email Delivered' },
   { value: 'email.bounced', label: 'Email Bounced' },
-  { value: 'email.opened', label: 'Email Opened' },
-  { value: 'email.clicked', label: 'Link Clicked' },
   { value: 'email.complained', label: 'Spam Complaint' },
-  { value: 'contact.subscribed', label: 'Contact Subscribed' },
-  { value: 'contact.unsubscribed', label: 'Contact Unsubscribed' },
+  { value: 'email.failed', label: 'Send Failed' },
+  { value: 'email.unknown', label: 'Send Outcome Unknown' },
 ]
+const webhookSecret = ref('')
+const webhookNotice = ref('')
+const webhookBusy = ref('')
+const deliveries = ref<WebhookDelivery[]>([])
+const deliveryPage = ref(1)
+const deliveryTotal = ref(0)
+const deliveryStatus = ref('')
+const deliveryLoading = ref(false)
+const deliveryError = ref('')
+let deliveryRequest = 0
+const attemptsLoading = ref(false)
+const selectedDelivery = ref('')
+const deliveryAttempts = ref<WebhookAttempt[]>([])
+async function fetchDeliveries(page = 1) {
+  const request = ++deliveryRequest
+  deliveryLoading.value = true
+  deliveryError.value = ''
+  try { const data = await webhookApi.deliveries(page, deliveryStatus.value); if (request !== deliveryRequest) return; deliveries.value = data.deliveries; deliveryPage.value = data.page; deliveryTotal.value = data.total }
+  catch { if (request === deliveryRequest) deliveryError.value = 'Could not load webhook deliveries. Try again.' }
+  finally { if (request === deliveryRequest) deliveryLoading.value = false }
+}
+async function showAttempts(id: string) {
+  selectedDelivery.value = id; deliveryAttempts.value = []; deliveryError.value = ''; attemptsLoading.value = true
+  try { const data = await webhookApi.delivery(id); if (selectedDelivery.value === id) deliveryAttempts.value = data.attempts }
+  catch { if (selectedDelivery.value === id) deliveryError.value = 'Could not load delivery attempts.' }
+  finally { if (selectedDelivery.value === id) attemptsLoading.value = false }
+}
+async function replayDelivery(id: string) {
+  webhookBusy.value = id
+  try { await webhookApi.replay(id); webhookNotice.value = 'Replay queued with the same event ID.'; await fetchDeliveries(deliveryPage.value) }
+  catch { deliveryError.value = 'Could not replay this delivery. Refresh its status and try again.' }
+  finally { webhookBusy.value = '' }
+}
+async function rotateWebhookSecret(id: string) {
+  webhookBusy.value = id
+  try { const result = await webhookApi.rotateSecret(id); webhookSecret.value = result.secret; webhookNotice.value = 'Secret rotated. Update your receiver before the next delivery.' }
+  catch { settingsStore.error = 'Could not rotate the signing secret.' }
+  finally { webhookBusy.value = '' }
+}
 
 async function fetchWebhooks() {
   try {
@@ -99,7 +137,10 @@ async function handleAddWebhook() {
       url: webhookUrl.value,
       events: webhookEvents.value,
     })
-    webhooks.value.push(webhook)
+    const { secret, ...savedWebhook } = webhook
+    webhooks.value.push(savedWebhook)
+    webhookSecret.value = secret ?? ''
+ webhookNotice.value = 'Webhook created. Save the signing secret before dismissing it.'
     showWebhookModal.value = false
     webhookName.value = ''
     webhookUrl.value = ''
@@ -131,18 +172,22 @@ async function toggleWebhook(webhook: WebhookType) {
 }
 
 async function testWebhook(uuid: string) {
+  webhookBusy.value = uuid
   try {
-    await webhookApi.test(uuid)
-    alert('Test event sent successfully!')
-  } catch {
-    settingsStore.error = 'Failed to send test event'
-  }
+    const result = await webhookApi.test(uuid)
+    webhookNotice.value = result.status === 'delivered'
+      ? `Test delivered (HTTP ${result.httpStatus}).`
+      : `Test ${result.status}: ${result.error || 'Delivery is queued; check attempts below.'}`
+    await fetchDeliveries()
+  } catch { settingsStore.error = 'Could not test this webhook. Check its URL and active status.' }
+  finally { webhookBusy.value = '' }
 }
 
 onMounted(() => {
   settingsStore.fetchSettings()
   settingsStore.fetchSessions()
   fetchWebhooks()
+  fetchDeliveries()
 })
 
 // Computed for easy access
@@ -279,11 +324,14 @@ async function handleSignOutAll() {
         <!-- Success message -->
         <div
           v-if="settingsStore.saveSuccess"
+          role="status"
           class="mb-4 p-3 bg-green-100 text-green-800 rounded-lg flex items-center gap-2"
         >
           <Check class="w-5 h-5" />
           Settings saved successfully!
         </div>
+
+        <div v-if="settingsStore.error" role="alert" class="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">{{ settingsStore.error }}</div>
 
         <!-- General Settings -->
         <div v-if="activeTab === 'general'" class="max-w-2xl">
@@ -640,6 +688,19 @@ async function handleSignOutAll() {
         <div v-else-if="activeTab === 'filters'" class="max-w-2xl">
           <h2 class="text-lg font-medium mb-6">Filters & Rules</h2>
 
+          <section class="mb-6 p-4 border border-gmail-border rounded-lg" aria-labelledby="dmarc-organization-title" :aria-busy="settingsStore.isLoading || settingsStore.isSaving">
+            <label class="flex items-start gap-3">
+              <input v-model="settingsStore.settings.autoOrganizeDmarcReports" type="checkbox" :disabled="settingsStore.isLoading || settingsStore.isSaving || !settingsStore.settingsLoaded" aria-describedby="dmarc-organization-description" class="mt-1 w-4 h-4 rounded border-gray-300 text-gmail-blue focus:ring-gmail-blue" />
+              <span><span id="dmarc-organization-title" class="text-sm font-medium">Automatically organize DMARC reports</span><span id="dmarc-organization-description" class="block mt-1 text-sm text-gmail-gray">Move verified aggregate reports into DMARC Reports as they arrive for any of your receiving domains. Your filters can choose a different destination. Turning this off affects future mail; existing reports stay where they are.</span></span>
+            </label>
+            <p class="text-xs text-gmail-gray mt-3">This setting does not change DNS records or enable receiving for sending-only domains.</p>
+            <div class="mt-4 flex items-center gap-3">
+              <Button :disabled="settingsStore.isLoading || settingsStore.isSaving || !settingsStore.settingsLoaded" @click="settingsStore.saveDmarcOrganization()">{{ settingsStore.isSaving ? 'Saving…' : 'Save organization preference' }}</Button>
+              <button v-if="!settingsStore.settingsLoaded && !settingsStore.isLoading" @click="settingsStore.fetchSettings()" class="text-sm text-gmail-blue underline">Retry loading settings</button>
+              <span v-if="settingsStore.isLoading" role="status" class="text-sm text-gmail-gray">Loading preference…</span>
+            </div>
+          </section>
+
           <div class="space-y-6">
             <div class="flex items-center justify-between">
               <p class="text-gmail-gray text-sm">Create rules to automatically organize incoming emails</p>
@@ -721,6 +782,13 @@ async function handleSignOutAll() {
                 </Button>
               </div>
 
+              <p v-if="webhookNotice" role="status" class="mb-4 text-sm text-gmail-gray">{{ webhookNotice }}</p>
+              <div v-if="webhookSecret" class="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                <p class="text-sm font-medium">Save your signing secret</p>
+                <p class="text-sm text-gmail-gray mt-1">Shown once. Use this to verify each webhook before processing its event.</p>
+                <input :value="webhookSecret" readonly aria-label="Webhook signing secret" class="w-full mt-2 p-2 rounded border border-gmail-border font-mono text-xs" @focus="($event.target as HTMLInputElement).select()" />
+                <button class="text-sm text-gmail-blue mt-2 hover:underline" @click="webhookSecret = ''">I saved it — dismiss</button>
+              </div>
               <div v-if="webhooks.length === 0" class="p-6 text-center border border-dashed border-gmail-border rounded-lg">
                 <Webhook class="w-8 h-8 mx-auto text-gmail-gray mb-2" />
                 <p class="text-gmail-gray">No webhooks configured</p>
@@ -758,10 +826,12 @@ async function handleSignOutAll() {
                     <div class="flex items-center gap-2 ml-4">
                       <button
                         @click="testWebhook(webhook.uuid)"
+ :disabled="webhookBusy === webhook.uuid || !webhook.active"
                         class="text-sm text-gmail-blue hover:underline"
                       >
                         Test
                       </button>
+                      <button @click="rotateWebhookSecret(webhook.uuid)" :disabled="webhookBusy === webhook.uuid" class="text-sm text-gmail-blue hover:underline">Rotate secret</button>
                       <button
                         @click="toggleWebhook(webhook)"
                         class="text-sm hover:underline"
@@ -782,68 +852,38 @@ async function handleSignOutAll() {
             </section>
 
             <section class="pt-6 border-t border-gmail-border">
-              <h3 class="text-sm font-medium text-gmail-gray mb-4">Connected Apps</h3>
-              <div class="space-y-4">
-                <div class="flex items-center justify-between p-4 bg-gmail-lightGray rounded-lg">
-                  <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-gmail-border">
-                      <span class="text-xl">💬</span>
-                    </div>
-                    <div>
-                      <p class="font-medium">Slack</p>
-                      <p class="text-sm text-gmail-gray">Get notifications in your Slack workspace</p>
-                    </div>
-                  </div>
-                  <Button>Connect</Button>
-                </div>
-                <div class="flex items-center justify-between p-4 bg-gmail-lightGray rounded-lg">
-                  <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-gmail-border">
-                      <span class="text-xl">⚡</span>
-                    </div>
-                    <div>
-                      <p class="font-medium">Zapier</p>
-                      <p class="text-sm text-gmail-gray">Connect with 5000+ apps</p>
-                    </div>
-                  </div>
-                  <Button>Connect</Button>
-                </div>
-                <div class="flex items-center justify-between p-4 bg-gmail-lightGray rounded-lg">
-                  <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-gmail-border">
-                      <span class="text-xl">🔗</span>
-                    </div>
-                    <div>
-                      <p class="font-medium">Make (Integromat)</p>
-                      <p class="text-sm text-gmail-gray">Advanced workflow automation</p>
-                    </div>
-                  </div>
-                  <Button>Connect</Button>
+              <div class="flex flex-wrap items-center gap-3 mb-3">
+                <h3 class="font-medium mr-auto">Webhook deliveries</h3>
+                <select v-model="deliveryStatus" @change="fetchDeliveries()" aria-label="Filter webhook delivery status" class="border border-gmail-border rounded p-2 text-sm">
+                  <option value="">All statuses</option><option value="delivered">Delivered</option><option value="retry">Retrying</option><option value="dead_letter">Needs attention</option><option value="pending">Pending</option><option value="cancelled">Cancelled</option>
+                </select>
+                <button @click="fetchDeliveries(deliveryPage)" :disabled="deliveryLoading" class="text-sm text-gmail-blue">Refresh</button>
+              </div>
+              <p class="text-sm text-gmail-gray mb-3">Failed deliveries retry automatically up to eight attempts. Replay keeps the same event ID, so your receiver can prevent duplicate processing.</p>
+              <p v-if="deliveryError" role="alert" class="text-sm text-gmail-red">{{ deliveryError }}</p>
+              <p v-if="deliveryLoading" role="status" class="text-sm text-gmail-gray">Loading deliveries…</p>
+              <p v-else-if="deliveries.length === 0" class="text-sm text-gmail-gray py-4">No deliveries match this filter.</p>
+              <div v-for="delivery in deliveries" :key="delivery.id" class="border border-gmail-border rounded-lg p-3 mb-2">
+                <div class="flex flex-wrap items-center gap-2"><span class="font-medium text-sm">{{ delivery.type }}</span><span class="text-xs rounded bg-gmail-lightGray px-2 py-1">{{ delivery.status }}</span><span class="text-xs text-gmail-gray">{{ delivery.attempts }} attempts · {{ new Date(delivery.createdAt).toLocaleString() }}</span></div>
+                <p v-if="delivery.error" class="text-sm text-gmail-red mt-1">{{ delivery.error }}</p>
+                <p class="text-xs text-gmail-gray mt-1 break-all">Event {{ delivery.eventId }}</p>
+                <div class="flex gap-4 mt-2"><button @click="showAttempts(delivery.id)" class="text-sm text-gmail-blue">View attempts</button><button v-if="['dead_letter', 'delivered', 'cancelled'].includes(delivery.status)" @click="replayDelivery(delivery.id)" :disabled="webhookBusy === delivery.id" class="text-sm text-gmail-blue">Replay</button></div>
+                <div v-if="selectedDelivery === delivery.id" class="mt-3 space-y-2">
+                  <p v-if="attemptsLoading" role="status" class="text-xs text-gmail-gray">Loading attempts…</p>
+                  <p v-else-if="deliveryAttempts.length === 0" class="text-xs text-gmail-gray">No recorded attempts yet.</p>
+                  <div v-for="attempt in deliveryAttempts" :key="`${attempt.replay}-${attempt.attempt}`" class="text-xs bg-gmail-lightGray rounded p-2">Attempt {{ attempt.attempt }} · replay {{ attempt.replay }} · {{ attempt.httpStatus ? `HTTP ${attempt.httpStatus}` : 'No HTTP response' }} · {{ attempt.durationMs }} ms<p v-if="attempt.error" class="mt-1">{{ attempt.error }}</p></div>
                 </div>
               </div>
+              <div class="flex items-center justify-between mt-3 text-sm"><button :disabled="deliveryPage <= 1 || deliveryLoading" @click="fetchDeliveries(deliveryPage - 1)" class="text-gmail-blue disabled:text-gmail-gray">Previous</button><span>{{ deliveryTotal }} deliveries · page {{ deliveryPage }}</span><button :disabled="deliveryPage * 20 >= deliveryTotal || deliveryLoading" @click="fetchDeliveries(deliveryPage + 1)" class="text-gmail-blue disabled:text-gmail-gray">Next</button></div>
             </section>
 
             <section class="pt-6 border-t border-gmail-border">
-              <h3 class="text-sm font-medium text-gmail-gray mb-4">SMTP Relay</h3>
-              <div class="p-4 border border-gmail-border rounded-lg">
-                <div class="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <p class="text-gmail-gray">Host</p>
-                    <p class="font-mono">smtp.mailat.co</p>
-                  </div>
-                  <div>
-                    <p class="text-gmail-gray">Port</p>
-                    <p class="font-mono">587 (TLS) / 465 (SSL)</p>
-                  </div>
-                  <div>
-                    <p class="text-gmail-gray">Username</p>
-                    <p class="font-mono">{{ authStore.user?.email || 'your-email@domain.com' }}</p>
-                  </div>
-                  <div>
-                    <p class="text-gmail-gray">Password</p>
-                    <p class="font-mono">Use API Key</p>
-                  </div>
-                </div>
+              <h3 class="text-sm font-medium text-gmail-gray mb-4">Connect an automation tool</h3>
+              <div class="p-4 bg-gmail-lightGray rounded-lg space-y-3 text-sm">
+                <p class="font-medium">n8n, Zapier and Make</p>
+                <p class="text-gmail-gray">Use an HTTP request action to send and manage mail. Add a webhook above to receive email events, then verify its signature before processing it.</p>
+                <p class="text-gmail-gray">Create a scoped API key for each workflow. Keep the same request key when retrying a send, and store processed event IDs to prevent duplicate work.</p>
+                <RouterLink to="/api-docs" class="inline-flex text-gmail-blue hover:underline">Open API keys and integration examples</RouterLink>
               </div>
             </section>
           </div>

@@ -6,6 +6,7 @@ import Button from '@/components/common/Button.vue'
 import Badge from '@/components/common/Badge.vue'
 import Spinner from '@/components/common/Spinner.vue'
 import DomainDmarcStatus from '@/components/settings/DomainDmarcStatus.vue'
+import DomainSendingReadiness from '@/components/settings/DomainSendingReadiness.vue'
 import { useDomainsStore } from '@/stores/domains'
 import type { CloudflareZone, CloudflareDNSResult, DomainDMARCStatus } from '@/lib/api'
 import { sendingDNSRecords, dnsResultStatus, dnsExportRecords } from '@/lib/domainDns'
@@ -667,6 +668,7 @@ async function handleSetupReceiving(domain: any) {
                       {{ domain.emailProvider === 'ses' ? 'Download sending records' : 'Download DNS records' }}
                     </button>
                   </div>
+                  <DomainSendingReadiness v-if="domain.emailProvider === 'ses'" :domain-uuid="domain.uuid" :domain-name="domain.name || domain.domain || ''" :can-setup="domain.sesVerified && domain.status === 'active'" class="mb-4" />
                   <DomainDmarcStatus v-if="domain.emailProvider === 'ses'" :domain-uuid="domain.uuid" :domain-name="domain.name || domain.domain || ''" :known-configured="configuredDmarc[domain.uuid]" class="mb-4" />
                   <div v-if="sendingDNSRecords(domain).length > 0" class="space-y-2">
                     <div
@@ -1265,6 +1267,7 @@ async function handleSetupReceiving(domain: any) {
                     <p class="text-gray-500 mt-2">Your domain is verified for sending via AWS SES. Receiving stays with your existing inbox provider unless you separately change inbound routing.</p>
 
                     <DomainDmarcStatus v-if="selectedDomain" :domain-uuid="selectedDomain.uuid" :domain-name="selectedDomain.name" :known-configured="configuredDmarc[selectedDomain.uuid]" class="mt-6 text-left" />
+                    <DomainSendingReadiness v-if="selectedDomain" :domain-uuid="selectedDomain.uuid" :domain-name="selectedDomain.name" :can-setup="selectedDomain.sesVerified && selectedDomain.status === 'active'" class="mt-4 text-left" />
 
                     <div class="mt-8 space-y-3">
                       <Button @click="closeSetupWizard" class="w-full">

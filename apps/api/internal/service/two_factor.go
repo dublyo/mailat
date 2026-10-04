@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -48,26 +49,30 @@ func (s *TwoFactorService) GenerateSetup(ctx context.Context, userID int64, emai
 	// Generate a random 20-byte secret (160 bits as recommended by RFC 6238)
 	secretBytes := make([]byte, 20)
 	if _, err := rand.Read(secretBytes); err != nil {
-		return nil, fmt.Errorf("failed to generate secret: %w", err)
+		return nil, fmt.Errorf("failed to generate secret")
 	}
 
 	// Encode as base32 (standard TOTP encoding)
 	secret := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secretBytes)
 
 	// Store the pending secret (not yet verified)
-	_, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		UPDATE users
-		SET totp_secret = $1, totp_enabled = false, updated_at = NOW()
-		WHERE id = $2
+		SET totp_secret = $1, totp_last_step=NULL, updated_at = NOW()
+		WHERE id = $2 AND NOT totp_enabled AND status='active'
 	`, secret, userID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to store secret: %w", err)
+		return nil, fmt.Errorf("failed to store secret")
+	}
+
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return nil, fmt.Errorf("disable existing two-factor authentication before setting it up again")
 	}
 
 	// Generate QR code URL (otpauth format)
 	issuer := "Mailat"
 	qrURL := fmt.Sprintf("otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30",
-		issuer, email, secret, issuer)
+		issuer, url.PathEscape(email), secret, issuer)
 
 	// Format manual code for easier reading (groups of 4)
 	manualCode := formatSecretForDisplay(secret)
@@ -107,19 +112,22 @@ func (s *TwoFactorService) VerifyAndEnable(ctx context.Context, userID int64, co
 	// Generate backup codes
 	backupCodes, hashedCodes, err := s.generateBackupCodes()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate backup codes: %w", err)
+		return nil, fmt.Errorf("failed to generate backup codes")
 	}
 
 	// Enable 2FA and store backup codes
-	_, err = s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		UPDATE users
 		SET totp_enabled = true, totp_verified_at = NOW(), backup_codes = $2, updated_at = NOW()
-		WHERE id = $1
-	`, userID, formatPgArray(hashedCodes))
+		WHERE id = $1 AND NOT totp_enabled AND totp_secret=$3 AND status='active'
+	`, userID, formatPgArray(hashedCodes), secret.String)
 	if err != nil {
-		return nil, fmt.Errorf("failed to enable 2FA: %w", err)
+		return nil, fmt.Errorf("failed to enable 2FA")
 	}
 
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return nil, fmt.Errorf("two-factor setup changed; start again")
+	}
 	return backupCodes, nil
 }
 
@@ -143,44 +151,13 @@ func (s *TwoFactorService) Verify(ctx context.Context, userID int64, code string
 
 // VerifyBackupCode verifies and consumes a backup code
 func (s *TwoFactorService) VerifyBackupCode(ctx context.Context, userID int64, code string) (bool, error) {
-	// Get stored backup codes
-	var backupCodesArray []string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT backup_codes FROM users WHERE id = $1
-	`, userID).Scan(pgStrArr(&backupCodesArray))
+	// Atomic consumption prevents simultaneous uses of a recovery code.
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET backup_codes=array_remove(backup_codes,$2),updated_at=now() WHERE id=$1 AND totp_enabled AND $2=ANY(backup_codes)`, userID, hashBackupCode(code))
 	if err != nil {
-		return false, fmt.Errorf("user not found")
+		return false, fmt.Errorf("unable to verify recovery code")
 	}
-
-	// Hash the provided code
-	hashedCode := hashBackupCode(code)
-
-	// Find and remove the matching code
-	found := false
-	newCodes := make([]string, 0, len(backupCodesArray))
-	for _, storedHash := range backupCodesArray {
-		if storedHash == hashedCode && !found {
-			found = true
-			continue // Remove this code
-		}
-		newCodes = append(newCodes, storedHash)
-	}
-
-	if !found {
-		return false, nil
-	}
-
-	// Update backup codes (remove the used one)
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE users
-		SET backup_codes = $2, updated_at = NOW()
-		WHERE id = $1
-	`, userID, formatPgArray(newCodes))
-	if err != nil {
-		return false, fmt.Errorf("failed to update backup codes: %w", err)
-	}
-
-	return true, nil
+	rows, err := result.RowsAffected()
+	return rows == 1, err
 }
 
 // Disable disables 2FA for a user
@@ -221,7 +198,7 @@ func (s *TwoFactorService) Disable(ctx context.Context, userID int64, password, 
 		WHERE id = $1
 	`, userID)
 	if err != nil {
-		return fmt.Errorf("failed to disable 2FA: %w", err)
+		return fmt.Errorf("failed to disable 2FA")
 	}
 
 	return nil
@@ -257,7 +234,7 @@ func (s *TwoFactorService) RegenerateBackupCodes(ctx context.Context, userID int
 	// Generate new backup codes
 	backupCodes, hashedCodes, err := s.generateBackupCodes()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate backup codes: %w", err)
+		return nil, fmt.Errorf("failed to generate backup codes")
 	}
 
 	// Store new backup codes
@@ -267,7 +244,7 @@ func (s *TwoFactorService) RegenerateBackupCodes(ctx context.Context, userID int
 		WHERE id = $1
 	`, userID, formatPgArray(hashedCodes))
 	if err != nil {
-		return nil, fmt.Errorf("failed to store backup codes: %w", err)
+		return nil, fmt.Errorf("failed to store backup codes")
 	}
 
 	return backupCodes, nil
@@ -289,6 +266,15 @@ func (s *TwoFactorService) GetStatus(ctx context.Context, userID int64) (bool, i
 
 // verifyTOTP verifies a TOTP code against a secret
 func (s *TwoFactorService) verifyTOTP(secret, code string) bool {
+	if len(code) != 6 || secret == "" {
+		return false
+	}
+	for _, digit := range code {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+
 	// Allow for clock drift: check current time and one period before/after
 	currentTime := time.Now().Unix()
 	period := int64(30) // Standard TOTP period
@@ -296,7 +282,7 @@ func (s *TwoFactorService) verifyTOTP(secret, code string) bool {
 	for _, offset := range []int64{-1, 0, 1} {
 		counter := (currentTime / period) + offset
 		expectedCode := generateTOTP(secret, counter)
-		if expectedCode == code {
+		if hmac.Equal([]byte(expectedCode), []byte(code)) {
 			return true
 		}
 	}

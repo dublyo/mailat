@@ -18,6 +18,9 @@ const (
 
 // EmailSendPayload contains the data needed to send an email
 type EmailSendPayload struct {
+	MessageUUID    string            `json:"messageUuid,omitempty"`
+	UserID         int64             `json:"userId,omitempty"`
+	IdentityID     int64             `json:"identityId,omitempty"`
 	EmailID        int64             `json:"emailId"`
 	OrgID          int64             `json:"orgId"`
 	From           string            `json:"from"`
@@ -39,6 +42,7 @@ type EmailSendPayload struct {
 
 // AttachmentInfo contains attachment metadata for sending
 type AttachmentInfo struct {
+	Data        []byte `json:"data,omitempty"`
 	BlobID      string `json:"blobId"`
 	Name        string `json:"name"`
 	Type        string `json:"type"`
@@ -56,15 +60,15 @@ type EmailBatchPayload struct {
 
 // WebhookDeliverPayload contains data for webhook delivery
 type WebhookDeliverPayload struct {
-	WebhookID   int64             `json:"webhookId"`
-	OrgID       int64             `json:"orgId"`
-	URL         string            `json:"url"`
-	Secret      string            `json:"secret"`
-	EventType   string            `json:"eventType"`
-	EmailID     int64             `json:"emailId"`
-	Payload     map[string]any    `json:"payload"`
-	RetryCount  int               `json:"retryCount"`
-	MaxRetries  int               `json:"maxRetries"`
+	WebhookID  int64          `json:"webhookId"`
+	OrgID      int64          `json:"orgId"`
+	URL        string         `json:"url"`
+	Secret     string         `json:"secret"`
+	EventType  string         `json:"eventType"`
+	EmailID    int64          `json:"emailId"`
+	Payload    map[string]any `json:"payload"`
+	RetryCount int            `json:"retryCount"`
+	MaxRetries int            `json:"maxRetries"`
 }
 
 // BounceProcessPayload contains data for bounce processing
@@ -78,10 +82,10 @@ type BounceProcessPayload struct {
 
 // SuppressionCheckPayload contains data for suppression list updates
 type SuppressionCheckPayload struct {
-	OrgID     int64  `json:"orgId"`
-	Email     string `json:"email"`
-	Reason    string `json:"reason"`
-	Source    string `json:"source"` // bounce, complaint, manual
+	OrgID  int64  `json:"orgId"`
+	Email  string `json:"email"`
+	Reason string `json:"reason"`
+	Source string `json:"source"` // bounce, complaint, manual
 }
 
 // CampaignProcessPayload contains data for campaign processing
@@ -92,10 +96,10 @@ type CampaignProcessPayload struct {
 
 // CampaignBatchPayload contains data for a batch of campaign emails
 type CampaignBatchPayload struct {
-	CampaignID  int      `json:"campaignId"`
-	OrgID       int64    `json:"orgId"`
-	ContactIDs  []int64  `json:"contactIds"`
-	BatchNumber int      `json:"batchNumber"`
+	CampaignID   int     `json:"campaignId"`
+	OrgID        int64   `json:"orgId"`
+	ContactIDs   []int64 `json:"contactIds"`
+	BatchNumber  int     `json:"batchNumber"`
 	TotalBatches int     `json:"totalBatches"`
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/dublyo/mailat/api/internal/config"
 	"github.com/dublyo/mailat/api/internal/database"
+	"github.com/dublyo/mailat/api/internal/eventoutbox"
 	"github.com/dublyo/mailat/api/internal/router"
 	"github.com/dublyo/mailat/api/internal/service"
 	"github.com/dublyo/mailat/api/internal/worker"
@@ -115,6 +117,16 @@ func main() {
 	defer redis.Close()
 	fmt.Println("Connected to Redis")
 
+	// Database-backed recovery remains active even with the optional Redis worker
+	// disabled. Each loop has one owner per API process and shares shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var recovery sync.WaitGroup
+	recovery.Add(3)
+	go func() { defer recovery.Done(); eventoutbox.Run(ctx, db) }()
+	go func() { defer recovery.Done(); service.RunDMARCReportBackfill(ctx, db, cfg) }()
+	go func() { defer recovery.Done(); worker.NewEmailHandler(db, cfg).RunPending(ctx) }()
+
 	// Start worker if enabled
 	var w *worker.Worker
 	var sched *worker.Scheduler
@@ -156,7 +168,7 @@ func main() {
 	if err != nil {
 		fmt.Printf("Warning: failed to create delivery tracker: %v\n", err)
 	} else {
-		if err := tracker.Start(context.Background()); err != nil {
+		if err := tracker.Start(ctx); err != nil {
 			fmt.Printf("Warning: failed to start delivery tracker: %v\n", err)
 		} else {
 			fmt.Println("Delivery tracker started (PostgreSQL NOTIFY)")
@@ -169,11 +181,9 @@ func main() {
 	s.SetDumpRouterMap(false)
 
 	// Setup routes
-	router.Setup(s, cfg)
+	router.SetupWithContext(ctx, s, cfg)
 
 	// Graceful shutdown
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		<-ctx.Done()
@@ -229,4 +239,6 @@ func main() {
 	fmt.Printf("╚══════════════════════════════════════════════════════════════╝\n")
 
 	s.Run()
+	stop()
+	recovery.Wait()
 }
