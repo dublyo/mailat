@@ -71,7 +71,7 @@ func (s *n8nStorage) GenerateDownloadURL(context.Context, string, string, string
 func TestN8NAcceptanceFixture(t *testing.T) {
 	statePath := os.Getenv("MAILAT_N8N_STATE")
 	if statePath == "" {
-		t.Skip("opt in with MAILAT_N8N_STATE; see examples/n8n/README.md")
+		t.Skip("opt in with MAILAT_N8N_STATE and the local n8n acceptance harness")
 	}
 	db := testutil.Database(t)
 	ctx := context.Background()

@@ -1,8 +1,9 @@
 # Mailat external email automation
 
 The supported automation path is the SES mailbox API with scoped service keys,
-signed webhooks, and a durable mailbox change feed. Use the workflows in
-[`examples/n8n`](../examples/n8n) as working integration examples.
+signed webhooks, and a durable mailbox change feed. The API guide and SDK examples
+below describe the supported integration contracts. Local n8n workflow files are
+kept outside Git tracking.
 
 ## Contract and credentials
 

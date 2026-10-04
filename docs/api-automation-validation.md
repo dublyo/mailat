@@ -121,4 +121,4 @@ stage. The current working tree is ready for review, commit, GitHub push and tha
 Mailat-only release; those actions have not been performed here.
 
 See [the integration contract and upgrade notes](api-automation.md) and
-[the reproducible n8n instructions](../examples/n8n/README.md).
+the local n8n validation instructions (not included in this repository).
