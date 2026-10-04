@@ -171,8 +171,8 @@ func assertSESSendingDNS(t *testing.T, svc *DomainService, domain *model.Domain)
 		if record.Hostname == "bounce."+domain.Name {
 			bounce[record.RecordType] = true
 		}
-		if record.Hostname == "_dmarc."+domain.Name && record.Value != "v=DMARC1; p=none" {
-			t.Fatal("new SES instructions enforce a DMARC policy across existing providers")
+		if record.Hostname == "_dmarc."+domain.Name && record.Value != provider.DefaultDMARCValue {
+			t.Fatal("new SES instructions lost the approved conditional DMARC default")
 		}
 	}
 	if !bounce["MX"] || !bounce["TXT"] {
@@ -210,6 +210,9 @@ func TestCloudflareSetupPreservesLegacyRootRoutingAndPolicies(t *testing.T) {
 			return nil, fmt.Errorf("unexpected network request")
 		}
 		body := `{"success":true,"result":[],"result_info":{"total_pages":1}}`
+		if r.Method == "GET" && r.URL.Path == "/client/v4/zones/test-zone" {
+			body = fmt.Sprintf(`{"success":true,"result":{"id":"test-zone","name":%q}}`, domain.Name)
+		}
 		if r.Method == "POST" {
 			var payload map[string]interface{}
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -278,10 +281,15 @@ func TestCloudflareSetupPreservesOccupiedMailFromPair(t *testing.T) {
 			var posts []map[string]interface{}
 			previous := http.DefaultTransport
 			http.DefaultTransport = domainCloudflareTransport(func(r *http.Request) (*http.Response, error) {
-				if r.URL.Host != "api.cloudflare.com" || r.URL.Path != "/client/v4/zones/test-zone/dns_records" {
+				if r.URL.Host != "api.cloudflare.com" {
 					return nil, fmt.Errorf("unexpected request")
 				}
 				body := `{"success":true,"result":[]}`
+				if r.URL.Path == "/client/v4/zones/test-zone" {
+					body = fmt.Sprintf(`{"success":true,"result":{"id":"test-zone","name":%q}}`, domain.Name)
+				} else if r.URL.Query().Get("name") == "_dmarc."+domain.Name {
+					body = fmt.Sprintf(`{"success":true,"result":[{"type":"TXT","name":%q,"content":"v=DMARC1; p=none"}]}`, "_dmarc."+domain.Name)
+				}
 				switch r.Method {
 				case "GET":
 					if r.URL.Query().Get("name") == hostname {

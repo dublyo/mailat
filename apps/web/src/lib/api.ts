@@ -377,6 +377,20 @@ export interface CloudflareDNSResult {
   skipped?: boolean
   reason?: string
   error?: string
+  dmarc?: DomainDMARCStatus
+}
+
+export interface DomainDMARCStatus {
+  status: 'absent' | 'existing' | 'inherited' | 'conflict' | 'unknown'
+  hostname: string
+  policyHostname: string
+  value: string
+  policy: string
+  reason: string
+  checkedAt: string
+  canCreate: boolean
+  verified: boolean
+  suggestedValue: string
 }
 
 export const domainApi = {
@@ -398,6 +412,9 @@ export const domainApi = {
   },
 
   delete: (uuid: string) => api.delete(`/api/v1/domains/${uuid}`),
+
+  inspectDMARC: (uuid: string, signal?: AbortSignal) =>
+    api.get<DomainDMARCStatus>(`/api/v1/domains/${uuid}/dmarc`, signal),
 
   // SES Integration
   initiateSES: async (uuid: string): Promise<{ domain: Domain; dnsRecords: DNSRecord[]; sesRecords: Array<{ type: string; name: string; value: string }> }> => {

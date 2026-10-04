@@ -171,7 +171,7 @@ func (p *SESProvider) VerifyDomain(ctx context.Context, domain string) (*DomainV
 	verificationResult.DMARCRecord = &DNSRecord{
 		Type:  "TXT",
 		Name:  fmt.Sprintf("_dmarc.%s", domain),
-		Value: fmt.Sprintf("v=DMARC1; p=quarantine; rua=mailto:dmarc@%s", domain),
+		Value: DefaultDMARCValue,
 	}
 
 	// Add MAIL FROM DNS records
@@ -237,7 +237,7 @@ func (p *SESProvider) getDomainVerificationRecords(ctx context.Context, domain s
 	verificationResult.DMARCRecord = &DNSRecord{
 		Type:  "TXT",
 		Name:  fmt.Sprintf("_dmarc.%s", domain),
-		Value: fmt.Sprintf("v=DMARC1; p=quarantine; rua=mailto:dmarc@%s", domain),
+		Value: DefaultDMARCValue,
 	}
 
 	// Add MAIL FROM DNS records

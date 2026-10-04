@@ -25,6 +25,7 @@ type DomainService struct {
 	db            *sql.DB
 	cfg           *config.Config
 	emailProvider provider.EmailProvider
+	dmarcResolver provider.DMARCResolver
 }
 
 func NewDomainService(db *sql.DB, cfg *config.Config) *DomainService {
@@ -207,7 +208,7 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 			}{
 				RecordType:    sesVerificationResult.DMARCRecord.Type,
 				Hostname:      sesVerificationResult.DMARCRecord.Name,
-				ExpectedValue: "v=DMARC1; p=none",
+				ExpectedValue: provider.DefaultDMARCValue,
 			})
 		}
 
@@ -270,7 +271,7 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 			{
 				RecordType:    "TXT",
 				Hostname:      fmt.Sprintf("_dmarc.%s", domain.Name),
-				ExpectedValue: fmt.Sprintf("v=DMARC1; p=quarantine; rua=mailto:dmarc@%s", domain.Name),
+				ExpectedValue: provider.DefaultDMARCValue,
 			},
 		}
 	}
@@ -411,6 +412,16 @@ func isDomainRootHostname(hostname, domain string) bool {
 	return hostname == "" || hostname == "@" || hostname == domain
 }
 
+// GetDMARC resolves only a domain owned by the caller's organization. The result
+// is advisory; automatic DNS setup repeats the inspection at write time.
+func (s *DomainService) GetDMARC(ctx context.Context, orgID int64, domainUUID string) (provider.DMARCInspection, error) {
+	domain, err := s.GetDomain(ctx, orgID, domainUUID)
+	if err != nil {
+		return provider.DMARCInspection{}, err
+	}
+	return provider.InspectDMARC(ctx, domain.Name, s.dmarcResolver), nil
+}
+
 // VerifyDNS checks DNS records and updates verification status
 func (s *DomainService) VerifyDNS(ctx context.Context, domainID int64) (map[string]bool, error) {
 	// Get domain details including email provider
@@ -451,7 +462,14 @@ func (s *DomainService) VerifyDNS(ctx context.Context, domainID int64) (map[stri
 
 		switch rec.RecordType {
 		case "TXT":
-			verified, actualValue = s.verifyTXTRecord(rec.Hostname, rec.Value)
+			if strings.EqualFold(strings.TrimSuffix(rec.Hostname, "."), "_dmarc."+domainName) {
+				// A preserved or inherited policy need not match our default. Validate
+				// the whole record set so duplicates cannot pass a prefix-only check.
+				inspection := provider.InspectDMARC(ctx, domainName, s.dmarcResolver)
+				verified, actualValue = inspection.Verified, inspection.Value
+			} else {
+				verified, actualValue = s.verifyTXTRecord(rec.Hostname, rec.Value)
+			}
 			// Determine which TXT record this is
 			if strings.Contains(rec.Hostname, "_verification") {
 				verificationVerified = verified
@@ -691,11 +709,11 @@ func (s *DomainService) InitiateSESVerification(ctx context.Context, domainID in
 		_, err = s.db.ExecContext(ctx, `
 			INSERT INTO domain_dns_records (domain_id, record_type, hostname, expected_value, verified)
 			VALUES ($1, $2, $3, $4, false)
-		`, domainID, sesVerificationResult.DMARCRecord.Type, sesVerificationResult.DMARCRecord.Name, "v=DMARC1; p=none")
+		`, domainID, sesVerificationResult.DMARCRecord.Type, sesVerificationResult.DMARCRecord.Name, provider.DefaultDMARCValue)
 		sesRecords = append(sesRecords, map[string]string{
 			"type":  sesVerificationResult.DMARCRecord.Type,
 			"name":  sesVerificationResult.DMARCRecord.Name,
-			"value": "v=DMARC1; p=none",
+			"value": provider.DefaultDMARCValue,
 		})
 	}
 
@@ -769,13 +787,30 @@ func (s *DomainService) GetCloudflareZones(ctx context.Context, apiToken string)
 
 // AddDNSToCloudflare adds the required DNS records to Cloudflare
 func (s *DomainService) AddDNSToCloudflare(ctx context.Context, domainID int64, apiToken, zoneID string) ([]map[string]interface{}, error) {
-	// Get domain name
-	var domainName string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT name FROM domains WHERE id = $1
-	`, domainID).Scan(&domainName)
+	// Load records before taking the lock, so a small connection pool does not
+	// deadlock waiting for a second connection while this transaction is open.
+	records, err := s.GetDNSRecords(ctx, domainID)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lock domain DNS setup: %w", err)
+	}
+	defer tx.Rollback()
+	// Serialize setup across API replicas; a second request must inspect DNS
+	// after the first finishes. DNS changes are external, so this is only a lock.
+	var domainName, emailProvider string
+	err = tx.QueryRowContext(ctx, `
+		SELECT name, email_provider FROM domains WHERE id = $1 FOR UPDATE
+	`, domainID).Scan(&domainName, &emailProvider)
 	if err != nil {
 		return nil, fmt.Errorf("domain not found: %w", err)
+	}
+	// Different organizations can connect the same domain. Coordinate those
+	// requests too, since DNS uniqueness is by hostname rather than database ID.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "mailat:dns:"+strings.ToLower(domainName)); err != nil {
+		return nil, fmt.Errorf("failed to serialize DNS setup: %w", err)
 	}
 
 	// If no zone ID provided, try to find it by domain name
@@ -795,10 +830,8 @@ func (s *DomainService) AddDNSToCloudflare(ctx context.Context, domainID int64, 
 		}
 	}
 
-	// Get DNS records to add
-	records, err := s.GetDNSRecords(ctx, domainID)
-	if err != nil {
-		return nil, err
+	if err := provider.CloudflareValidateZone(ctx, apiToken, zoneID, domainName); err != nil {
+		return nil, fmt.Errorf("Cloudflare zone cannot manage this domain: %w", err)
 	}
 
 	var results []map[string]interface{}
@@ -821,13 +854,38 @@ func (s *DomainService) AddDNSToCloudflare(ctx context.Context, domainID int64, 
 			results = append(results, result)
 			continue
 		}
-		if strings.EqualFold(rec.RecordType, "TXT") &&
-			((isDomainRootHostname(rec.Hostname, domainName) && strings.HasPrefix(strings.ToLower(strings.TrimSpace(rec.Value)), "v=spf1")) ||
-				strings.HasPrefix(strings.ToLower(strings.TrimSpace(rec.Value)), "v=dmarc1")) {
+		if strings.EqualFold(rec.RecordType, "TXT") && isDomainRootHostname(rec.Hostname, domainName) && strings.HasPrefix(strings.ToLower(strings.TrimSpace(rec.Value)), "v=spf1") {
 			result["success"] = false
 			result["skipped"] = true
 			result["status"] = "skipped"
-			result["reason"] = "Root SPF and DMARC policies require manual review with your existing mail providers; no policy was changed."
+			result["reason"] = "Root SPF requires manual review with your existing mail providers; no policy was changed."
+			results = append(results, result)
+			continue
+		}
+		if strings.EqualFold(rec.RecordType, "TXT") && hostname == "_dmarc."+domain {
+			if emailProvider != "ses" {
+				result["success"], result["skipped"], result["status"] = false, true, "skipped"
+				result["reason"] = "Review this manual SMTP domain's DMARC policy with its mail providers."
+			} else {
+				// Always use the approved default when missing, including domains
+				// whose stored suggestions predate conditional DMARC onboarding.
+				status, inspection, ensureErr := provider.CloudflareEnsureDMARC(ctx, apiToken, zoneID, domainName, s.dmarcResolver)
+				result["status"], result["dmarc"] = status, inspection
+				result["value"] = inspection.Value
+				if inspection.Value == "" {
+					result["value"] = provider.DefaultDMARCValue
+				}
+				result["success"] = ensureErr == nil && (status == "created" || status == "preserved")
+				result["reason"] = inspection.Reason
+				if ensureErr != nil {
+					if status == "conflict" {
+						result["skipped"] = true
+						result["reason"] = ensureErr.Error()
+					} else {
+						result["error"] = ensureErr.Error()
+					}
+				}
+			}
 			results = append(results, result)
 			continue
 		}

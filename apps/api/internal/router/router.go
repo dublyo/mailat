@@ -249,6 +249,7 @@ func Setup(s *ghttp.Server, cfg *config.Config) {
 			protectedGroup.POST("/domains", domainCtrl.Create)
 			protectedGroup.GET("/domains", domainCtrl.List)
 			protectedGroup.GET("/domains/:uuid", domainCtrl.Get)
+			protectedGroup.GET("/domains/:uuid/dmarc", domainCtrl.DMARC)
 			protectedGroup.POST("/domains/:uuid/verify", domainCtrl.Verify)
 			protectedGroup.DELETE("/domains/:uuid", domainCtrl.Delete)
 			// SES and Cloudflare integration

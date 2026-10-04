@@ -70,14 +70,14 @@ func CloudflareListZones(ctx context.Context, apiToken string) ([]CloudflareZone
 	req.Header.Set("Authorization", "Bearer "+apiToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -87,7 +87,7 @@ func CloudflareListZones(ctx context.Context, apiToken string) ([]CloudflareZone
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	if !result.Success {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.Success {
 		if len(result.Errors) > 0 {
 			return nil, fmt.Errorf("cloudflare API error: %s", result.Errors[0].Message)
 		}
@@ -128,7 +128,12 @@ func CloudflareCreateDNSRecord(ctx context.Context, apiToken, zoneID, recordType
 	// adding so connecting a sender never silently changes another provider's DNS.
 	client := &http.Client{Timeout: 30 * time.Second}
 	identical := false
+	isDMARC := recordType == "TXT" && strings.HasPrefix(dnsName(hostname), "_dmarc.")
+	var dmarcRecords []cloudflareDNSRecord
 	for page := 1; ; page++ {
+		if page > 10 {
+			return "", fmt.Errorf("DNS preflight exceeded its page limit; no record was added")
+		}
 		query := url.Values{"name": {hostname}, "per_page": {"100"}, "page": {fmt.Sprint(page)}}
 		req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/zones/%s/dns_records?%s", cloudflareBaseURL, zoneID, query.Encode()), nil)
 		if err != nil {
@@ -146,7 +151,7 @@ func CloudflareCreateDNSRecord(ctx context.Context, apiToken, zoneID, recordType
 				TotalPages int `json:"total_pages"`
 			} `json:"result_info"`
 		}
-		err = json.NewDecoder(resp.Body).Decode(&existing)
+		err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&existing)
 		resp.Body.Close()
 		if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 || !existing.Success {
 			return "", fmt.Errorf("could not inspect existing DNS; no record was added")
@@ -155,6 +160,10 @@ func CloudflareCreateDNSRecord(ctx context.Context, apiToken, zoneID, recordType
 			// Only records at the requested owner name can conflict. Do not trust
 			// an unexpectedly broad API response to claim a different record exists.
 			if !strings.EqualFold(strings.TrimSuffix(record.Name, "."), strings.TrimSuffix(hostname, ".")) {
+				continue
+			}
+			if isDMARC {
+				dmarcRecords = append(dmarcRecords, record)
 				continue
 			}
 			existingType := strings.ToUpper(record.Type)
@@ -207,6 +216,15 @@ func CloudflareCreateDNSRecord(ctx context.Context, apiToken, zoneID, recordType
 			break
 		}
 	}
+	if isDMARC {
+		policy, err := cloudflareDMARCPolicy(dmarcRecords)
+		if err != nil {
+			return "conflict", &CloudflareDNSConflictError{Hostname: hostname}
+		}
+		if policy != nil {
+			return "preserved", nil
+		}
+	}
 	if identical {
 		return "preserved", nil
 	}
@@ -231,7 +249,7 @@ func CloudflareCreateDNSRecord(ctx context.Context, apiToken, zoneID, recordType
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
@@ -241,7 +259,7 @@ func CloudflareCreateDNSRecord(ctx context.Context, apiToken, zoneID, recordType
 		return "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	if !result.Success {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.Success {
 		if len(result.Errors) > 0 {
 			// Check if record already exists
 			if result.Errors[0].Code == 81057 {

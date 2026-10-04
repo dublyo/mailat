@@ -1,5 +1,17 @@
 # Mailat validation evidence
 
+## Automatic DMARC follow-up — October 4, 2026
+
+- Implements the user-approved [DMARC setup specification](mailat-dmarc-spec.md): conditional quarantine creation, preservation of existing/inherited policies, and explicit review of ambiguous or unreadable DNS.
+- **45 frontend tests passed**, and `npm run build` passed Vue typechecking and the Vite production build.
+- A production-build browser fixture confirmed the missing-policy loading state and copy feedback, then simulated an externally added `p=reject` policy with reporting/subdomain tags. Refresh removed the stale copy controls while checking and displayed the preserved policy without offering another record.
+- The same browser run confirmed inherited source/effective policy display, duplicate-policy review, and failed-lookup states. Conflict/failed lookups exposed no create suggestion. Browser console reported no warnings or errors.
+- Bulk export regression coverage confirms that DMARC owner names, including malformed/delegated records, cannot be included in unconditional DNS imports.
+- A regression also confirms that a successful Cloudflare result suppresses duplicate manual-copy suggestions while public DNS still returns cached absence, including when the wizard closes during the write.
+- Full backend `go test -race -count=1 ./...` passed with disposable PostgreSQL. Tests include concurrent setup of the same hostname across two organization rows producing exactly one DMARC POST, and other-organization inspection producing zero DNS queries. The disposable cluster was stopped and removed.
+- A read-only probe using the real DMARC inspector and system resolver found `vaybcode.com` absent/eligible for creation, while `vayb.dev` preserved its verified quarantine policy and original reporting address. This confirms real resolver behavior before the live DMARC write.
+- These UI checks used fake loopback-only records and did not modify live DNS or send email. CI/deployment evidence is recorded separately after release.
+
 Date: 2026-10-03. This report records checks run by the implementation agents and release owner. It does not certify deployment or live email delivery. Final integration checks below used the canonical `mailat` checkout.
 
 ## Final local integration and browser acceptance

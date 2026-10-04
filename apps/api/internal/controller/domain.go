@@ -120,6 +120,28 @@ func (c *DomainController) Get(r *ghttp.Request) {
 	})
 }
 
+// DMARC inspects the current policy without changing DNS or database state.
+// GET /api/v1/domains/:uuid/dmarc
+func (c *DomainController) DMARC(r *ghttp.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+	domainUUID := r.Get("uuid").String()
+	if domainUUID == "" {
+		response.BadRequest(r, "Domain UUID required")
+		return
+	}
+	inspection, err := c.domainService.GetDMARC(r.Context(), claims.OrgID, domainUUID)
+	if err != nil {
+		response.NotFound(r, err.Error())
+		return
+	}
+	r.Response.Header().Set("Cache-Control", "no-store")
+	response.Success(r, inspection)
+}
+
 // Verify checks DNS records and updates verification status
 // POST /api/v1/domains/:uuid/verify
 func (c *DomainController) Verify(r *ghttp.Request) {
