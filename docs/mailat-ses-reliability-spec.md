@@ -108,3 +108,15 @@ Mailat must provide a dependable self-hosted web mailbox for many verified domai
 - https://docs.aws.amazon.com/sns/latest/dg/sns-verify-signature-of-message.html
 - https://docs.aws.amazon.com/ses/latest/dg/creating-identities.html
 - https://docs.aws.amazon.com/ses/latest/dg/manage-sending-quotas.html
+
+## Approved onboarding amendment: preserve existing mail providers
+
+The user explicitly requested that Mailat not add a root-domain MX because a domain may already use another mail service. This refines SES onboarding without changing the existing inbox architecture.
+
+- **Goal and flow:** default SES setup configures sending authentication. Receiving is a separate deliberate choice. Keep current Tailwind components and explain the distinction in the DNS wizard and receiving controls.
+- **Backend and APIs:** SES registration/re-registration must not generate the domain-apex receiving MX. Cloudflare automatic synchronization must skip an apex MX even if an older stored DNS row contains it. The skip result must be visible to the caller. Preserve the required custom MAIL FROM MX on `bounce.<domain>`.
+- **Database and existing installations:** no mail migration or automatic live-DNS cleanup. Previously configured receiving domains continue to operate. The user explicitly chose to keep `vayb.dev`'s tested receiving setup, including its existing apex MX. No live DNS changes are part of this amendment.
+- **Receiving choices:** use the existing provider's forwarding to a separately configured receiving address/subdomain, or deliberately route the selected receiving domain to SES. Mailat cannot receive every root-domain message through SES while its root MX independently routes all mail to another provider without that provider's forwarding.
+- **Edge cases and security:** protect legacy stored apex MX records during automatic synchronization, distinguish MAIL FROM MX from inbound MX, and report conflicts with existing authentication records instead of silently disrupting another sender/provider. Preserve root SPF and existing DMARC; automatic setup skips these shared policies. New SES guidance uses a monitoring-only DMARC suggestion for manual review, never an automatic policy change.
+- **Testing:** prove fresh/repeated SES setup excludes root MX, preserves ownership TXT and bounce MX, and automatic Cloudflare sync performs no apex-MX creation or update. Verify the frontend explains skipped/manual records accurately; use fake provider APIs for mutation tests.
+- **Implementation:** update SES record generation, enforce the DNS write guard, update the wizard/receiving explanation, run focused regressions and frontend build, then publish and deploy only Mailat after CI succeeds.

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -194,18 +195,8 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 			})
 		}
 
-		// SES SPF record
-		if sesVerificationResult.SPFRecord != nil {
-			records = append(records, struct {
-				RecordType    string
-				Hostname      string
-				ExpectedValue string
-			}{
-				RecordType:    sesVerificationResult.SPFRecord.Type,
-				Hostname:      sesVerificationResult.SPFRecord.Name,
-				ExpectedValue: sesVerificationResult.SPFRecord.Value,
-			})
-		}
+		// SES authenticates SPF on its MAIL FROM subdomain. Adding an apex SPF
+		// alongside another mail provider's policy would make both policies invalid.
 
 		// SES DMARC record
 		if sesVerificationResult.DMARCRecord != nil {
@@ -216,7 +207,7 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 			}{
 				RecordType:    sesVerificationResult.DMARCRecord.Type,
 				Hostname:      sesVerificationResult.DMARCRecord.Name,
-				ExpectedValue: sesVerificationResult.DMARCRecord.Value,
+				ExpectedValue: "v=DMARC1; p=none",
 			})
 		}
 
@@ -237,7 +228,8 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 			})
 		}
 
-		// No MX record needed for SES (emails sent via API)
+		// Sending must not change inbound routing at the domain root. The MAIL FROM
+		// subdomain MX above is separate from the user's existing inbox provider.
 		// Keep verification record for our internal verification
 		records = append(records, struct {
 			RecordType    string
@@ -377,10 +369,11 @@ func (s *DomainService) ListDomains(ctx context.Context, orgID int64) ([]*model.
 // GetDNSRecords returns DNS records for a domain
 func (s *DomainService) GetDNSRecords(ctx context.Context, domainID int64) ([]*model.DomainDNSRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, domain_id, record_type, hostname, expected_value, actual_value, verified, last_checked_at
-		FROM domain_dns_records
-		WHERE domain_id = $1
-		ORDER BY record_type, hostname
+		SELECT r.id, r.domain_id, r.record_type, r.hostname, r.expected_value, r.actual_value, r.verified, r.last_checked_at,
+		       d.name, d.email_provider
+		FROM domain_dns_records r JOIN domains d ON d.id=r.domain_id
+		WHERE r.domain_id = $1
+		ORDER BY r.record_type, r.hostname
 	`, domainID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query DNS records: %w", err)
@@ -392,9 +385,16 @@ func (s *DomainService) GetDNSRecords(ctx context.Context, domainID int64) ([]*m
 		var rec model.DomainDNSRecord
 		var actualValue sql.NullString
 		var lastCheckedAt sql.NullTime
+		var domainName, emailProvider string
 		if err := rows.Scan(&rec.ID, &rec.DomainID, &rec.RecordType, &rec.Hostname,
-			&rec.Value, &actualValue, &rec.Verified, &lastCheckedAt); err != nil {
+			&rec.Value, &actualValue, &rec.Verified, &lastCheckedAt, &domainName, &emailProvider); err != nil {
 			return nil, fmt.Errorf("failed to scan DNS record: %w", err)
+		}
+		// Legacy onboarding stored apex MX/SPF as if SES owned inbound delivery.
+		// Exclude them from sending instructions and VerifyDNS without changing live DNS.
+		if emailProvider == "ses" && isDomainRootHostname(rec.Hostname, domainName) &&
+			(strings.EqualFold(rec.RecordType, "MX") || (strings.EqualFold(rec.RecordType, "TXT") && strings.HasPrefix(strings.ToLower(strings.TrimSpace(rec.Value)), "v=spf1"))) {
+			continue
 		}
 		if lastCheckedAt.Valid {
 			rec.VerifiedAt = &lastCheckedAt.Time
@@ -402,7 +402,13 @@ func (s *DomainService) GetDNSRecords(ctx context.Context, domainID int64) ([]*m
 		records = append(records, &rec)
 	}
 
-	return records, nil
+	return records, rows.Err()
+}
+
+func isDomainRootHostname(hostname, domain string) bool {
+	hostname = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hostname)), ".")
+	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	return hostname == "" || hostname == "@" || hostname == domain
 }
 
 // VerifyDNS checks DNS records and updates verification status
@@ -678,29 +684,18 @@ func (s *DomainService) InitiateSESVerification(ctx context.Context, domainID in
 		}
 	}
 
-	// Add SPF record for SES
-	if sesVerificationResult.SPFRecord != nil {
-		_, err = s.db.ExecContext(ctx, `
-			INSERT INTO domain_dns_records (domain_id, record_type, hostname, expected_value, verified)
-			VALUES ($1, $2, $3, $4, false)
-		`, domainID, sesVerificationResult.SPFRecord.Type, sesVerificationResult.SPFRecord.Name, sesVerificationResult.SPFRecord.Value)
-		sesRecords = append(sesRecords, map[string]string{
-			"type":  sesVerificationResult.SPFRecord.Type,
-			"name":  sesVerificationResult.SPFRecord.Name,
-			"value": sesVerificationResult.SPFRecord.Value,
-		})
-	}
+	// MAIL FROM SPF below is sufficient; preserve the root domain's other senders.
 
 	// Add DMARC record
 	if sesVerificationResult.DMARCRecord != nil {
 		_, err = s.db.ExecContext(ctx, `
 			INSERT INTO domain_dns_records (domain_id, record_type, hostname, expected_value, verified)
 			VALUES ($1, $2, $3, $4, false)
-		`, domainID, sesVerificationResult.DMARCRecord.Type, sesVerificationResult.DMARCRecord.Name, sesVerificationResult.DMARCRecord.Value)
+		`, domainID, sesVerificationResult.DMARCRecord.Type, sesVerificationResult.DMARCRecord.Name, "v=DMARC1; p=none")
 		sesRecords = append(sesRecords, map[string]string{
 			"type":  sesVerificationResult.DMARCRecord.Type,
 			"name":  sesVerificationResult.DMARCRecord.Name,
-			"value": sesVerificationResult.DMARCRecord.Value,
+			"value": "v=DMARC1; p=none",
 		})
 	}
 
@@ -724,22 +719,8 @@ func (s *DomainService) InitiateSESVerification(ctx context.Context, domainID in
 		})
 	}
 
-	// Add inbound MX record for SES receiving (so user can set up all DNS at once)
-	if s.cfg.AWSRegion != "" {
-		inboundMXValue := fmt.Sprintf("10 inbound-smtp.%s.amazonaws.com", s.cfg.AWSRegion)
-		_, err = s.db.ExecContext(ctx, `
-			INSERT INTO domain_dns_records (domain_id, record_type, hostname, expected_value, verified)
-			VALUES ($1, 'MX', $2, $3, false)
-		`, domainID, domainName, inboundMXValue)
-		if err != nil {
-			fmt.Printf("Warning: Failed to insert inbound MX record: %v\n", err)
-		}
-		sesRecords = append(sesRecords, map[string]string{
-			"type":  "MX",
-			"name":  domainName,
-			"value": inboundMXValue,
-		})
-	}
+	// Receiving has a separate, explicit setup flow. Registering a sender must
+	// never offer an inbound MX that could replace an existing inbox provider.
 
 	fmt.Printf("Domain %s registered with SES, DKIM tokens: %v, MAIL FROM: %s\n", domainName, sesDkimTokens, sesVerificationResult.MailFromDomain)
 	return sesRecords, nil
@@ -828,12 +809,57 @@ func (s *DomainService) AddDNSToCloudflare(ctx context.Context, domainID int64, 
 			"type":     rec.RecordType,
 			"value":    rec.Value,
 		}
+		// Protect legacy records too: older SES onboarding stored an inbound MX.
+		// Only subdomain MX records (such as SES MAIL FROM) belong in automatic setup.
+		hostname := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(rec.Hostname)), ".")
+		domain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domainName)), ".")
+		if strings.EqualFold(rec.RecordType, "MX") && !strings.HasSuffix(hostname, "."+domain) {
+			result["success"] = false
+			result["skipped"] = true
+			result["status"] = "skipped"
+			result["reason"] = "Receiving MX records require separate manual setup; existing mail routing was preserved."
+			results = append(results, result)
+			continue
+		}
+		if strings.EqualFold(rec.RecordType, "TXT") &&
+			((isDomainRootHostname(rec.Hostname, domainName) && strings.HasPrefix(strings.ToLower(strings.TrimSpace(rec.Value)), "v=spf1")) ||
+				strings.HasPrefix(strings.ToLower(strings.TrimSpace(rec.Value)), "v=dmarc1")) {
+			result["success"] = false
+			result["skipped"] = true
+			result["status"] = "skipped"
+			result["reason"] = "Root SPF and DMARC policies require manual review with your existing mail providers; no policy was changed."
+			results = append(results, result)
+			continue
+		}
 
 		// Add record to Cloudflare
-		err := provider.CloudflareCreateDNSRecord(ctx, apiToken, zoneID, rec.RecordType, rec.Hostname, rec.Value)
+		var companions []provider.DNSRecord
+		for _, other := range records {
+			if !strings.EqualFold(strings.TrimSuffix(other.Hostname, "."), strings.TrimSuffix(rec.Hostname, ".")) || other.ID == rec.ID {
+				continue
+			}
+			companion := provider.DNSRecord{Type: other.RecordType, Name: other.Hostname, Value: other.Value}
+			if other.RecordType == "MX" {
+				if _, err := fmt.Sscanf(other.Value, "%d %s", &companion.Priority, &companion.Value); err != nil {
+					continue
+				}
+			} else if other.RecordType != "TXT" || !strings.HasPrefix(strings.ToLower(other.Value), "v=spf1") {
+				continue
+			}
+			companions = append(companions, companion)
+		}
+		status, err := provider.CloudflareCreateDNSRecord(ctx, apiToken, zoneID, rec.RecordType, rec.Hostname, rec.Value, companions...)
+		result["status"] = status
 		if err != nil {
 			result["success"] = false
-			result["error"] = err.Error()
+			var conflict *provider.CloudflareDNSConflictError
+			if errors.As(err, &conflict) {
+				result["skipped"] = true
+				result["reason"] = err.Error()
+			} else {
+				result["status"] = "failed"
+				result["error"] = err.Error()
+			}
 		} else {
 			result["success"] = true
 		}

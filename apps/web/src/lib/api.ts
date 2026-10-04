@@ -369,10 +369,13 @@ export interface CloudflareZone {
 }
 
 export interface CloudflareDNSResult {
+  status?: 'created' | 'preserved' | 'conflict' | 'skipped' | 'failed'
   hostname: string
   type: string
   value: string
   success: boolean
+  skipped?: boolean
+  reason?: string
   error?: string
 }
 
