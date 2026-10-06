@@ -416,9 +416,9 @@ func (r *ArrivalRunner) autoReplyDailyLimit() int {
 // of the owner's personal identities.
 func activeRuleForIdentity(ctx context.Context, q queryer, identityID, ownerID int64) (int64, error) {
 	var id int64
-	err := q.QueryRowContext(ctx, `SELECT a.id FROM auto_replies a JOIN identities i ON i.id=$1 AND i.user_id=a.user_id
+	err := q.QueryRowContext(ctx, `SELECT a.id FROM auto_replies a JOIN identities i ON i.id=$1 AND `+identityAccessSQL("i", "a.user_id", identityCanManage)+`
 		WHERE a.user_id=$2 AND a.active AND a.start_date<=now() AND (a.end_date IS NULL OR a.end_date>=now())
-			AND (cardinality(COALESCE(a.identity_ids,'{}'))=0 OR $1=ANY(a.identity_ids))
+			AND ((cardinality(COALESCE(a.identity_ids,'{}'))=0 AND i.kind='personal') OR $1=ANY(a.identity_ids))
 		ORDER BY a.created_at, a.id LIMIT 1`, identityID, ownerID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
@@ -461,7 +461,7 @@ func (r *ArrivalRunner) runAutoReply(ctx context.Context, tx *sql.Tx, job *arriv
 		return arrivalSkipped("rule-changed"), nil
 	}
 	var owned, canSend bool
-	err = tx.QueryRowContext(ctx, `SELECT i.user_id=$2, COALESCE(i.can_send,false) AND d.status='active'
+	err = tx.QueryRowContext(ctx, `SELECT `+identityAccessSQL("i", "$2", identityCanManage)+`, COALESCE(i.can_send,false) AND d.status='active'
 		FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.id=$1 AND d.org_id=$3`, job.IdentityID, job.UserID, job.OrgID).Scan(&owned, &canSend)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && !owned) {
 		return arrivalSkipped("identity-not-owned"), nil

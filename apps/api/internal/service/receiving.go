@@ -238,7 +238,7 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 		var ident recipientIdentity
 		err = s.db.QueryRowContext(ctx, `SELECT i.id,i.domain_id,d.org_id,i.user_id,i.email,d.name
    FROM identities i JOIN domains d ON d.id=i.domain_id
-   WHERE d.org_id=$1 AND d.name=$2 AND d.status='active' AND d.receiving_enabled=true AND i.can_receive=true
+   WHERE d.org_id=$1 AND d.name=$2 AND d.status='active' AND d.receiving_enabled=true AND i.can_receive=true AND i.kind='personal'
    AND (lower(i.email)=$3 OR i.is_catch_all=true)
    ORDER BY (lower(i.email)=$3) DESC,i.id LIMIT 1`, auth.OrgID, domain, address).Scan(&ident.ID, &ident.DomainID, &ident.OrgID, &ident.UserID, &ident.Email, &ident.Domain)
 		if err == sql.ErrNoRows {

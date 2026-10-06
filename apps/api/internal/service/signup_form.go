@@ -120,7 +120,7 @@ func validateSignupForm(r *model.SaveSignupFormRequest) error {
 }
 func (s *SignupFormService) readySender(ctx context.Context, q eventoutbox.DBTX, f *model.SignupForm) error {
 	var ready bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities i JOIN domains d ON d.id=i.domain_id JOIN users u ON u.id=i.user_id WHERE i.uuid::text=$1 AND i.user_id=$2 AND u.org_id=$3 AND u.status='active' AND i.can_send AND d.org_id=$3 AND d.status='active' AND (NOT $4 OR COALESCE(d.ses_verified,false)))`, f.IdentityID, f.CreatedBy, f.OrgID, s.cfg.EmailProvider == "ses").Scan(&ready)
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities i JOIN domains d ON d.id=i.domain_id JOIN users u ON u.id=i.user_id WHERE i.uuid::text=$1 AND i.user_id=$2 AND i.kind='personal' AND u.org_id=$3 AND u.status='active' AND i.can_send AND d.org_id=$3 AND d.status='active' AND (NOT $4 OR COALESCE(d.ses_verified,false)))`, f.IdentityID, f.CreatedBy, f.OrgID, s.cfg.EmailProvider == "ses").Scan(&ready)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func (s *SignupFormService) Save(ctx context.Context, org, user int64, id string
 	var identity any
 	if r.IdentityID != "" {
 		var n int64
-		err = tx.QueryRowContext(ctx, `SELECT i.id FROM identities i JOIN users u ON u.id=i.user_id JOIN domains d ON d.id=i.domain_id WHERE i.uuid=$1 AND i.user_id=$2 AND u.org_id=$3 AND d.org_id=$3`, r.IdentityID, user, org).Scan(&n)
+		err = tx.QueryRowContext(ctx, `SELECT i.id FROM identities i JOIN users u ON u.id=i.user_id JOIN domains d ON d.id=i.domain_id WHERE i.uuid=$1 AND i.user_id=$2 AND i.kind='personal' AND u.org_id=$3 AND d.org_id=$3`, r.IdentityID, user, org).Scan(&n)
 		if err == sql.ErrNoRows {
 			return nil, signupError(400, "Choose your own sending identity")
 		}

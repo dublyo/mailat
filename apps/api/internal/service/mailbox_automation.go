@@ -257,7 +257,7 @@ func (s *InboxService) validateFilter(ctx context.Context, q mailboxQuery, userI
 			return ErrInvalidMailboxInput
 		}
 		var owned bool
-		if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE id=$1 AND user_id=$2)`, *f.IdentityID, userID).Scan(&owned); err != nil {
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities i WHERE i.id=$1 AND `+identityAccessSQL("i", "$2", identityCanRead)+`)`, *f.IdentityID, userID).Scan(&owned); err != nil {
 			return err
 		}
 		if !owned {

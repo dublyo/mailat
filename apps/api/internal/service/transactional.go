@@ -129,14 +129,14 @@ func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID, user
 	domainName := extractDomain(normalizedFrom)
 	if userID > 0 {
 		var foreign bool
-		if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE LOWER(email)=$1 AND user_id<>$2)`, normalizedFrom, userID).Scan(&foreign); err != nil {
+		if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE LOWER(email)=$1 AND NOT (kind='personal' AND user_id=$2))`, normalizedFrom, userID).Scan(&foreign); err != nil {
 			return nil, err
 		}
 		if foreign {
 			return nil, &provider.MailValidationError{Message: "that From address belongs to another user"}
 		}
 		var ownsDomain bool
-		if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.user_id=$1 AND i.can_send=true AND d.org_id=$2 AND LOWER(d.name)=$3)`, userID, orgID, domainName).Scan(&ownsDomain); err != nil {
+		if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.user_id=$1 AND i.kind='personal' AND i.can_send=true AND d.org_id=$2 AND LOWER(d.name)=$3)`, userID, orgID, domainName).Scan(&ownsDomain); err != nil {
 			return nil, err
 		}
 		if !ownsDomain {
@@ -165,7 +165,7 @@ func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID, user
 	var senderName, bucket string
 	err = s.db.QueryRowContext(ctx, `SELECT i.id,i.user_id,COALESCE(i.display_name,''),COALESCE(NULLIF(d.attachment_s3_bucket,''),NULLIF(d.receiving_s3_bucket,''),'')
  FROM identities i JOIN domains d ON d.id=i.domain_id JOIN users u ON u.id=i.user_id
- WHERE i.domain_id=$1 AND u.org_id=$2 AND i.can_send=true AND ($3::bigint=0 OR i.user_id=$3)
+ WHERE i.domain_id=$1 AND u.org_id=$2 AND i.kind='personal' AND i.can_send=true AND ($3::bigint=0 OR i.user_id=$3)
  ORDER BY (lower(i.email)=$4) DESC,i.id LIMIT 1`, domainID, orgID, userID, normalizedFrom).Scan(&identityID, &ownerID, &senderName, &bucket)
 	if err == sql.ErrNoRows {
 		return nil, &provider.MailValidationError{Message: "no authorized sending identity for this domain"}
@@ -368,7 +368,7 @@ func (s *TransactionalService) GetEmailStatusForUser(ctx context.Context, orgID,
 		SELECT id, message_id, from_address, to_addresses, subject, status,
 		       created_at, sent_at, delivered_at
 		FROM transactional_emails
-		WHERE uuid = $1 AND org_id = $2 AND ($3::bigint=0 OR identity_id IN (SELECT id FROM identities WHERE user_id=$3))
+		WHERE uuid = $1 AND org_id = $2 AND ($3::bigint=0 OR identity_id IN (SELECT id FROM identities WHERE user_id=$3 AND kind='personal'))
 	`, emailUUID, orgID, userID).Scan(
 		&email.ID, &email.MessageID, &email.From, &email.To, &email.Subject,
 		&email.Status, &email.CreatedAt, &email.SentAt, &email.DeliveredAt,
@@ -440,7 +440,7 @@ func (s *TransactionalService) CancelEmailForUser(ctx context.Context, orgID, us
 		WITH c AS (
 			UPDATE transactional_emails
 			SET status = 'cancelled', updated_at = NOW()
-			WHERE uuid = $1 AND org_id = $2 AND status = 'queued' AND ($3::bigint=0 OR identity_id IN (SELECT id FROM identities WHERE user_id=$3))
+			WHERE uuid = $1 AND org_id = $2 AND status = 'queued' AND ($3::bigint=0 OR identity_id IN (SELECT id FROM identities WHERE user_id=$3 AND kind='personal'))
 			RETURNING id
 		), refs AS (DELETE FROM send_attachment_refs WHERE transactional_email_id IN (SELECT id FROM c))
 		SELECT count(*) FROM c

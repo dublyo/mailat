@@ -33,7 +33,7 @@ func resolveCampaignSender(ctx context.Context, q eventoutbox.DBTX, orgID, userI
 		return 0, 0, errCampaignSenderUnauthorized
 	}
 	err = q.QueryRowContext(ctx, `SELECT i.id, d.id FROM identities i JOIN users u ON u.id=i.user_id JOIN domains d ON d.id=i.domain_id
-		WHERE lower(i.email)=lower($1) AND i.user_id=$2 AND `+campaignSenderPredicate, a.Address, userID, orgID).Scan(&identityID, &domainID)
+		WHERE lower(i.email)=lower($1) AND i.user_id=$2 AND i.kind='personal' AND `+campaignSenderPredicate, a.Address, userID, orgID).Scan(&identityID, &domainID)
 	if err == sql.ErrNoRows {
 		return 0, 0, errCampaignSenderUnauthorized
 	}
@@ -50,7 +50,7 @@ func revalidateCampaignSender(ctx context.Context, q eventoutbox.DBTX, orgID, id
 		return 0, errCampaignSenderUnauthorized
 	}
 	err = q.QueryRowContext(ctx, `SELECT d.id FROM identities i JOIN users u ON u.id=i.user_id JOIN domains d ON d.id=i.domain_id
-		WHERE i.id=$1 AND i.user_id=$2 AND lower(i.email)=lower($4) AND `+campaignSenderPredicate, identityID, userID, orgID, fromEmail).Scan(&domainID)
+		WHERE i.id=$1 AND i.user_id=$2 AND i.kind='personal' AND lower(i.email)=lower($4) AND `+campaignSenderPredicate, identityID, userID, orgID, fromEmail).Scan(&domainID)
 	if err == sql.ErrNoRows {
 		return 0, errCampaignSenderUnauthorized
 	}

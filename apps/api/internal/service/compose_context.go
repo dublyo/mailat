@@ -20,7 +20,7 @@ func (s *ComposeService) mailboxReplyContext(ctx context.Context, userID int64, 
 		return nil, err
 	}
 	var ownAddress, domain string
-	if err = s.db.QueryRowContext(ctx, `SELECT i.email,d.name FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.id=$1 AND i.user_id=$2`, original.IdentityID, userID).Scan(&ownAddress, &domain); err != nil {
+	if err = s.db.QueryRowContext(ctx, `SELECT i.email,d.name FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.id=$1 AND `+identityAccessSQL("i", "$2", identityCanSend), original.IdentityID, userID).Scan(&ownAddress, &domain); err != nil {
 		return nil, fmt.Errorf("email not found")
 	}
 	alias := ownAddress
@@ -62,7 +62,7 @@ func (s *ComposeService) mailboxReplyContext(ctx context.Context, userID int64, 
 	for _, a := range original.EnvelopeRecipients {
 		exclude[strings.ToLower(a)] = true
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT lower(email) FROM identities WHERE user_id=$1`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT lower(email) FROM identities WHERE user_id=$1 AND kind='personal'`, userID)
 	if err != nil {
 		return nil, err
 	}

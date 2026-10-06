@@ -122,8 +122,8 @@ func (s *ReceivingService) ProcessDeliveryEvent(ctx context.Context, auth *Recei
 		return err
 	}
 	// Resolve the immutable public mailbox ID even if the Sent copy was deleted.
-	rows, err := tx.QueryContext(ctx, `SELECT e.uuid::text,i.user_id,e.identity_id FROM received_emails e JOIN identities i ON i.id=e.identity_id WHERE e.org_id=$1 AND e.direction='outbound' AND(e.ses_message_id=$2 OR e.uuid::text=$3)
- UNION SELECT t.uuid::text,i.user_id,t.identity_id FROM transactional_emails t JOIN identities i ON i.id=t.identity_id WHERE t.org_id=$1 AND(t.provider_message_id=$2 OR t.uuid::text=$3)
+	rows, err := tx.QueryContext(ctx, `SELECT e.uuid::text,e.mailbox_owner_id,e.identity_id FROM received_emails e WHERE e.org_id=$1 AND e.mailbox_owner_id IS NOT NULL AND e.direction='outbound' AND(e.ses_message_id=$2 OR e.uuid::text=$3)
+ UNION SELECT t.uuid::text,COALESCE(t.system_user_id,i.user_id),t.identity_id FROM transactional_emails t JOIN identities i ON i.id=t.identity_id WHERE t.org_id=$1 AND(t.provider_message_id=$2 OR t.uuid::text=$3)
  UNION SELECT k.email_uuid::text,k.user_id,COALESCE(k.identity_id,0)::bigint FROM compose_submission_keys k JOIN users u ON u.id=k.user_id WHERE u.org_id=$1 AND(k.ses_message_id=$2 OR k.email_uuid::text=$3)`, auth.OrgID, n.Mail.MessageId, mailboxUUID)
 	if err != nil {
 		return err
@@ -199,7 +199,7 @@ func applyCampaignFeedback(ctx context.Context, tx *sql.Tx, orgID int64, notific
 	err := tx.QueryRowContext(ctx, `SELECT r.id, r.campaign_id, r.status, r.delivery_status, r.email, r.message_uuid::text, c.uuid::text,
 			COALESCE(c.created_by_user_id,0),
 			CASE WHEN EXISTS(SELECT 1 FROM identities i JOIN users u ON u.id=i.user_id
-				WHERE i.id=c.identity_id AND i.user_id=c.created_by_user_id AND u.org_id=c.org_id) THEN c.identity_id ELSE 0 END
+				WHERE i.id=c.identity_id AND i.user_id=c.created_by_user_id AND i.kind='personal' AND u.org_id=c.org_id) THEN c.identity_id ELSE 0 END
 		FROM campaign_recipients r JOIN campaigns c ON c.id=r.campaign_id AND c.org_id=r.org_id
 		WHERE r.org_id=$1 AND (r.provider_message_id=$2 OR (r.provider_message_id IS NULL AND r.message_uuid=$3::uuid))
 		ORDER BY r.id LIMIT 1 FOR UPDATE OF r`, orgID, n.Mail.MessageId, headerUUIDParam(headerUUID)).
@@ -434,7 +434,7 @@ func (s *ReceivingService) cleanupStorage(ctx context.Context) error {
 // Returning bytes avoids requiring permissive S3 CORS or exposing storage keys.
 func (s *ReceivingService) AttachmentDownload(ctx context.Context, userID int64, emailUUID, attachmentUUID string) ([]byte, string, string, error) {
 	var bucket, key, filename, contentType string
-	err := s.db.QueryRowContext(ctx, `SELECT a.s3_bucket,a.s3_key,a.filename,a.content_type FROM email_attachments a JOIN received_emails e ON e.id=a.received_email_id JOIN identities i ON i.id=e.identity_id WHERE i.user_id=$1 AND e.uuid=$2 AND a.uuid=$3`, userID, emailUUID, attachmentUUID).Scan(&bucket, &key, &filename, &contentType)
+	err := s.db.QueryRowContext(ctx, `SELECT a.s3_bucket,a.s3_key,a.filename,a.content_type FROM email_attachments a JOIN received_emails e ON e.id=a.received_email_id WHERE e.mailbox_owner_id=$1 AND e.uuid=$2 AND a.uuid=$3`, userID, emailUUID, attachmentUUID).Scan(&bucket, &key, &filename, &contentType)
 	if err != nil || bucket == "" || key == "" {
 		return nil, "", "", fmt.Errorf("attachment not found")
 	}

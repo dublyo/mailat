@@ -99,9 +99,9 @@ func (s *ReceivingService) backfillDMARCReportsBatch(ctx context.Context) (bool,
 		var mail dmarcHistoricalMessage
 		// Missing verdicts, user opt-outs and mail modified since deployment are not
 		// candidates. A later scan will never revisit them after progress advances.
-		err = conn.QueryRowContext(ctx, `SELECT e.id,e.uuid,e.org_id,e.identity_id,i.user_id,COALESCE(e.raw_s3_bucket,''),COALESCE(e.raw_s3_key,''),e.updated_at,
+		err = conn.QueryRowContext(ctx, `SELECT e.id,e.uuid,e.org_id,e.identity_id,e.mailbox_owner_id,COALESCE(e.raw_s3_bucket,''),COALESCE(e.raw_s3_key,''),e.updated_at,
    COALESCE(e.dmarc_verdict,''),COALESCE(e.spf_verdict,''),COALESCE(e.dkim_verdict,''),COALESCE(e.spam_verdict,''),COALESCE(e.virus_verdict,'')
-   FROM received_emails e JOIN identities i ON i.id=e.identity_id JOIN users u ON u.id=i.user_id AND u.org_id=e.org_id
+   FROM received_emails e JOIN users u ON u.id=e.mailbox_owner_id AND u.org_id=e.org_id
    LEFT JOIN user_settings prefs ON prefs.user_id=u.id
    WHERE e.id>$1 AND e.id<=$2 AND e.updated_at<=$3 AND e.direction='inbound' AND e.folder='inbox'
     AND NOT e.is_archived AND NOT e.is_trashed AND NOT e.is_spam AND e.has_attachments AND u.status='active'
@@ -181,8 +181,8 @@ func (s *ReceivingService) finishDMARCBackfillMessage(ctx context.Context, conn 
 		}
 		if enabled {
 			result, err := tx.ExecContext(ctx, `UPDATE received_emails e SET folder=$1,is_archived=false,is_trashed=false,is_spam=false,updated_at=clock_timestamp()
-    FROM identities i JOIN users u ON u.id=i.user_id
-    WHERE e.id=$2 AND e.uuid=$3 AND e.identity_id=i.id AND e.identity_id=$4 AND i.user_id=$5 AND e.org_id=$6 AND u.org_id=$6 AND u.status='active'
+    FROM users u
+    WHERE e.id=$2 AND e.uuid=$3 AND e.identity_id=$4 AND e.mailbox_owner_id=$5 AND u.id=e.mailbox_owner_id AND e.org_id=$6 AND u.org_id=$6 AND u.status='active'
      AND e.updated_at=$7 AND e.folder='inbox' AND e.direction='inbound' AND NOT e.is_archived AND NOT e.is_trashed AND NOT e.is_spam`, DMARCReportsFolder, mail.ID, mail.UUID, mail.IdentityID, mail.UserID, mail.OrgID, mail.UpdatedAt)
 			if err != nil {
 				return err

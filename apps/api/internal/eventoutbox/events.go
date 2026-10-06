@@ -206,13 +206,17 @@ func EmitLegacy(ctx context.Context, db *sql.DB, orgID int64, kind string, data 
 }
 
 // Public identity UUIDs let consumers filter without depending on database IDs.
-// Source code cannot accidentally attribute an identity to a different user.
+// Source code cannot accidentally attribute an identity to a different user:
+// the user must own the personal identity or be a member of the shared one.
 func prepareEvent(ctx context.Context, q DBTX, event *Event) error {
 	if event.IdentityID == 0 {
 		return nil
 	}
 	var identityUUID string
-	if err := q.QueryRowContext(ctx, `SELECT i.uuid::text FROM identities i JOIN users u ON u.id=i.user_id WHERE i.id=$1 AND i.user_id=$2 AND u.org_id=$3`, event.IdentityID, event.UserID, event.OrgID).Scan(&identityUUID); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT i.uuid::text FROM identities i JOIN users u ON u.id=$2 AND u.org_id=$3
+		WHERE i.id=$1 AND ((i.kind='personal' AND i.user_id=$2) OR (i.kind='shared' AND EXISTS(
+			SELECT 1 FROM shared_mailboxes sm JOIN shared_mailbox_members m ON m.shared_mailbox_id=sm.id
+			WHERE sm.identity_id=i.id AND m.user_id=$2)))`, event.IdentityID, event.UserID, event.OrgID).Scan(&identityUUID); err != nil {
 		return fmt.Errorf("event identity ownership invalid: %w", err)
 	}
 	event.Data = eventData(*event)

@@ -172,7 +172,7 @@ func (s *AutoReplyService) validateAutoReply(ctx context.Context, userID int64, 
 		return nil
 	}
 	var owned int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM identities WHERE id = ANY($1::int[]) AND user_id = $2`, pq.Array(ar.IdentityIDs), userID).Scan(&owned); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM identities i WHERE i.id = ANY($1::int[]) AND `+identityAccessSQL("i", "$2", identityCanManage), pq.Array(ar.IdentityIDs), userID).Scan(&owned); err != nil {
 		return fmt.Errorf("failed to validate identities: %w", err)
 	}
 	if owned != len(ar.IdentityIDs) {

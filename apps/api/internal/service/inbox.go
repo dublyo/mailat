@@ -761,11 +761,10 @@ func (s *InboxService) getIdentityByID(ctx context.Context, userID int64, identi
 	var identity model.Identity
 	var stalwartAcctID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, uuid, user_id, domain_id, email, display_name, is_default,
-		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at
-		FROM identities
-		WHERE id = $1 AND user_id = $2
-	`, identityID, userID).Scan(
+		SELECT i.id, i.uuid, i.user_id, i.domain_id, i.email, i.display_name, i.is_default,
+		       i.stalwart_account_id, i.quota_bytes, i.used_bytes, i.created_at, i.updated_at
+		FROM identities i
+		WHERE i.id = $1 AND `+identityAccessSQL("i", "$2", identityCanRead), identityID, userID).Scan(
 		&identity.ID, &identity.UUID, &identity.UserID, &identity.DomainID,
 		&identity.Email, &identity.DisplayName, &identity.IsDefault,
 		&stalwartAcctID, &identity.QuotaBytes, &identity.UsedBytes,
@@ -987,11 +986,10 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 			    OR COALESCE(us.remote_images,'ask')='always'
 			    OR (trusted.yes AND upper(COALESCE(re.dmarc_verdict,''))='PASS' AND re.folder<>'spam'))
 		FROM received_emails re
-		JOIN identities i ON re.identity_id = i.id
-		LEFT JOIN user_settings us ON us.user_id = i.user_id
-		CROSS JOIN LATERAL (SELECT EXISTS(SELECT 1 FROM mailbox_trusted_senders ts WHERE ts.user_id = i.user_id
+		LEFT JOIN user_settings us ON us.user_id = re.mailbox_owner_id
+		CROSS JOIN LATERAL (SELECT EXISTS(SELECT 1 FROM mailbox_trusted_senders ts WHERE ts.user_id = re.mailbox_owner_id
 			AND ts.sender IN (lower(re.from_email), '@'||split_part(lower(re.from_email),'@',2)))) AS trusted(yes)
-		WHERE re.uuid = $1 AND i.user_id = $2
+		WHERE re.uuid = $1 AND re.mailbox_owner_id = $2
 	`, emailUUID, userID).Scan(
 		&email.ID, &email.UUID, &email.OrgID, &email.DomainID, &email.IdentityID, &email.MessageID,
 		&inReplyTo, pq.Array(&references), &threadID, &email.FromEmail, &fromName,
@@ -1108,7 +1106,7 @@ func (s *InboxService) ownedMessageTransaction(ctx context.Context, userID int64
 		tx.Rollback()
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT re.uuid,re.send_status FROM received_emails re JOIN identities i ON i.id=re.identity_id WHERE i.user_id=$1 AND re.uuid=ANY($2::uuid[]) FOR UPDATE OF re`, userID, pq.Array(ids))
+	rows, err := tx.QueryContext(ctx, `SELECT re.uuid,re.send_status FROM received_emails re WHERE re.mailbox_owner_id=$1 AND re.uuid=ANY($2::uuid[]) FOR UPDATE OF re`, userID, pq.Array(ids))
 	if err != nil {
 		tx.Rollback()
 		return nil, err
@@ -1204,7 +1202,7 @@ func (s *InboxService) validateMailboxScope(ctx context.Context, userID, identit
 	}
 	if identityID > 0 {
 		var own bool
-		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE id=$1 AND user_id=$2)`, identityID, userID).Scan(&own)
+		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities i WHERE i.id=$1 AND `+identityAccessSQL("i", "$2", identityCanRead)+`)`, identityID, userID).Scan(&own)
 		if err != nil {
 			return err
 		}
@@ -1214,7 +1212,7 @@ func (s *InboxService) validateMailboxScope(ctx context.Context, userID, identit
 	}
 	if domainID > 0 {
 		var own bool
-		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE domain_id=$1 AND user_id=$2)`, domainID, userID).Scan(&own)
+		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities i WHERE i.domain_id=$1 AND `+identityAccessSQL("i", "$2", identityCanRead)+`)`, domainID, userID).Scan(&own)
 		if err != nil {
 			return err
 		}
@@ -1240,12 +1238,12 @@ func (s *InboxService) GetReceivedEmailCounts(ctx context.Context, userID, ident
  COUNT(*) FILTER(WHERE folder='inbox' AND NOT is_read AND NOT is_trashed AND NOT is_archived),
  COUNT(*) FILTER(WHERE folder='dmarc-reports' AND NOT is_trashed AND NOT is_spam AND NOT is_archived),
  COUNT(*) FILTER(WHERE folder='dmarc-reports' AND NOT is_read AND NOT is_trashed AND NOT is_spam AND NOT is_archived)
- FROM received_emails re JOIN identities i ON re.identity_id=i.id WHERE i.user_id=$1 AND ($2::bigint=0 OR re.identity_id=$2)`, userID, identityID).Scan(&result.Inbox, &result.Unread, &result.Starred, &result.Sent, &result.Drafts, &result.Spam, &result.Trash, &result.InboxUnread, &result.DMARCReports, &result.DMARCReportsUnread)
+ FROM received_emails re WHERE re.mailbox_owner_id=$1 AND ($2::bigint=0 OR re.identity_id=$2)`, userID, identityID).Scan(&result.Inbox, &result.Unread, &result.Starred, &result.Sent, &result.Drafts, &result.Spam, &result.Trash, &result.InboxUnread, &result.DMARCReports, &result.DMARCReportsUnread)
 
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT label,COUNT(*) FROM received_emails re JOIN identities i ON re.identity_id=i.id CROSS JOIN LATERAL unnest(re.labels) AS label WHERE i.user_id=$1 AND ($2::bigint=0 OR re.identity_id=$2) AND NOT re.is_trashed GROUP BY label`, userID, identityID)
+	rows, err := s.db.QueryContext(ctx, `SELECT label,COUNT(*) FROM received_emails re CROSS JOIN LATERAL unnest(re.labels) AS label WHERE re.mailbox_owner_id=$1 AND ($2::bigint=0 OR re.identity_id=$2) AND NOT re.is_trashed GROUP BY label`, userID, identityID)
 	if err != nil {
 		return nil, err
 	}
@@ -1262,7 +1260,7 @@ func (s *InboxService) GetReceivedEmailCounts(ctx context.Context, userID, ident
 }
 
 func receivedListQuery(userID int64, req *model.InboxListRequest) (string, []interface{}, error) {
-	query := `FROM received_emails re JOIN identities i ON i.id=re.identity_id WHERE i.user_id=$1`
+	query := `FROM received_emails re JOIN identities i ON i.id=re.identity_id WHERE re.mailbox_owner_id=$1`
 	args := []interface{}{userID}
 	add := func(condition string, value interface{}) {
 		args = append(args, value)

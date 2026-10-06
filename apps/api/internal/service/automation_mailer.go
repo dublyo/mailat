@@ -330,7 +330,7 @@ func (r *automationMailRunner) start(ctx context.Context, id int64) (*automation
 	// SES-verified domain with feedback set up (the campaign sender rule).
 	var domainID int64
 	err = tx.QueryRowContext(ctx, `SELECT i.email, COALESCE(i.display_name,''), d.id FROM identities i JOIN users u ON u.id=i.user_id JOIN domains d ON d.id=i.domain_id
-		WHERE i.id=$1 AND i.user_id=$2 AND `+campaignSenderPredicate, identityID, userID, s.orgID).Scan(&s.snap.FromEmail, &s.snap.FromName, &domainID)
+		WHERE i.id=$1 AND i.user_id=$2 AND i.kind='personal' AND `+campaignSenderPredicate, identityID, userID, s.orgID).Scan(&s.snap.FromEmail, &s.snap.FromName, &domainID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return end("failed", "", "The sending identity is no longer available")
 	}

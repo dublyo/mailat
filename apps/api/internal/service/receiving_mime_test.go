@@ -33,7 +33,7 @@ func TestReceivedListFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, part := range []string{"i.user_id=$1", "re.identity_id=$2", "re.domain_id=$3", "re.has_attachments=$4", "re.received_at<"} {
+	for _, part := range []string{"re.mailbox_owner_id=$1", "re.identity_id=$2", "re.domain_id=$3", "re.has_attachments=$4", "re.received_at<"} {
 		if !strings.Contains(query, part) {
 			t.Fatalf("missing %s in %s", part, query)
 		}

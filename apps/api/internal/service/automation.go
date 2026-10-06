@@ -585,18 +585,17 @@ func checkAutomationRefs(ctx context.Context, q eventoutbox.DBTX, orgID, userID 
 }
 
 func checkAutomationIdentity(ctx context.Context, q eventoutbox.DBTX, orgID, userID int64, nodeID, identityUUID string, add func(nodeID, field, msg string)) error {
-	var owner int64
-	var canSend, domainReady, feedbackReady, userActive bool
+	var owned, canSend, domainReady, feedbackReady, userActive bool
 	err := q.QueryRowContext(ctx, `
-		SELECT i.user_id, i.can_send, d.status = 'active' AND d.ses_verified, COALESCE(d.sending_feedback_ready,false), u.status = 'active'
+		SELECT i.kind = 'personal' AND i.user_id = $3, i.can_send, d.status = 'active' AND d.ses_verified, COALESCE(d.sending_feedback_ready,false), u.status = 'active'
 		FROM identities i JOIN domains d ON d.id = i.domain_id JOIN users u ON u.id = i.user_id
-		WHERE i.uuid = $1 AND d.org_id = $2 AND u.org_id = $2`, identityUUID, orgID).Scan(&owner, &canSend, &domainReady, &feedbackReady, &userActive)
+		WHERE i.uuid = $1 AND d.org_id = $2 AND u.org_id = $2`, identityUUID, orgID, userID).Scan(&owned, &canSend, &domainReady, &feedbackReady, &userActive)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		add(nodeID, "identityUuid", "Choose a sending identity in this workspace")
 	case err != nil:
 		return err
-	case owner != userID || !userActive:
+	case !owned || !userActive:
 		add(nodeID, "identityUuid", "Choose one of your own sending identities")
 	case !canSend:
 		add(nodeID, "identityUuid", "This identity is not allowed to send")

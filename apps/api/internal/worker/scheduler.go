@@ -275,7 +275,7 @@ func (h *ScheduledTaskHandler) HandleAlertDigest(ctx context.Context, task *asyn
 	for _, d := range digests {
 		var fromEmail, fromName string
 		err := h.db.QueryRowContext(ctx, `SELECT i.email, COALESCE(i.display_name,'') FROM identities i JOIN domains d ON d.id=i.domain_id
-			WHERE i.user_id=$1 AND i.can_send AND d.org_id=$2 AND d.status='active' AND COALESCE(d.ses_verified,false)
+			WHERE i.user_id=$1 AND i.kind='personal' AND i.can_send AND d.org_id=$2 AND d.status='active' AND COALESCE(d.ses_verified,false)
 			ORDER BY i.id LIMIT 1`, d.ownerID, d.orgID).Scan(&fromEmail, &fromName)
 		if err == sql.ErrNoRows {
 			fmt.Printf("Alert digest skipped org=%d: no verified sender\n", d.orgID)

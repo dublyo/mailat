@@ -63,7 +63,7 @@ func (s *ComposeService) authorizeMailboxSender(ctx context.Context, userID, ide
 	 COALESCE(NULLIF(d.attachment_s3_bucket,''),NULLIF(d.receiving_s3_bucket,''),rc.s3_bucket,'')
 	 FROM identities i JOIN users u ON u.id=i.user_id JOIN domains d ON d.id=i.domain_id
 	 LEFT JOIN receiving_configs rc ON rc.org_id=u.org_id
-	 WHERE i.id=$1 AND i.user_id=$2 AND i.can_send=true AND d.org_id=u.org_id
+	 WHERE i.id=$1 AND i.user_id=$2 AND i.kind='personal' AND i.can_send=true AND d.org_id=u.org_id
 	 AND d.status='active' AND d.ses_verified=true`, identityID, userID).Scan(&sender.identityID, &sender.domainID, &sender.orgID, &sender.email, &sender.name, &sender.domain, &sender.bucket)
 	if err == sql.ErrNoRows {
 		return nil, &provider.MailValidationError{Message: "select an authorized sending identity on a verified SES domain"}
@@ -79,7 +79,7 @@ func (s *ComposeService) authorizeMailboxSender(ctx context.Context, userID, ide
 		return nil, err
 	}
 	var otherOwner bool
-	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE LOWER(email)=$1 AND user_id<>$2)`, sender.email, userID).Scan(&otherOwner)
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE LOWER(email)=$1 AND NOT (kind='personal' AND user_id=$2))`, sender.email, userID).Scan(&otherOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -183,8 +183,8 @@ func (s *ComposeService) prepareMailboxAttachments(ctx context.Context, sender *
 				return nil, &provider.MailValidationError{Message: "invalid attachment reference"}
 			}
 			err := s.db.QueryRowContext(ctx, `SELECT ea.filename,ea.content_type,ea.size_bytes,ea.s3_bucket,ea.s3_key,COALESCE(ea.checksum,''),COALESCE(ea.content_id,''),ea.is_inline,ea.received_email_id
-			 FROM email_attachments ea JOIN received_emails re ON re.id=ea.received_email_id JOIN identities i ON i.id=re.identity_id
-			 WHERE ea.uuid=$1 AND i.user_id=$2
+			 FROM email_attachments ea JOIN received_emails re ON re.id=ea.received_email_id
+			 WHERE ea.uuid=$1 AND re.mailbox_owner_id=$2
 			 UNION ALL SELECT filename,content_type,size_bytes,s3_bucket,s3_key,checksum,'',false,0 FROM compose_uploads WHERE uuid=$1 AND user_id=$2 LIMIT 1`, ref.BlobID, sender.userID).Scan(&a.name, &a.contentType, &a.size, &a.bucket, &a.key, &a.checksum, &a.contentID, &a.inline, &a.originalEmailID)
 			if err == sql.ErrNoRows {
 				return nil, &provider.MailValidationError{Message: "attachment is unavailable or not owned by you"}
@@ -364,8 +364,8 @@ func (s *ComposeService) sendMailboxEmail(ctx context.Context, userID int64, ema
 	}
 	if email.DraftID != "" {
 		var version int
-		err = tx.QueryRowContext(ctx, `SELECT re.draft_version FROM received_emails re JOIN identities i ON i.id=re.identity_id
-		 WHERE re.uuid=$1 AND i.user_id=$2 AND re.direction='outbound' AND re.send_status='draft' FOR UPDATE OF re`, email.DraftID, userID).Scan(&version)
+		err = tx.QueryRowContext(ctx, `SELECT re.draft_version FROM received_emails re
+		 WHERE re.uuid=$1 AND re.mailbox_owner_id=$2 AND re.direction='outbound' AND re.send_status='draft' FOR UPDATE OF re`, email.DraftID, userID).Scan(&version)
 		if err == sql.ErrNoRows || (err == nil && version != email.DraftVersion) {
 			tx.Rollback()
 			// A concurrent request with the same key may have just consumed this draft.
@@ -379,8 +379,8 @@ func (s *ComposeService) sendMailboxEmail(ctx context.Context, userID int64, ema
 		}
 	}
 	var emailID int64
-	err = tx.QueryRowContext(ctx, `INSERT INTO received_emails(uuid,org_id,domain_id,identity_id,message_id,from_email,from_name,to_emails,cc_emails,bcc_emails,reply_to,subject,text_body,html_body,in_reply_to,"references",snippet,has_attachments,folder,is_read,direction,send_status,submission_key,submission_hash,submitter_user_id,updated_at)
-	 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'outbox',true,'outbound','sending',$19,$20,$21,NOW()) RETURNING id`, id, sender.orgID, sender.domainID, sender.identityID, messageID, sender.email, sender.name, pq.Array(mailboxAddresses(email.To)), pq.Array(mailboxAddresses(email.Cc)), pq.Array(mailboxAddresses(email.Bcc)), msg.ReplyTo, email.Subject, email.TextBody, email.HTMLBody, email.InReplyTo, pq.Array(email.References), composeSnippet(email.TextBody), len(attachments) > 0, email.SubmissionKey, hash, userID).Scan(&emailID)
+	err = tx.QueryRowContext(ctx, `INSERT INTO received_emails(uuid,org_id,domain_id,identity_id,message_id,from_email,from_name,to_emails,cc_emails,bcc_emails,reply_to,subject,text_body,html_body,in_reply_to,"references",snippet,has_attachments,folder,is_read,direction,send_status,submission_key,submission_hash,submitter_user_id,mailbox_owner_id,updated_at)
+	 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'outbox',true,'outbound','sending',$19,$20,$21,$21,NOW()) RETURNING id`, id, sender.orgID, sender.domainID, sender.identityID, messageID, sender.email, sender.name, pq.Array(mailboxAddresses(email.To)), pq.Array(mailboxAddresses(email.Cc)), pq.Array(mailboxAddresses(email.Bcc)), msg.ReplyTo, email.Subject, email.TextBody, email.HTMLBody, email.InReplyTo, pq.Array(email.References), composeSnippet(email.TextBody), len(attachments) > 0, email.SubmissionKey, hash, userID).Scan(&emailID)
 	if err != nil {
 		tx.Rollback()
 		var pgErr *pq.Error
@@ -535,10 +535,10 @@ func (s *ComposeService) saveMailboxDraft(ctx context.Context, userID int64, id 
 	}
 	if id == "" {
 		result.ID = uuid.NewString()
-		err = tx.QueryRowContext(ctx, `INSERT INTO received_emails(uuid,org_id,domain_id,identity_id,message_id,from_email,from_name,to_emails,cc_emails,bcc_emails,reply_to,subject,text_body,html_body,in_reply_to,"references",snippet,has_attachments,folder,is_read,direction,send_status,submitter_user_id,updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'drafts',true,'outbound','draft',$19,NOW()) RETURNING id,created_at,updated_at`, result.ID, sender.orgID, sender.domainID, sender.identityID, "<"+result.ID+"@"+sender.domain+">", sender.email, sender.name, pq.Array(mailboxAddresses(email.To)), pq.Array(mailboxAddresses(email.Cc)), pq.Array(mailboxAddresses(email.Bcc)), replyTo, email.Subject, email.TextBody, email.HTMLBody, email.InReplyTo, pq.Array(email.References), composeSnippet(email.TextBody), len(attachments) > 0, userID).Scan(&dbID, &result.CreatedAt, &result.UpdatedAt)
+		err = tx.QueryRowContext(ctx, `INSERT INTO received_emails(uuid,org_id,domain_id,identity_id,message_id,from_email,from_name,to_emails,cc_emails,bcc_emails,reply_to,subject,text_body,html_body,in_reply_to,"references",snippet,has_attachments,folder,is_read,direction,send_status,submitter_user_id,mailbox_owner_id,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'drafts',true,'outbound','draft',$19,$19,NOW()) RETURNING id,created_at,updated_at`, result.ID, sender.orgID, sender.domainID, sender.identityID, "<"+result.ID+"@"+sender.domain+">", sender.email, sender.name, pq.Array(mailboxAddresses(email.To)), pq.Array(mailboxAddresses(email.Cc)), pq.Array(mailboxAddresses(email.Bcc)), replyTo, email.Subject, email.TextBody, email.HTMLBody, email.InReplyTo, pq.Array(email.References), composeSnippet(email.TextBody), len(attachments) > 0, userID).Scan(&dbID, &result.CreatedAt, &result.UpdatedAt)
 	} else {
-		err = tx.QueryRowContext(ctx, `UPDATE received_emails re SET identity_id=$3,domain_id=$4,from_email=$5,from_name=$6,to_emails=$7,cc_emails=$8,bcc_emails=$9,reply_to=$10,subject=$11,text_body=$12,html_body=$13,in_reply_to=$14,"references"=$15,snippet=$16,has_attachments=$17,draft_version=draft_version+1,updated_at=NOW()
+		err = tx.QueryRowContext(ctx, `UPDATE received_emails re SET identity_id=$3,domain_id=$4,from_email=$5,from_name=$6,to_emails=$7,cc_emails=$8,bcc_emails=$9,reply_to=$10,subject=$11,text_body=$12,html_body=$13,in_reply_to=$14,"references"=$15,snippet=$16,has_attachments=$17,mailbox_owner_id=$2,draft_version=draft_version+1,updated_at=NOW()
 		 WHERE re.uuid=$1 AND re.submitter_user_id=$2 AND re.send_status='draft' AND re.direction='outbound' AND re.draft_version=$18
 		 RETURNING id,created_at,updated_at,draft_version`, id, userID, sender.identityID, sender.domainID, sender.email, sender.name, pq.Array(mailboxAddresses(email.To)), pq.Array(mailboxAddresses(email.Cc)), pq.Array(mailboxAddresses(email.Bcc)), replyTo, email.Subject, email.TextBody, email.HTMLBody, email.InReplyTo, pq.Array(email.References), composeSnippet(email.TextBody), len(attachments) > 0, email.DraftVersion).Scan(&dbID, &result.CreatedAt, &result.UpdatedAt, &result.Version)
 		if err == sql.ErrNoRows {

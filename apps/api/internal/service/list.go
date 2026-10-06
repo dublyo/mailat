@@ -177,7 +177,7 @@ func (s *ListService) UpdateList(ctx context.Context, orgID int64, listUUID stri
 	}
 	if mode == "double" {
 		var invalid bool
-		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM signup_forms f LEFT JOIN identities i ON i.id=f.identity_id LEFT JOIN domains d ON d.id=i.domain_id LEFT JOIN users u ON u.id=i.user_id WHERE f.list_id=$1 AND f.published AND (i.id IS NULL OR NOT i.can_send OR i.user_id<>f.created_by OR u.status<>'active' OR d.org_id<>f.org_id OR d.status<>'active' OR ($2 AND NOT COALESCE(d.ses_verified,false))))`, existing.ID, s.cfg.EmailProvider == "ses").Scan(&invalid)
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM signup_forms f LEFT JOIN identities i ON i.id=f.identity_id LEFT JOIN domains d ON d.id=i.domain_id LEFT JOIN users u ON u.id=i.user_id WHERE f.list_id=$1 AND f.published AND (i.id IS NULL OR NOT i.can_send OR NOT (i.kind='personal' AND i.user_id=f.created_by) OR u.status<>'active' OR d.org_id<>f.org_id OR d.status<>'active' OR ($2 AND NOT COALESCE(d.ses_verified,false))))`, existing.ID, s.cfg.EmailProvider == "ses").Scan(&invalid)
 		if err != nil {
 			return nil, err
 		}

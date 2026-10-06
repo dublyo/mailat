@@ -753,7 +753,7 @@ func emitCampaignEvent(ctx context.Context, q eventoutbox.DBTX, orgID, campaignI
 	err := q.QueryRowContext(ctx, `SELECT c.uuid::text, c.name, c.total_recipients, c.sent_count, c.failed_count, c.unknown_count, c.skipped_count,
 			c.status_reason, COALESCE(c.created_by_user_id,0),
 			CASE WHEN EXISTS(SELECT 1 FROM identities i JOIN users u ON u.id=i.user_id
-				WHERE i.id=c.identity_id AND i.user_id=c.created_by_user_id AND u.org_id=c.org_id) THEN c.identity_id ELSE 0 END
+				WHERE i.id=c.identity_id AND i.user_id=c.created_by_user_id AND i.kind='personal' AND u.org_id=c.org_id) THEN c.identity_id ELSE 0 END
 		FROM campaigns c WHERE c.id=$1 AND c.org_id=$2`, campaignID, orgID).
 		Scan(&campaignUUID, &name, &total, &sent, &failed, &unknown, &skipped, &reason, &userID, &identityID)
 	if err != nil {

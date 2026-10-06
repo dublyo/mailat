@@ -170,7 +170,7 @@ func (s *AutoReplyService) CreateEmailForward(ctx context.Context, userID, orgID
 	var identityID, ownerID int64
 	var canSend, domainActive, sesVerified bool
 	err = tx.QueryRowContext(ctx, `SELECT i.id,i.user_id,COALESCE(i.can_send,false),d.status='active',COALESCE(d.ses_verified,false)
-		FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.uuid=$1 AND d.org_id=$2 FOR UPDATE OF i`, input.IdentityUUID, orgID).
+		FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.uuid=$1 AND i.kind='personal' AND d.org_id=$2 FOR UPDATE OF i`, input.IdentityUUID, orgID).
 		Scan(&identityID, &ownerID, &canSend, &domainActive, &sesVerified)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && ownerID != userID) {
 		return nil, &ForwardValidationError{Message: "identity not found"}
@@ -579,7 +579,7 @@ func (r *ArrivalRunner) runForward(ctx context.Context, tx *sql.Tx, job *arrival
 	var owned, canSend bool
 	err = tx.QueryRowContext(ctx, `SELECT lower(i.email),i.user_id=$2,
 			COALESCE(i.can_send,false) AND d.status='active' AND (COALESCE(d.ses_verified,false) OR $4<>'ses')
-		FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.id=$1 AND d.org_id=$3`,
+		FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.id=$1 AND i.kind='personal' AND d.org_id=$3`,
 		job.IdentityID, ownerID, job.OrgID, r.tx.cfg.EmailProvider).Scan(&identityEmail, &owned, &canSend)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && !owned) {
 		return arrivalSkipped("identity-not-owned"), nil

@@ -228,7 +228,12 @@ func (h *EmailHandler) finishEmailTx(ctx context.Context, tx *sql.Tx, id int64, 
 		user = payload.UserID
 	}
 	if user == 0 && identity > 0 {
-		_ = tx.QueryRowContext(ctx, `SELECT user_id FROM identities WHERE id=$1`, identity).Scan(&user)
+		// A shared identity's user_id is only its steward, never the sender.
+		_ = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT system_user_id FROM transactional_emails WHERE id=$2),
+ (SELECT user_id FROM identities WHERE id=$1 AND kind='personal'),0)`, identity, id).Scan(&user)
+	}
+	if user == 0 {
+		identity = 0 // events are attributed to an identity only together with its user
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO transactional_delivery_events(email_id,event_type,details) VALUES($1,$2,$3)`, id, status, details); err != nil {
 		return err

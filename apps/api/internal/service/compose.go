@@ -909,11 +909,10 @@ func (s *ComposeService) getIdentityByID(ctx context.Context, userID int64, iden
 	var identity model.Identity
 	var stalwartAcctID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, uuid, user_id, domain_id, email, display_name, is_default,
-		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at
-		FROM identities
-		WHERE id = $1 AND user_id = $2
-	`, identityID, userID).Scan(
+		SELECT i.id, i.uuid, i.user_id, i.domain_id, i.email, i.display_name, i.is_default,
+		       i.stalwart_account_id, i.quota_bytes, i.used_bytes, i.created_at, i.updated_at
+		FROM identities i
+		WHERE i.id = $1 AND `+identityAccessSQL("i", "$2", identityCanSend), identityID, userID).Scan(
 		&identity.ID, &identity.UUID, &identity.UserID, &identity.DomainID,
 		&identity.Email, &identity.DisplayName, &identity.IsDefault,
 		&stalwartAcctID, &identity.QuotaBytes, &identity.UsedBytes,
