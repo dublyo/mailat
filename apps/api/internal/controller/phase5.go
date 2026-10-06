@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/gogf/gf/v2/net/ghttp"
@@ -459,11 +460,18 @@ func (c *Phase5Controller) GetWebhookTriggerTypes(r *ghttp.Request) {
 // PUSH NOTIFICATION ENDPOINTS
 // ====================
 
+// VAPIDKeyResponse tells browsers whether web push is configured and which
+// application server key to subscribe with.
+type VAPIDKeyResponse struct {
+	Enabled   bool   `json:"enabled"`
+	PublicKey string `json:"publicKey"`
+}
+
 // GetVAPIDKey returns the VAPID public key
 // GET /api/v1/push/vapid-key
 func (c *Phase5Controller) GetVAPIDKey(r *ghttp.Request) {
 	key := c.pushService.GetVAPIDPublicKey()
-	response.Success(r, map[string]string{"publicKey": key})
+	response.Success(r, VAPIDKeyResponse{Enabled: key != "", PublicKey: key})
 }
 
 // SubscribePush subscribes to push notifications
@@ -482,8 +490,17 @@ func (c *Phase5Controller) SubscribePush(r *ghttp.Request) {
 	}
 
 	sub, err := c.pushService.Subscribe(r.Context(), claims.UserID, &input)
-	if err != nil {
+	var invalid *service.PushInputError
+	switch {
+	case err == nil:
+	case errors.As(err, &invalid), errors.Is(err, service.ErrPushDisabled):
 		response.BadRequest(r, err.Error())
+		return
+	case errors.Is(err, service.ErrPushEndpointTaken):
+		response.WithStatus(r, 409, 409, err.Error(), nil)
+		return
+	default:
+		response.InternalError(r, "Unable to save the push subscription")
 		return
 	}
 
@@ -508,8 +525,12 @@ func (c *Phase5Controller) UnsubscribePush(r *ghttp.Request) {
 	}
 
 	err := c.pushService.Unsubscribe(r.Context(), claims.UserID, req.Endpoint)
+	if errors.Is(err, service.ErrPushSubscriptionGone) {
+		response.NotFound(r, "Subscription not found")
+		return
+	}
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.InternalError(r, "Unable to update the push subscription")
 		return
 	}
 
@@ -527,7 +548,7 @@ func (c *Phase5Controller) ListPushSubscriptions(r *ghttp.Request) {
 
 	subs, err := c.pushService.ListSubscriptions(r.Context(), claims.UserID)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		response.InternalError(r, "Unable to list push subscriptions")
 		return
 	}
 
@@ -556,8 +577,12 @@ func (c *Phase5Controller) UpdatePushPreferences(r *ghttp.Request) {
 	}
 
 	err := c.pushService.UpdatePreferences(r.Context(), claims.UserID, uuid, req.NotifyNewEmail, req.NotifyCampaign, req.NotifyMentions)
+	if errors.Is(err, service.ErrPushSubscriptionGone) {
+		response.NotFound(r, "Subscription not found")
+		return
+	}
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		response.InternalError(r, "Unable to update the push subscription")
 		return
 	}
 

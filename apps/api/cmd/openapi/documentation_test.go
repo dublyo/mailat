@@ -115,6 +115,13 @@ func TestPublishedResponseAndQueryCorrections(t *testing.T) {
 			t.Errorf("Created handler must advertise 201: %s", path)
 		}
 	}
+	if op("/api/v1/push/subscribe", "post")["responses"].(map[string]interface{})["409"] == nil {
+		t.Fatal("push subscribe must document the endpoint ownership conflict")
+	}
+	if ref := data("/api/v1/push/vapid-key", "get", "200")["$ref"]; ref != "#/components/schemas/controller.VAPIDKeyResponse" ||
+		schemas["controller.VAPIDKeyResponse"].(map[string]interface{})["properties"].(map[string]interface{})["enabled"].(map[string]interface{})["type"] != "boolean" {
+		t.Fatalf("vapid-key response must advertise enabled: %v", ref)
+	}
 	if op("/api/v1/oauth/{provider}", "delete")["responses"].(map[string]interface{})["200"] == nil {
 		t.Fatal("unlink is JSON, not an OAuth redirect")
 	}

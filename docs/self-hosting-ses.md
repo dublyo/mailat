@@ -137,6 +137,12 @@ Forwards and auto-replies run when mail arrives through SES and send through SES
 
 Sieve scripts are not supported. Existing rows are kept but never run; use inbox filters.
 
+### Live updates and web push
+
+Open mailboxes update live over Server-Sent Events. Every committed mailbox change is recorded in `mailbox_changes` and announced with PostgreSQL `NOTIFY`, so all API replicas see it; `LISTEN` needs a direct (session-mode) PostgreSQL connection, not a transaction-pooling proxy. If the listener drops, streams fall back to polling every 5 seconds. Browsers fetch a single-use stream ticket for each connection, and a stream stays open as long as its session. `SSE_MAX_CONNECTIONS` (default 5000) caps streams per replica; each user keeps at most 10.
+
+Desktop notifications for new inbox mail use web push with VAPID keys. Generate a pair once with `cd apps/api && go run ./cmd/vapid-keys` and set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` (a `mailto:` or `https:` contact). Set all three or none; a partial or mismatched set stops startup, and with none push is disabled. Keep the private key secret. Rotating the keys retires existing subscriptions, so users enable notifications again in Settings. Subscriptions are accepted only for push-service hosts in `PUSH_ENDPOINT_HOST_SUFFIXES` (Chrome/Edge, Firefox, Safari and Windows by default), and deliveries go only to public addresses without redirects.
+
 ## Limits, retention, upgrades, and validation
 
 `DISABLE_APP_LIMITS=true` is the self-host default and bypasses application plan caps, including old positive organization values. All four `DEFAULT_*` limits default to `0`, meaning no application cap. To impose operator quotas, set `DISABLE_APP_LIMITS=false` and positive organization limits; default values apply to newly created organizations and do not rewrite existing rows. A positive monthly send limit counts reserved attempts atomically by UTC calendar month. Retries using the same recorded key do not reserve a second attempt. This setting does not remove AWS account quotas, sandbox restrictions, message bounds, or resource costs.

@@ -1,6 +1,17 @@
 {
   "components": {
     "schemas": {
+      "controller.VAPIDKeyResponse": {
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "publicKey": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "eventoutbox.Attempt": {
         "properties": {
           "attempt": {
@@ -57157,7 +57168,7 @@
     },
     "/api/v1/push/subscribe": {
       "post": {
-        "description": "SubscribePush subscribes to push notifications\nPOST /api/v1/push/subscribe",
+        "description": "Registers this browser for new-mail notifications. The endpoint must be an https URL (at most 1 KiB) on a configured push service host; p256dhKey (65 bytes) and authKey (16 bytes) are base64url. 400 for invalid keys, a disallowed host or when push is not configured; 409 when the endpoint belongs to another account. Re-subscribing an owned endpoint reactivates it.",
         "operationId": "post_api_v1_push_subscribe",
         "requestBody": {
           "content": {
@@ -57299,7 +57310,7 @@
                 "schema": {
                   "properties": {
                     "code": {
-                      "example": 409,
+                      "example": 0,
                       "type": "integer"
                     },
                     "message": {
@@ -57314,7 +57325,7 @@
                 }
               }
             },
-            "description": "Conflict or changed idempotency payload"
+            "description": "The push endpoint belongs to another account"
           },
           "410": {
             "content": {
@@ -58191,7 +58202,7 @@
     },
     "/api/v1/push/vapid-key": {
       "get": {
-        "description": "GetVAPIDKey returns the VAPID public key\nGET /api/v1/push/vapid-key",
+        "description": "enabled=false (and an empty publicKey) means the server has no VAPID keys and cannot send push notifications.",
         "operationId": "get_api_v1_push_vapid_key",
         "responses": {
           "200": {
@@ -58204,12 +58215,7 @@
                       "type": "integer"
                     },
                     "data": {
-                      "properties": {
-                        "publicKey": {
-                          "type": "string"
-                        }
-                      },
-                      "type": "object"
+                      "$ref": "#/components/schemas/controller.VAPIDKeyResponse"
                     },
                     "message": {
                       "type": "string"

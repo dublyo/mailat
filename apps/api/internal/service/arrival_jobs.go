@@ -163,7 +163,7 @@ func EnqueueArrivalJobs(ctx context.Context, tx *sql.Tx, in ArrivalInput) error 
 			continue
 		}
 		var subscribed bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM push_subscriptions WHERE user_id=$1 AND active)`, c.OwnerID).Scan(&subscribed); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM push_subscriptions WHERE user_id=$1 AND active AND notify_new_email)`, c.OwnerID).Scan(&subscribed); err != nil {
 			return err
 		}
 		if !subscribed {

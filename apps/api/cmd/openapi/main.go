@@ -640,6 +640,13 @@ func customize(op object, verb, path string) {
 		op["description"] = "Browser clients obtain a 60-second, single-use stream ticket from POST /auth/stream-token for every (re)connect; a reused ticket returns 401. The open stream lives as long as the session (or API key) and closes when it is revoked. Headless clients use Bearer API keys with email:read. Stream tickets cannot call other endpoints. Events (JSON {type,data}): connected{clientId,cursor}; new_email{cursor,uuid,identityId,summary}, email_update{cursor,uuid,summary} and email_deleted{cursor,uuids}, each with SSE id = cursor; counts_update{counts}; resync{cursor,reason} (expired or ahead cursor, or more than 500 pending changes: reload and adopt the cursor); heartbeat. 503 when the server's connection limit is reached; each user keeps at most 10 streams (the oldest is closed)."
 		op["responses"].(object)["200"] = object{"description": "Event stream", "content": object{"text/event-stream": object{"schema": object{"type": "string"}}}}
 	}
+	if path == "/push/vapid-key" {
+		op["description"] = "enabled=false (and an empty publicKey) means the server has no VAPID keys and cannot send push notifications."
+	}
+	if path == "/push/subscribe" {
+		op["description"] = "Registers this browser for new-mail notifications. The endpoint must be an https URL (at most 1 KiB) on a configured push service host; p256dhKey (65 bytes) and authKey (16 bytes) are base64url. 400 for invalid keys, a disallowed host or when push is not configured; 409 when the endpoint belongs to another account. Re-subscribing an owned endpoint reactivates it."
+		op["responses"].(object)["409"] = object{"description": "The push endpoint belongs to another account", "content": object{"application/json": object{"schema": envelope(nil)}}}
+	}
 	if path == "/rules" || strings.HasPrefix(path, "/rules/") {
 		op["deprecated"] = true
 		op["description"] = fmt.Sprint(op["description"]) + " Compatibility API synchronized with SES inbox filters. Prefer /inbox/filters. Unsupported legacy actions are rejected; migrated incompatible rules are disabled with migrationWarning."

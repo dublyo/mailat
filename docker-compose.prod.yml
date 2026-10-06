@@ -93,6 +93,11 @@ services:
       - AUTO_REPLY_DAILY_LIMIT=${AUTO_REPLY_DAILY_LIMIT:-200}
       - FORWARD_MAX_BYTES=${FORWARD_MAX_BYTES:-10485760}
       - FORWARD_DAILY_LIMIT=${FORWARD_DAILY_LIMIT:-200}
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-}
+      - PUSH_ENDPOINT_HOST_SUFFIXES=${PUSH_ENDPOINT_HOST_SUFFIXES:-fcm.googleapis.com,updates.push.services.mozilla.com,push.apple.com,notify.windows.com}
+      - SSE_MAX_CONNECTIONS=${SSE_MAX_CONNECTIONS:-5000}
       - EMAIL_PROVIDER=${EMAIL_PROVIDER:-ses}
     networks:
       - mailat-network

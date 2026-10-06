@@ -1,6 +1,9 @@
 package config
 
 import (
+	"bytes"
+	"crypto/ecdh"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -87,6 +90,13 @@ type Config struct {
 	InviteTTLHours int
 	// Open live-update streams one API replica accepts (0 means 5000).
 	SSEMaxConnections int
+
+	// Web push (RFC 8292 VAPID). All three set enables push; none disables it.
+	VAPIDPublicKey  string
+	VAPIDPrivateKey string
+	VAPIDSubject    string // mailto: or https: contact for push services
+	// Push service hosts (and their subdomains) subscriptions may point at.
+	PushEndpointHostSuffixes []string
 
 	// OAuth2 Providers (Phase 5.3)
 	GoogleClientID        string
@@ -208,6 +218,11 @@ func Load() (*Config, error) {
 		InviteTTLHours:          inviteTTLHours,
 		SSEMaxConnections:       sseMaxConnections,
 
+		VAPIDPublicKey:           strings.TrimSpace(getEnv("VAPID_PUBLIC_KEY", "")),
+		VAPIDPrivateKey:          strings.TrimSpace(getEnv("VAPID_PRIVATE_KEY", "")),
+		VAPIDSubject:             strings.TrimSpace(getEnv("VAPID_SUBJECT", "")),
+		PushEndpointHostSuffixes: splitList(strings.ToLower(getEnv("PUSH_ENDPOINT_HOST_SUFFIXES", DefaultPushEndpointHostSuffixes))),
+
 		// OAuth2 Providers
 		GoogleClientID:        getEnv("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret:    getEnv("GOOGLE_CLIENT_SECRET", ""),
@@ -235,6 +250,10 @@ func Load() (*Config, error) {
 	Cfg = cfg
 	return Cfg, nil
 }
+
+// DefaultPushEndpointHostSuffixes covers the Chrome/Edge, Firefox, Safari and
+// Windows push services.
+const DefaultPushEndpointHostSuffixes = "fcm.googleapis.com,updates.push.services.mozilla.com,push.apple.com,notify.windows.com"
 
 var (
 	dayDuration        = regexp.MustCompile(`^\d+d$`)
@@ -296,6 +315,7 @@ func (c *Config) Validate() error {
 	if c.SSEMaxConnections < 0 || c.SSEMaxConnections > 100000 {
 		add("SSE_MAX_CONNECTIONS must be a whole number from 1 to 100000")
 	}
+	c.validatePush(add)
 	if c.EmailProvider != "ses" && c.EmailProvider != "smtp" {
 		add("EMAIL_PROVIDER must be ses or smtp")
 	}
@@ -303,6 +323,56 @@ func (c *Config) Validate() error {
 		return nil
 	}
 	return errors.New("invalid configuration: " + strings.Join(problems, "; "))
+}
+
+// PushEnabled reports whether VAPID keys are configured.
+func (c *Config) PushEnabled() bool { return c.VAPIDPublicKey != "" }
+
+var hostSuffix = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+
+// validatePush requires all VAPID settings or none, a key pair that matches,
+// and plain host names in the endpoint allowlist. Key values are never echoed.
+func (c *Config) validatePush(add func(string, ...any)) {
+	set := 0
+	for _, v := range []string{c.VAPIDPublicKey, c.VAPIDPrivateKey, c.VAPIDSubject} {
+		if v != "" {
+			set++
+		}
+	}
+	if set != 0 && set != 3 {
+		add("VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY and VAPID_SUBJECT must all be set, or none (generate keys with: go run ./cmd/vapid-keys)")
+	} else if set == 3 {
+		if !vapidPairValid(c.VAPIDPublicKey, c.VAPIDPrivateKey) {
+			add("VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY must be a matching base64url P-256 key pair")
+		}
+		u, err := url.Parse(c.VAPIDSubject)
+		switch {
+		case err != nil:
+			add("VAPID_SUBJECT must be a mailto: or https: URL")
+		case u.Scheme == "mailto" && strings.Contains(u.Opaque, "@"):
+		case u.Scheme == "https" && u.Host != "" && u.User == nil:
+		default:
+			add("VAPID_SUBJECT must be a mailto: or https: URL")
+		}
+	}
+	for i, suffix := range c.PushEndpointHostSuffixes {
+		if !hostSuffix.MatchString(suffix) || len(suffix) > 253 {
+			add("PUSH_ENDPOINT_HOST_SUFFIXES entry %d must be a host name such as fcm.googleapis.com", i+1)
+		}
+	}
+}
+
+func vapidPairValid(public, private string) bool {
+	pub, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(public, "="))
+	if err != nil || len(pub) != 65 {
+		return false
+	}
+	d, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(private, "="))
+	if err != nil || len(d) != 32 {
+		return false
+	}
+	key, err := ecdh.P256().NewPrivateKey(d)
+	return err == nil && bytes.Equal(key.PublicKey().Bytes(), pub)
 }
 
 // ParseSessionDuration accepts "<n>d" (days) or any time.ParseDuration value,

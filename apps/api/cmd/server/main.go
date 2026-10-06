@@ -136,7 +136,11 @@ func main() {
 	// Auto-replies, forwards and push run from jobs queued in the SES ingest transaction.
 	go func() {
 		defer recovery.Done()
-		service.NewArrivalRunner(db, cfg, service.NewTransactionalService(db, cfg, redis)).Run(ctx)
+		runner := service.NewArrivalRunner(db, cfg, service.NewTransactionalService(db, cfg, redis))
+		if push := service.NewPushNotificationService(db, cfg); push.Enabled() {
+			runner.SetPusher(push)
+		}
+		runner.Run(ctx)
 	}()
 
 	// Start worker if enabled

@@ -29,6 +29,16 @@ func validConfig() *Config {
 	}
 }
 
+// RFC 8291 example application server key pair.
+const (
+	testVAPIDPublic  = "BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8"
+	testVAPIDPrivate = "yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"
+)
+
+func setVAPID(c *Config, public, private, subject string) {
+	c.VAPIDPublicKey, c.VAPIDPrivateKey, c.VAPIDSubject = public, private, subject
+}
+
 func TestValidate(t *testing.T) {
 	const jwtValue = "0123456789abcdef0123456789abcdef-jwt"
 	tests := []struct {
@@ -60,6 +70,16 @@ func TestValidate(t *testing.T) {
 		{"bad forward limit", func(c *Config) { c.ForwardDailyLimit = -1 }, "FORWARD_DAILY_LIMIT"},
 		{"sse connections", func(c *Config) { c.SSEMaxConnections = 200 }, ""},
 		{"bad sse connections", func(c *Config) { c.SSEMaxConnections = -1 }, "SSE_MAX_CONNECTIONS"},
+		{"push", func(c *Config) { setVAPID(c, testVAPIDPublic, testVAPIDPrivate, "mailto:ops@example.com") }, ""},
+		{"push https subject", func(c *Config) { setVAPID(c, testVAPIDPublic, testVAPIDPrivate, "https://example.com/contact") }, ""},
+		{"partial push", func(c *Config) { setVAPID(c, testVAPIDPublic, "", "") }, "must all be set, or none"},
+		{"mismatched push keys", func(c *Config) {
+			setVAPID(c, testVAPIDPublic, "q1dXpw3UpT5VOmu_cf_v6ih07Aems3njxI-JWgLcM94", "mailto:ops@example.com")
+		}, "matching base64url P-256 key pair"},
+		{"malformed push key", func(c *Config) { setVAPID(c, "not-a-key", testVAPIDPrivate, "mailto:ops@example.com") }, "matching base64url"},
+		{"bad push subject", func(c *Config) { setVAPID(c, testVAPIDPublic, testVAPIDPrivate, "ops@example.com") }, "VAPID_SUBJECT"},
+		{"http push subject", func(c *Config) { setVAPID(c, testVAPIDPublic, testVAPIDPrivate, "http://example.com") }, "VAPID_SUBJECT"},
+		{"bad push suffix", func(c *Config) { c.PushEndpointHostSuffixes = []string{"fcm.googleapis.com", "https://evil.test/"} }, "PUSH_ENDPOINT_HOST_SUFFIXES entry 2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -75,7 +95,7 @@ func TestValidate(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error %v, want substring %q", err, tt.want)
 			}
-			if strings.Contains(err.Error(), jwtValue) || (c.JWTSecret != "" && strings.Contains(err.Error(), c.JWTSecret)) {
+			if strings.Contains(err.Error(), jwtValue) || (c.JWTSecret != "" && strings.Contains(err.Error(), c.JWTSecret)) || (c.VAPIDPrivateKey != "" && strings.Contains(err.Error(), c.VAPIDPrivateKey)) {
 				t.Fatalf("error leaks a secret value: %v", err)
 			}
 		})
@@ -123,7 +143,7 @@ func TestDocumentedSecretExamplesFailValidate(t *testing.T) {
 func TestLoadDefaultsAndValidation(t *testing.T) {
 	previous := Cfg
 	t.Cleanup(func() { Cfg = previous })
-	for _, k := range []string{"EMAIL_PROVIDER", "JWT_EXPIRES_IN", "CORS_ORIGINS", "TRUSTED_PROXY_CIDRS"} {
+	for _, k := range []string{"EMAIL_PROVIDER", "JWT_EXPIRES_IN", "CORS_ORIGINS", "TRUSTED_PROXY_CIDRS", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "PUSH_ENDPOINT_HOST_SUFFIXES", "SSE_MAX_CONNECTIONS"} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
 	}
@@ -140,6 +160,14 @@ func TestLoadDefaultsAndValidation(t *testing.T) {
 	if want := []string{"https://a.example.com", "http://localhost:5173"}; !reflect.DeepEqual(cfg.CORSOrigins, want) {
 		t.Fatalf("origins %v", cfg.CORSOrigins)
 	}
+	if cfg.PushEnabled() || len(cfg.PushEndpointHostSuffixes) != 4 || cfg.PushEndpointHostSuffixes[0] != "fcm.googleapis.com" || cfg.SSEMaxConnections != 5000 {
+		t.Fatalf("push/sse defaults: enabled=%v suffixes=%v sse=%d", cfg.PushEnabled(), cfg.PushEndpointHostSuffixes, cfg.SSEMaxConnections)
+	}
+	t.Setenv("VAPID_PRIVATE_KEY", testVAPIDPrivate)
+	if _, err := Load(); err == nil || strings.Contains(err.Error(), testVAPIDPrivate) {
+		t.Fatalf("a partial VAPID set must fail startup without echoing the key: %v", err)
+	}
+	os.Unsetenv("VAPID_PRIVATE_KEY")
 	t.Setenv("JWT_SECRET", "short")
 	if cfg, err := Load(); err == nil || cfg != nil || strings.Contains(err.Error(), "short") {
 		t.Fatalf("weak secret should fail without echoing it: cfg=%v err=%v", cfg, err)
