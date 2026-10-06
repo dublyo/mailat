@@ -41,7 +41,8 @@ class ApiClient {
           this.setToken(null)
           window.location.href = '/login'
         }
-        return Promise.reject(Object.assign(new Error(error.response?.data?.message || error.message || 'Request failed'), { status: error.response?.status }))
+        // data carries structured details such as an automation's validation errors[].
+        return Promise.reject(Object.assign(new Error(error.response?.data?.message || error.message || 'Request failed'), { status: error.response?.status, data: error.response?.data?.data }))
       }
     )
   }
@@ -986,6 +987,8 @@ export const API_KEY_PERMISSIONS = [
   { value: 'contacts:manage', label: 'Manage Contacts', description: 'Manage contacts and lists' },
   { value: 'campaigns:read', label: 'Read Campaigns', description: 'List campaigns, stats, progress and recipients' },
   { value: 'campaigns:manage', label: 'Manage Campaigns', description: 'Create, send, schedule, pause and cancel campaigns' },
+  { value: 'automations:read', label: 'Read Automations', description: 'Read automations, stats and enrollments (includes contact emails)' },
+  { value: 'automations:enroll', label: 'Enroll in Automations', description: 'Enroll, cancel and retry contacts' },
 ] as const
 
 export const apiKeyApi = {
@@ -1072,6 +1075,209 @@ export const webhookApi = {
   deliveries: (page = 1, status = '') => api.get<{ deliveries: WebhookDelivery[]; total: number; page: number; pageSize: number }>(`/api/v1/webhook-deliveries?page=${page}&pageSize=20&status=${encodeURIComponent(status)}`),
   delivery: (uuid: string) => api.get<{ delivery: WebhookDelivery; attempts: WebhookAttempt[] }>(`/api/v1/webhook-deliveries/${uuid}`),
   replay: (uuid: string) => api.post(`/api/v1/webhook-deliveries/${uuid}/replay`),
+}
+
+// ============ Templates API ============
+
+export interface EmailTemplate {
+  id: number
+  uuid: string
+  name: string
+  description?: string
+  subject: string
+  htmlBody: string
+  textBody?: string
+  variables: string[]
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export const templateApi = {
+  list: () => api.get<EmailTemplate[]>('/api/v1/templates'),
+}
+
+// ============ Automations API ============
+
+export type AutomationStatus = 'draft' | 'active' | 'paused' | 'archived'
+export type AutomationReentryPolicy = 'never' | 'after_exit'
+export type EnrollmentStatus = 'active' | 'completed' | 'exited' | 'failed' | 'cancelled'
+
+export interface AutomationGraphNode {
+  id: string
+  type: string
+  position: { x: number; y: number }
+  data: { label: string; type: string; config?: Record<string, unknown> }
+}
+
+export interface AutomationGraphEdge {
+  id: string
+  source: string
+  target: string
+  sourceHandle?: string | null
+  targetHandle?: string | null
+  type?: string
+  animated?: boolean
+}
+
+export interface AutomationWorkflow {
+  schemaVersion?: number
+  nodes: AutomationGraphNode[]
+  edges: AutomationGraphEdge[]
+}
+
+export interface AutomationCounts {
+  enrolled: number
+  active: number
+  waiting: number
+  completed: number
+  exited: number
+  failed: number
+  cancelled: number
+}
+
+export interface Automation {
+  id: number
+  uuid: string
+  name: string
+  description?: string
+  triggerType: string
+  triggerConfig?: Record<string, unknown>
+  workflow?: AutomationWorkflow | null
+  status: AutomationStatus
+  reentryPolicy: AutomationReentryPolicy
+  publishedVersion: number | null
+  hasUnpublishedChanges: boolean
+  activatedAt: string | null
+  archivedAt: string | null
+  stats: AutomationCounts
+  enrolledCount: number
+  completedCount: number
+  inProgressCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AutomationListResponse {
+  automations: Automation[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface AutomationValidationError {
+  nodeId: string
+  field: string
+  message: string
+}
+
+export interface AutomationSaveRequest {
+  name?: string
+  description?: string
+  triggerType?: string
+  triggerConfig?: Record<string, unknown>
+  workflow?: AutomationWorkflow
+  reentryPolicy?: AutomationReentryPolicy
+}
+
+export interface AutomationActivation {
+  automation: Automation
+  version: number
+  published: boolean
+}
+
+export interface AutomationNodeStats {
+  entered: number
+  waiting: number
+  succeeded: number
+  skipped: number
+  failed: number
+  yes: number
+  no: number
+  sent: number
+  opened: number
+  clicked: number
+}
+
+export interface AutomationStats extends AutomationCounts {
+  automationUuid: string
+  completionRate: number
+  version: number
+  nodes: Record<string, AutomationNodeStats>
+}
+
+export interface AutomationStepRun {
+  nodeId: string
+  nodeType: string
+  status: 'waiting' | 'succeeded' | 'skipped' | 'failed'
+  outcome: string | null
+  messageUuid?: string
+  error: string | null
+  startedAt: string
+  finishedAt: string | null
+  resumeAt: string | null
+}
+
+export interface AutomationEnrollment {
+  uuid: string
+  contactUuid: string
+  contactEmail: string
+  status: EnrollmentStatus
+  exitReason: string | null
+  version: number | null
+  currentNodeId: string | null
+  nextRunAt: string | null
+  retryCount: number
+  error: string | null
+  enrolledAt: string
+  completedAt: string | null
+  steps?: AutomationStepRun[]
+}
+
+export interface AutomationEnrollmentListResponse {
+  enrollments: AutomationEnrollment[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+const automationPath = (uuid: string) => `/api/v1/automations/${encodeURIComponent(uuid)}`
+
+function pageQuery(params: { page?: number; pageSize?: number; status?: string }) {
+  const query = new URLSearchParams({ page: String(params.page ?? 1), pageSize: String(params.pageSize ?? 50) })
+  if (params.status) query.set('status', params.status)
+  return query.toString()
+}
+
+// Validation failures reject with error.data.errors (AutomationValidationError[]).
+export const automationApi = {
+  list: (params: { page?: number; pageSize?: number; status?: AutomationStatus | '' } = {}) =>
+    api.get<AutomationListResponse>(`/api/v1/automations?${pageQuery(params)}`),
+  get: (uuid: string) => api.get<Automation>(automationPath(uuid)),
+  create: (data: AutomationSaveRequest & { name: string }) => api.post<Automation>('/api/v1/automations', data),
+  update: (uuid: string, data: AutomationSaveRequest) => api.put<Automation>(automationPath(uuid), data),
+  remove: (uuid: string) => api.delete<void>(automationPath(uuid)),
+  validate: (uuid: string) =>
+    api.post<{ valid: boolean; errors: AutomationValidationError[] }>(`${automationPath(uuid)}/validate`),
+  // publishDraft=false resumes the current published version without publishing the draft.
+  activate: (uuid: string, options: { publishDraft?: boolean } = {}) =>
+    api.post<AutomationActivation>(`${automationPath(uuid)}/activate`, { publishDraft: options.publishDraft ?? true }),
+  pause: (uuid: string) => api.post<Automation>(`${automationPath(uuid)}/pause`),
+  archive: (uuid: string) =>
+    api.post<{ automation: Automation; cancelledEnrollments: number }>(`${automationPath(uuid)}/archive`),
+  stats: (uuid: string, version?: number) =>
+    api.get<AutomationStats>(`${automationPath(uuid)}/stats${version ? `?version=${version}` : ''}`),
+  enroll: (uuid: string, target: { contactUuid: string } | { listUuid: string }) =>
+    api.post<{ enrolled: number; skipped: number }>(`${automationPath(uuid)}/enroll`, target),
+  // status also accepts the derived 'waiting'.
+  enrollments: (uuid: string, params: { page?: number; pageSize?: number; status?: EnrollmentStatus | 'waiting' | '' } = {}) =>
+    api.get<AutomationEnrollmentListResponse>(`${automationPath(uuid)}/enrollments?${pageQuery(params)}`),
+  enrollment: (uuid: string, enrollmentUuid: string) =>
+    api.get<AutomationEnrollment>(`${automationPath(uuid)}/enrollments/${encodeURIComponent(enrollmentUuid)}`),
+  cancelEnrollment: (uuid: string, enrollmentUuid: string) =>
+    api.post<AutomationEnrollment>(`${automationPath(uuid)}/enrollments/${encodeURIComponent(enrollmentUuid)}/cancel`),
+  retryEnrollment: (uuid: string, enrollmentUuid: string) =>
+    api.post<AutomationEnrollment>(`${automationPath(uuid)}/enrollments/${encodeURIComponent(enrollmentUuid)}/retry`),
 }
 
 // ============ Received Inbox Types ============
