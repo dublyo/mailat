@@ -2020,6 +2020,14 @@
             ],
             "nullable": true
           },
+          "kind": {
+            "description": "filter (default) or blocked_sender. Blocked senders run after every other filter. Immutable after creation.",
+            "enum": [
+              "filter",
+              "blocked_sender"
+            ],
+            "type": "string"
+          },
           "lastMatchedAt": {
             "allOf": [
               {
@@ -2503,6 +2511,14 @@
             },
             "type": "array"
           },
+          "remoteImages": {
+            "description": "Viewer-specific remote-content decision; present on single-message reads.",
+            "enum": [
+              "blocked",
+              "allowed"
+            ],
+            "type": "string"
+          },
           "replyTo": {
             "type": "string"
           },
@@ -2571,6 +2587,9 @@
               }
             ],
             "nullable": true
+          },
+          "trustedSender": {
+            "type": "boolean"
           },
           "updatedAt": {
             "format": "date-time",
@@ -5414,6 +5433,21 @@
         },
         "type": "object"
       },
+      "service.TrustedSender": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "sender": {
+            "type": "string"
+          },
+          "uuid": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "service.TwoFactorSetup": {
         "properties": {
           "manualCode": {
@@ -5973,6 +6007,19 @@
             ],
             "nullable": true
           },
+          "remoteImages": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "description": "ask (default) blocks remote images until the user shows them; always loads them for every message.",
+            "enum": [
+              "ask",
+              "always"
+            ],
+            "nullable": true
+          },
           "showSnippets": {
             "allOf": [
               {
@@ -6127,6 +6174,14 @@
           },
           "quotaWarnings": {
             "type": "boolean"
+          },
+          "remoteImages": {
+            "description": "ask (default) blocks remote images until the user shows them; always loads them for every message.",
+            "enum": [
+              "ask",
+              "always"
+            ],
+            "type": "string"
           },
           "showSnippets": {
             "type": "boolean"
@@ -34779,6 +34834,21 @@
       "get": {
         "description": "ListFilters Explicit user filter destinations override the automatic DMARC report folder. actionFolder accepts dmarc-reports; label-only and mark-read filters retain the automatically selected folder. Spam and virus decisions are preserved.",
         "operationId": "get_api_v1_inbox_filters",
+        "parameters": [
+          {
+            "description": "Omit for every rule in evaluation order (blocked senders last).",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "enum": [
+                "filter",
+                "blocked_sender"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -35026,23 +35096,48 @@
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
       },
       "post": {
-        "description": "SaveFilter Explicit user filter destinations override the automatic DMARC report folder. actionFolder accepts dmarc-reports; label-only and mark-read filters retain the automatically selected folder. Spam and virus decisions are preserved.",
+        "description": "SaveFilter kind=blocked_sender takes exactly one from condition (equals an address, or endsWith @domain; subdomains are not covered) and actionFolder spam or trash, with only actionMarkRead as an extra action; the value is lowercased and priority forced to 0. Blocked-sender rules always run after every other filter, so no filter can route a blocked sender back to the inbox. Blocking an already blocked sender returns the existing rule with 200. Explicit user filter destinations override the automatic DMARC report folder. actionFolder accepts dmarc-reports; label-only and mark-read filters retain the automatically selected folder. Spam and virus decisions are preserved.",
         "operationId": "post_api_v1_inbox_filters",
         "requestBody": {
           "content": {
             "application/json": {
-              "example": {
-                "actionFolder": "archive",
-                "active": true,
-                "conditionLogic": "all",
-                "conditions": [
-                  {
-                    "field": "subject",
-                    "operator": "contains",
-                    "value": "invoice"
+              "examples": {
+                "blockedSender": {
+                  "summary": "Blocked sender",
+                  "value": {
+                    "actionFolder": "spam",
+                    "actionMarkRead": true,
+                    "active": true,
+                    "conditionLogic": "all",
+                    "conditions": [
+                      {
+                        "field": "from",
+                        "operator": "endsWith",
+                        "value": "@spam.example"
+                      }
+                    ],
+                    "kind": "blocked_sender",
+                    "name": "Blocked: @spam.example",
+                    "priority": 0
                   }
-                ],
-                "name": "Invoice mail"
+                },
+                "filter": {
+                  "summary": "Filter",
+                  "value": {
+                    "actionFolder": "archive",
+                    "active": true,
+                    "conditionLogic": "all",
+                    "conditions": [
+                      {
+                        "field": "subject",
+                        "operator": "contains",
+                        "value": "invoice"
+                      }
+                    ],
+                    "kind": "filter",
+                    "name": "Invoice mail"
+                  }
+                }
               },
               "schema": {
                 "properties": {
@@ -35100,6 +35195,14 @@
                       }
                     ],
                     "nullable": true
+                  },
+                  "kind": {
+                    "description": "filter (default) or blocked_sender. Blocked senders run after every other filter. Immutable after creation.",
+                    "enum": [
+                      "filter",
+                      "blocked_sender"
+                    ],
+                    "type": "string"
                   },
                   "name": {
                     "type": "string"
@@ -35880,7 +35983,7 @@
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
       },
       "put": {
-        "description": "SaveFilter Explicit user filter destinations override the automatic DMARC report folder. actionFolder accepts dmarc-reports; label-only and mark-read filters retain the automatically selected folder. Spam and virus decisions are preserved.",
+        "description": "SaveFilter kind cannot be changed (400). Explicit user filter destinations override the automatic DMARC report folder. actionFolder accepts dmarc-reports; label-only and mark-read filters retain the automatically selected folder. Spam and virus decisions are preserved.",
         "operationId": "put_api_v1_inbox_filters_uuid",
         "parameters": [
           {
@@ -35964,6 +36067,14 @@
                       }
                     ],
                     "nullable": true
+                  },
+                  "kind": {
+                    "description": "filter (default) or blocked_sender. Blocked senders run after every other filter. Immutable after creation.",
+                    "enum": [
+                      "filter",
+                      "blocked_sender"
+                    ],
+                    "type": "string"
                   },
                   "name": {
                     "type": "string"
@@ -40325,7 +40436,7 @@
     },
     "/api/v1/inbox/received/{uuid}": {
       "get": {
-        "description": "Read an owned message and authenticated attachment URLs without changing unread state. Use POST /inbox/received/mark explicitly.",
+        "description": "Read an owned message and authenticated attachment URLs without changing unread state. Use POST /inbox/received/mark explicitly. remoteImages is allowed for sent mail, for users whose remoteImages setting is always, and for trusted senders whose DMARC passed outside Spam; otherwise it is blocked and clients should not load remote content until the user asks.",
         "operationId": "get_api_v1_inbox_received_uuid",
         "parameters": [
           {
@@ -41902,6 +42013,827 @@
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "jmap",
         "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation."
+      }
+    },
+    "/api/v1/inbox/trusted-senders": {
+      "get": {
+        "description": "Per-user trusted senders (an address or @domain, max 500). Remote images in their mail load automatically only when DMARC passed and the message is not in Spam. POST is idempotent: 201 when created, 200 with the existing entry otherwise; 409 limit_reached at the cap.",
+        "operationId": "get_api_v1_inbox_trusted_senders",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/service.TrustedSender"
+                      },
+                      "type": "array"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "ListTrustedSenders",
+        "tags": [
+          "inbox"
+        ],
+        "x-api-key-scope": "email:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+      },
+      "post": {
+        "description": "Per-user trusted senders (an address or @domain, max 500). Remote images in their mail load automatically only when DMARC passed and the message is not in Spam. POST is idempotent: 201 when created, 200 with the existing entry otherwise; 409 limit_reached at the cap.",
+        "operationId": "post_api_v1_inbox_trusted_senders",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "sender": "@example.net"
+              },
+              "schema": {
+                "properties": {
+                  "sender": {
+                    "description": "name@example.com or @example.com",
+                    "maxLength": 320,
+                    "minLength": 3,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "sender"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.TrustedSender"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sender was already trusted; the existing entry is returned",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.TrustedSender"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "limit_reached: remove a trusted sender before adding another"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "AddTrustedSender",
+        "tags": [
+          "inbox"
+        ],
+        "x-api-key-scope": "email:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+      }
+    },
+    "/api/v1/inbox/trusted-senders/{uuid}": {
+      "delete": {
+        "description": "Per-user trusted senders (an address or @domain, max 500). Remote images in their mail load automatically only when DMARC passed and the message is not in Spam. POST is idempotent: 201 when created, 200 with the existing entry otherwise; 409 limit_reached at the cap.",
+        "operationId": "delete_api_v1_inbox_trusted_senders_uuid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "DeleteTrustedSender",
+        "tags": [
+          "inbox"
+        ],
+        "x-api-key-scope": "email:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
       }
     },
     "/api/v1/labels": {

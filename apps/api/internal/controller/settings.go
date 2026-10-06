@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"errors"
+
 	"github.com/gogf/gf/v2/net/ghttp"
 
 	"github.com/dublyo/mailat/api/internal/middleware"
@@ -62,6 +64,10 @@ func (c *SettingsController) UpdateSettings(r *ghttp.Request) {
 	}
 
 	settings, err := c.settingsService.UpdateSettings(r.Context(), claims.UserID, &req)
+	if errors.Is(err, service.ErrInvalidSettings) {
+		response.BadRequest(r, err.Error())
+		return
+	}
 	if err != nil {
 		response.InternalError(r, "Unable to save settings")
 		return

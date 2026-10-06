@@ -10,6 +10,7 @@ import { useReceivedInboxStore } from '@/stores/receivedInbox'
 import { useDomainsStore } from '@/stores/domains'
 import { composeApi, receivedInboxApi, type ComposeAttachment, type ComposeRequest, type SendResult } from '@/lib/api'
 import { replyRecipients, replySender, prefixedSubject, escapeHtml, plainAddress, composeThreadHeaders, failedRetryPayload, retainSendAttempt } from '@/lib/compose'
+import { renderMessageDocument } from '@/lib/mailHtml'
 
 const inboxStore = useInboxStore()
 const mailbox = useReceivedInboxStore()
@@ -33,6 +34,7 @@ const readingFiles = ref(false)
 const initialized = ref(false)
 const error = ref('')
 const saveMessage = ref('')
+const quoteNotice = ref('')
 const showCcBcc = ref(false)
 const draftId = ref('')
 const draftVersion = ref<number | undefined>()
@@ -78,7 +80,7 @@ watch(isOpen, async open => {
   const generation = ++composeGeneration
   if (!open) { initialized.value = false; return }
   initialized.value = false
-  error.value = ''; saveMessage.value = ''; sendState.value = ''
+  error.value = ''; saveMessage.value = ''; sendState.value = ''; quoteNotice.value = ''
   submissionPayload = null; submissionKey.value = ''; submissionEmailId.value = ''; attemptUncertain.value = false; draftId.value = ''; draftVersion.value = undefined
   to.value = ''; cc.value = ''; bcc.value = ''; subject.value = ''; body.value = ''; html.value = ''; attachments.value = []
   isMinimized.value = false; showCcBcc.value = false
@@ -106,7 +108,14 @@ watch(isOpen, async open => {
         to.value = recipients.to.join(', '); cc.value = recipients.cc.join(', ')
       }
       subject.value = prefixedSubject(original.subject, forward ? 'Fwd' : 'Re')
-      const originalHtml = original.htmlBody || `<p>${escapeHtml(original.body).replace(/\n/g, '<br>')}</p>`
+      // Quote through the remote-image policy so TipTap never loads trackers
+      // in the app origin: blocked images become "[image: alt]" text.
+      let originalHtml = `<p>${escapeHtml(original.body).replace(/\n/g, '<br>')}</p>`
+      if (original.htmlBody) {
+        const quoted = renderMessageDocument(original.htmlBody, { allowRemote: !!original.remoteImagesAllowed, mode: 'quote' })
+        originalHtml = quoted.doc
+        if (quoted.remoteCount > 0) quoteNotice.value = 'Remote images were left out. Show images in the message first to include them.'
+      }
       const lead = forward ? `Forwarded message — From: ${original.from.email}` : `On ${new Date(original.receivedAt).toLocaleString()}, ${original.from.name || original.from.email} wrote:`
       content = `<p></p><p>${escapeHtml(lead)}</p><blockquote>${originalHtml}</blockquote>`
     }
@@ -287,6 +296,7 @@ onBeforeUnmount(() => { clearTimeout(saveTimer); editor.value?.destroy(); window
       <template v-if="!isMinimized">
         <p v-if="!initialized" role="status" class="px-4 py-2 text-sm text-gray-500">Loading sender identities…</p>
         <p v-if="error" role="alert" class="bg-red-50 text-red-700 text-sm px-4 py-3">{{ error }}</p>
+        <p v-if="quoteNotice" role="status" class="bg-gray-50 text-gray-700 text-xs px-4 py-2 flex gap-2"><span class="flex-1">{{ quoteNotice }}</span><button type="button" @click="quoteNotice = ''" aria-label="Dismiss notice"><X class="w-3 h-3" /></button></p>
         <p v-if="!identities.length && initialized" class="px-4 py-3 text-sm bg-amber-50">Add a sending identity on a verified domain in <RouterLink to="/domains" class="underline">Domains</RouterLink>.</p>
         <fieldset :disabled="locked" class="min-h-0 flex-1 flex flex-col disabled:opacity-70">
           <div class="p-3 border-b space-y-2">

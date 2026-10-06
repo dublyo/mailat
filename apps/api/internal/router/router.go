@@ -268,6 +268,9 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.PUT("/inbox/filters/:uuid", receivedInboxCtrl.SaveFilter)
 			protectedGroup.DELETE("/inbox/filters/:uuid", receivedInboxCtrl.DeleteFilter)
 			protectedGroup.POST("/inbox/filters/:uuid/test", receivedInboxCtrl.TestFilter)
+			protectedGroup.GET("/inbox/trusted-senders", receivedInboxCtrl.ListTrustedSenders)
+			protectedGroup.POST("/inbox/trusted-senders", receivedInboxCtrl.AddTrustedSender)
+			protectedGroup.DELETE("/inbox/trusted-senders/:uuid", receivedInboxCtrl.DeleteTrustedSender)
 
 			// API Keys
 			protectedGroup.POST("/api-keys", authCtrl.CreateAPIKey)

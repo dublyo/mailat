@@ -907,6 +907,8 @@ type ReceivedEmail struct {
 	SendStatus         string     `json:"sendStatus"`
 	SendError          string     `json:"sendError,omitempty"`
 	DraftVersion       int        `json:"draftVersion"`
+	RemoteImages       string     `json:"remoteImages,omitempty"` // blocked|allowed; single-message reads only
+	TrustedSender      bool       `json:"trustedSender"`
 	SentAt             *time.Time `json:"sentAt,omitempty"`
 	ID                 int64      `json:"id"`
 	UUID               string     `json:"uuid"`
@@ -1001,6 +1003,7 @@ type InboxFilter struct {
 	UserID         int64             `json:"userId"`
 	IdentityID     *int64            `json:"identityId,omitempty"`
 	Name           string            `json:"name"`
+	Kind           string            `json:"kind"` // filter, blocked_sender (applied last)
 	Priority       int               `json:"priority"`
 	Active         bool              `json:"active"`
 	Conditions     []FilterCondition `json:"conditions"`

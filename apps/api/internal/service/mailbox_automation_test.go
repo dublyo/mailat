@@ -120,7 +120,7 @@ func TestMailboxFilterCRUDRunsOnSESAndLegacyRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	filters, err := s.ListFilters(ctx, 1)
+	filters, err := s.ListFilters(ctx, 1, "")
 	if err != nil || len(filters) != 1 || !filters[0].ActionStar {
 		t.Fatalf("legacy not connected: %+v %v", filters, err)
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/mail"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -965,7 +967,11 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 	var readAt, trashedAt sql.NullTime
 	var spamScore sql.NullFloat64
 	var toEmails, ccEmails, bccEmails, references, labels []string
+	var remoteAllowed bool
 
+	// Remote images load only for outbound mail, the "always" setting, or a
+	// trusted sender whose DMARC passed outside Spam (D1). A missing settings
+	// row means "ask".
 	err := s.db.QueryRowContext(ctx, `
 		SELECT re.id, re.uuid, re.org_id, re.domain_id, re.identity_id, re.message_id,
 			   re.in_reply_to, re.references, re.thread_id, re.from_email, re.from_name,
@@ -975,9 +981,16 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 			   re.is_read, re.is_starred, re.is_archived, re.is_trashed, re.is_spam,
 			   re.labels, re.spam_score, re.spam_verdict, re.virus_verdict,
 			   re.spf_verdict, re.dkim_verdict, re.dmarc_verdict, re.ses_message_id,
-			   re.received_at, re.read_at, re.trashed_at, re.created_at, re.updated_at, re.envelope_recipients,re.direction,re.send_status,re.send_error,re.draft_version
+			   re.received_at, re.read_at, re.trashed_at, re.created_at, re.updated_at, re.envelope_recipients,re.direction,re.send_status,re.send_error,re.draft_version,
+			   trusted.yes,
+			   (re.direction='outbound'
+			    OR COALESCE(us.remote_images,'ask')='always'
+			    OR (trusted.yes AND upper(COALESCE(re.dmarc_verdict,''))='PASS' AND re.folder<>'spam'))
 		FROM received_emails re
 		JOIN identities i ON re.identity_id = i.id
+		LEFT JOIN user_settings us ON us.user_id = i.user_id
+		CROSS JOIN LATERAL (SELECT EXISTS(SELECT 1 FROM mailbox_trusted_senders ts WHERE ts.user_id = i.user_id
+			AND ts.sender IN (lower(re.from_email), '@'||split_part(lower(re.from_email),'@',2)))) AS trusted(yes)
 		WHERE re.uuid = $1 AND i.user_id = $2
 	`, emailUUID, userID).Scan(
 		&email.ID, &email.UUID, &email.OrgID, &email.DomainID, &email.IdentityID, &email.MessageID,
@@ -989,6 +1002,7 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 		pq.Array(&labels), &spamScore, &spamVerdict, &virusVerdict,
 		&spfVerdict, &dkimVerdict, &dmarcVerdict, &sesMessageID,
 		&email.ReceivedAt, &readAt, &trashedAt, &email.CreatedAt, &email.UpdatedAt, pq.Array(&email.EnvelopeRecipients), &email.Direction, &email.SendStatus, &sendError, &email.DraftVersion,
+		&email.TrustedSender, &remoteAllowed,
 	)
 	if err == sql.ErrNoRows {
 		return nil, ErrMailboxNotFound
@@ -998,6 +1012,10 @@ func (s *InboxService) GetReceivedEmail(ctx context.Context, userID int64, email
 	}
 
 	email.SendError = sendError.String
+	email.RemoteImages = "blocked"
+	if remoteAllowed {
+		email.RemoteImages = "allowed"
+	}
 	email.InReplyTo = inReplyTo.String
 	email.References = references
 	email.ThreadID = threadID.String
@@ -1333,4 +1351,109 @@ func receivedListQuery(userID int64, req *model.InboxListRequest) (string, []int
 }
 func escapeLike(value string) string {
 	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(value)
+}
+
+// TrustedSender is an address or @domain whose DMARC-passing mail may load
+// remote images for one user.
+type TrustedSender struct {
+	UUID      string    `json:"uuid"`
+	Sender    string    `json:"sender"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+const maxTrustedSenders = 500
+
+var trustedDomainPattern = regexp.MustCompile(`^@[a-z0-9.-]+\.[a-z]{2,}$`)
+
+func normalizeTrustedSender(sender string) (string, error) {
+	sender = strings.ToLower(strings.TrimSpace(sender))
+	if len(sender) < 3 || len(sender) > 320 {
+		return "", fmt.Errorf("%w: enter an email address or @domain", ErrInvalidMailboxInput)
+	}
+	if strings.HasPrefix(sender, "@") {
+		if !trustedDomainPattern.MatchString(sender) {
+			return "", fmt.Errorf("%w: enter a domain as @example.com", ErrInvalidMailboxInput)
+		}
+		return sender, nil
+	}
+	addr, err := mail.ParseAddress(sender)
+	if err != nil || addr.Name != "" || addr.Address != sender {
+		return "", fmt.Errorf("%w: enter an email address or @domain", ErrInvalidMailboxInput)
+	}
+	return sender, nil
+}
+
+func (s *InboxService) ListTrustedSenders(ctx context.Context, userID int64) ([]TrustedSender, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT uuid,sender,created_at FROM mailbox_trusted_senders WHERE user_id=$1 ORDER BY sender`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []TrustedSender{}
+	for rows.Next() {
+		var t TrustedSender
+		if err = rows.Scan(&t.UUID, &t.Sender, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// AddTrustedSender is idempotent; created is false when the sender already exists.
+func (s *InboxService) AddTrustedSender(ctx context.Context, orgID, userID int64, sender string) (*TrustedSender, bool, error) {
+	sender, err := normalizeTrustedSender(sender)
+	if err != nil {
+		return nil, false, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	// Serialize per user so the 500-row cap cannot be raced past.
+	if err = lockMailboxLabels(ctx, tx, userID); err != nil {
+		return nil, false, err
+	}
+	var t TrustedSender
+	err = tx.QueryRowContext(ctx, `SELECT uuid,sender,created_at FROM mailbox_trusted_senders WHERE user_id=$1 AND sender=$2`, userID, sender).Scan(&t.UUID, &t.Sender, &t.CreatedAt)
+	if err == nil {
+		return &t, false, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, false, err
+	}
+	var count int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM mailbox_trusted_senders WHERE user_id=$1`, userID).Scan(&count); err != nil {
+		return nil, false, err
+	}
+	if count >= maxTrustedSenders {
+		return nil, false, fmt.Errorf("%w: limit_reached: remove a trusted sender before adding another", ErrMailboxConflict)
+	}
+	err = tx.QueryRowContext(ctx, `INSERT INTO mailbox_trusted_senders(user_id,org_id,sender) VALUES($1,$2,$3) RETURNING uuid,sender,created_at`, userID, orgID, sender).Scan(&t.UUID, &t.Sender, &t.CreatedAt)
+	if err != nil {
+		return nil, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return &t, true, nil
+}
+
+func (s *InboxService) DeleteTrustedSender(ctx context.Context, userID int64, id string) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return ErrInvalidMailboxInput
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM mailbox_trusted_senders WHERE uuid=$1 AND user_id=$2`, id, userID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrMailboxNotFound
+	}
+	return nil
 }

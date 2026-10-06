@@ -74,7 +74,7 @@ func (c *ReceivedInboxController) LabelEmails(r *ghttp.Request) {
 }
 func (c *ReceivedInboxController) ListFilters(r *ghttp.Request) {
 	x := middleware.GetClaims(r)
-	result, err := c.inboxService.ListFilters(r.Context(), x.UserID)
+	result, err := c.inboxService.ListFilters(r.Context(), x.UserID, r.GetQuery("kind").String())
 	if err != nil {
 		mailboxError(r, err)
 		return
@@ -109,15 +109,20 @@ func (c *ReceivedInboxController) SaveFilter(r *ghttp.Request) {
 		response.BadRequest(r, "Invalid filter JSON")
 		return
 	}
-	allowed := map[string]bool{"name": true, "identityId": true, "priority": true, "active": true, "conditions": true, "conditionLogic": true, "actionLabels": true, "actionFolder": true, "actionStar": true, "actionMarkRead": true, "actionArchive": true, "actionTrash": true, "actionForward": true}
+	allowed := map[string]bool{"kind": true, "name": true, "identityId": true, "priority": true, "active": true, "conditions": true, "conditionLogic": true, "actionLabels": true, "actionFolder": true, "actionStar": true, "actionMarkRead": true, "actionArchive": true, "actionTrash": true, "actionForward": true}
 	for key := range fields {
 		if !allowed[key] {
 			response.BadRequest(r, fmt.Sprintf("Unknown or read-only filter field: %s", key))
 			return
 		}
 	}
+	originalKind := f.Kind
 	if err := json.Unmarshal(r.GetBody(), f); err != nil {
 		response.BadRequest(r, "Invalid filter values")
+		return
+	}
+	if id != "" && f.Kind != originalKind {
+		response.BadRequest(r, "Filter kind cannot be changed")
 		return
 	}
 	result, err := c.inboxService.SaveFilter(r.Context(), x.OrgID, x.UserID, id, f)
@@ -157,4 +162,48 @@ func (c *ReceivedInboxController) Changes(r *ghttp.Request) {
 		return
 	}
 	response.Success(r, result)
+}
+
+// ListTrustedSenders GET /api/v1/inbox/trusted-senders
+func (c *ReceivedInboxController) ListTrustedSenders(r *ghttp.Request) {
+	x := middleware.GetClaims(r)
+	result, err := c.inboxService.ListTrustedSenders(r.Context(), x.UserID)
+	if err != nil {
+		mailboxError(r, err)
+		return
+	}
+	response.Success(r, result)
+}
+
+// AddTrustedSender POST /api/v1/inbox/trusted-senders. Remote images from this
+// address or @domain load automatically when DMARC passes.
+func (c *ReceivedInboxController) AddTrustedSender(r *ghttp.Request) {
+	x := middleware.GetClaims(r)
+	var req struct {
+		Sender string `json:"sender"`
+	}
+	if err := r.Parse(&req); err != nil {
+		response.BadRequest(r, "Invalid trusted sender")
+		return
+	}
+	result, created, err := c.inboxService.AddTrustedSender(r.Context(), x.OrgID, x.UserID, req.Sender)
+	if err != nil {
+		mailboxError(r, err)
+		return
+	}
+	if created {
+		response.Created(r, result)
+		return
+	}
+	response.Success(r, result)
+}
+
+// DeleteTrustedSender DELETE /api/v1/inbox/trusted-senders/:uuid
+func (c *ReceivedInboxController) DeleteTrustedSender(r *ghttp.Request) {
+	x := middleware.GetClaims(r)
+	if err := c.inboxService.DeleteTrustedSender(r.Context(), x.UserID, r.Get("uuid").String()); err != nil {
+		mailboxError(r, err)
+		return
+	}
+	response.SuccessWithMessage(r, "Trusted sender removed", nil)
 }

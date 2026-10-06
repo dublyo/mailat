@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/mail"
 	"regexp"
 	"strconv"
 	"strings"
@@ -186,21 +187,27 @@ func (s *InboxService) LabelReceivedEmails(ctx context.Context, userID int64, id
 	return tx.Commit()
 }
 
-const filterColumns = `id,uuid,org_id,user_id,identity_id,name,priority,active,conditions,condition_logic,COALESCE(action_labels,'{}'),COALESCE(action_folder,''),action_star,action_mark_read,action_archive,action_trash,COALESCE(action_forward,''),match_count,last_matched_at,created_at,updated_at`
+const filterColumns = `id,uuid,org_id,user_id,identity_id,name,kind,priority,active,conditions,condition_logic,COALESCE(action_labels,'{}'),COALESCE(action_folder,''),action_star,action_mark_read,action_archive,action_trash,COALESCE(action_forward,''),match_count,last_matched_at,created_at,updated_at`
 
 type rowScanner interface{ Scan(...interface{}) error }
 
 func scanInboxFilter(row rowScanner) (model.InboxFilter, error) {
 	var f model.InboxFilter
 	var conditions []byte
-	err := row.Scan(&f.ID, &f.UUID, &f.OrgID, &f.UserID, &f.IdentityID, &f.Name, &f.Priority, &f.Active, &conditions, &f.ConditionLogic, pq.Array(&f.ActionLabels), &f.ActionFolder, &f.ActionStar, &f.ActionMarkRead, &f.ActionArchive, &f.ActionTrash, &f.ActionForward, &f.MatchCount, &f.LastMatchedAt, &f.CreatedAt, &f.UpdatedAt)
+	err := row.Scan(&f.ID, &f.UUID, &f.OrgID, &f.UserID, &f.IdentityID, &f.Name, &f.Kind, &f.Priority, &f.Active, &conditions, &f.ConditionLogic, pq.Array(&f.ActionLabels), &f.ActionFolder, &f.ActionStar, &f.ActionMarkRead, &f.ActionArchive, &f.ActionTrash, &f.ActionForward, &f.MatchCount, &f.LastMatchedAt, &f.CreatedAt, &f.UpdatedAt)
 	if err == nil {
 		err = json.Unmarshal(conditions, &f.Conditions)
 	}
 	return f, err
 }
-func (s *InboxService) ListFilters(ctx context.Context, userID int64) ([]model.InboxFilter, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+filterColumns+` FROM inbox_filters WHERE user_id=$1 ORDER BY priority DESC,id`, userID)
+
+// ListFilters returns the user's filters in evaluation order. kind optionally
+// narrows the list to "filter" or "blocked_sender".
+func (s *InboxService) ListFilters(ctx context.Context, userID int64, kind string) ([]model.InboxFilter, error) {
+	if kind != "" && kind != FilterKindFilter && kind != FilterKindBlockedSender {
+		return nil, fmt.Errorf("%w: kind must be filter or blocked_sender", ErrInvalidMailboxInput)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+filterColumns+` FROM inbox_filters WHERE user_id=$1 AND ($2='' OR kind=$2) ORDER BY (kind='blocked_sender'),priority DESC,id`, userID, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -230,6 +237,17 @@ func (s *InboxService) ValidateFilter(ctx context.Context, userID int64, f *mode
 	return s.validateFilter(ctx, s.db, userID, f)
 }
 func (s *InboxService) validateFilter(ctx context.Context, q mailboxQuery, userID int64, f *model.InboxFilter) error {
+	switch f.Kind {
+	case "":
+		f.Kind = FilterKindFilter
+	case FilterKindFilter:
+	case FilterKindBlockedSender:
+		if err := normalizeBlockedSender(f); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("%w: kind must be filter or blocked_sender", ErrInvalidMailboxInput)
+	}
 	f.Name = strings.TrimSpace(f.Name)
 	if len(f.Name) < 1 || len(f.Name) > 255 || f.Priority < -10000 || f.Priority > 10000 {
 		return fmt.Errorf("%w: invalid filter name or priority", ErrInvalidMailboxInput)
@@ -304,16 +322,27 @@ func (s *InboxService) SaveFilter(ctx context.Context, orgID, userID int64, id s
 	if err != nil {
 		return nil, err
 	}
-	args := []interface{}{userID, orgID, f.IdentityID, f.Name, f.Priority, f.Active, string(body), f.ConditionLogic, pq.Array(f.ActionLabels), f.ActionFolder, f.ActionStar, f.ActionMarkRead, f.ActionArchive, f.ActionTrash}
+	args := []interface{}{userID, orgID, f.IdentityID, f.Name, f.Priority, f.Active, string(body), f.ConditionLogic, pq.Array(f.ActionLabels), f.ActionFolder, f.ActionStar, f.ActionMarkRead, f.ActionArchive, f.ActionTrash, f.Kind}
 	var row *sql.Row
 	if id == "" {
-		row = tx.QueryRowContext(ctx, `INSERT INTO inbox_filters(user_id,org_id,identity_id,name,priority,active,conditions,condition_logic,action_labels,action_folder,action_star,action_mark_read,action_archive,action_trash,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11,$12,$13,$14,NOW()) RETURNING `+filterColumns, args...)
+		if f.Kind == FilterKindBlockedSender {
+			// Blocking the same sender twice is idempotent: return the existing rule.
+			existing, err := scanInboxFilter(tx.QueryRowContext(ctx, `SELECT `+filterColumns+` FROM inbox_filters WHERE user_id=$1 AND kind='blocked_sender' AND conditions->0->>'value'=$2`, userID, f.Conditions[0].Value))
+			if err == nil {
+				return &existing, nil
+			}
+			if err != sql.ErrNoRows {
+				return nil, err
+			}
+		}
+		row = tx.QueryRowContext(ctx, `INSERT INTO inbox_filters(user_id,org_id,identity_id,name,priority,active,conditions,condition_logic,action_labels,action_folder,action_star,action_mark_read,action_archive,action_trash,kind,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11,$12,$13,$14,$15,NOW()) RETURNING `+filterColumns, args...)
 	} else {
 		if _, err = uuid.Parse(id); err != nil {
 			return nil, ErrInvalidMailboxInput
 		}
 		args = append(args, id)
-		row = tx.QueryRowContext(ctx, `UPDATE inbox_filters SET identity_id=$3,name=$4,priority=$5,active=$6,conditions=$7,condition_logic=$8,action_labels=$9,action_folder=NULLIF($10,''),action_star=$11,action_mark_read=$12,action_archive=$13,action_trash=$14,updated_at=NOW() WHERE user_id=$1 AND org_id=$2 AND uuid=$15 RETURNING `+filterColumns, args...)
+		// kind is immutable; the WHERE clause keeps a stale caller from converting a rule.
+		row = tx.QueryRowContext(ctx, `UPDATE inbox_filters SET identity_id=$3,name=$4,priority=$5,active=$6,conditions=$7,condition_logic=$8,action_labels=$9,action_folder=NULLIF($10,''),action_star=$11,action_mark_read=$12,action_archive=$13,action_trash=$14,updated_at=NOW() WHERE user_id=$1 AND org_id=$2 AND kind=$15 AND uuid=$16 RETURNING `+filterColumns, args...)
 	}
 	saved, err := scanInboxFilter(row)
 	if err == sql.ErrNoRows {
@@ -351,6 +380,51 @@ func (s *InboxService) DeleteFilter(ctx context.Context, userID int64, id string
 		return err
 	}
 	return tx.Commit()
+}
+
+const (
+	FilterKindFilter        = "filter"
+	FilterKindBlockedSender = "blocked_sender"
+)
+
+var blockedDomainPattern = regexp.MustCompile(`^@[a-z0-9.-]+\.[a-z]{2,}$`)
+
+// normalizeBlockedSender enforces the narrow shape of a blocked-sender rule:
+// one "from" condition (exact address or @domain) that sends mail to Spam or
+// Trash. Values are lowercased so the unique index makes blocking idempotent.
+func normalizeBlockedSender(f *model.InboxFilter) error {
+	invalid := func(msg string) error { return fmt.Errorf("%w: %s", ErrInvalidMailboxInput, msg) }
+	if len(f.Conditions) != 1 || f.Conditions[0].Field != "from" {
+		return invalid("a blocked sender needs exactly one from condition")
+	}
+	c := &f.Conditions[0]
+	c.Value = strings.ToLower(strings.TrimSpace(c.Value))
+	switch c.Operator {
+	case "equals":
+		addr, err := mail.ParseAddress(c.Value)
+		if err != nil || addr.Name != "" || addr.Address != c.Value {
+			return invalid("enter a valid email address")
+		}
+	case "endsWith":
+		if !blockedDomainPattern.MatchString(c.Value) {
+			return invalid("enter a domain as @example.com")
+		}
+	default:
+		return invalid("a blocked sender uses equals (address) or endsWith (@domain)")
+	}
+	if f.ActionFolder != "spam" && f.ActionFolder != "trash" {
+		return invalid("blocked mail goes to spam or trash")
+	}
+	if len(f.ActionLabels) > 0 || f.ActionStar || f.ActionArchive || f.ActionTrash || f.ActionForward != "" {
+		return invalid("blocked senders only support a destination folder and mark read")
+	}
+	f.ConditionLogic = "all"
+	f.Priority = 0
+	f.IdentityID = nil
+	if strings.TrimSpace(f.Name) == "" {
+		f.Name = "Blocked: " + c.Value
+	}
+	return nil
 }
 
 type MailboxChange struct {

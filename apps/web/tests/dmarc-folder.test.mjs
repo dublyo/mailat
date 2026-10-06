@@ -30,7 +30,9 @@ for (const [name, file] of Object.entries({ sidebar: 'components/layout/Sidebar.
         args.path.endsWith('/inbox') ? 'export const useInboxStore = () => globalThis.__folderFixture.composer' :
         args.path.endsWith('/domains') ? 'export const useDomainsStore = () => globalThis.__folderFixture.domains' :
         args.path.endsWith('/compose') ? 'export const escapeHtml = value => value' :
-        'export const api = globalThis.__folderFixture.api' }))
+        args.path.endsWith('/settings') ? 'export const useSettingsStore = () => globalThis.__folderFixture.settings' :
+        args.path.endsWith('/mailHtml') ? 'export const renderMessageDocument = html => ({ doc: html, remoteCount: 0 })' :
+        'export const api = globalThis.__folderFixture.api; export const trustedSendersApi = {}' }))
     } }],
   })).outputFiles[0].text
 }
@@ -38,7 +40,7 @@ const settingsOutput = (await build({
   entryPoints: [`${webRoot}/src/stores/settings.ts`], bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external',
   plugins: [{ name: 'settings-fixture', setup(builder) {
     builder.onResolve({ filter: /^@\/lib\/api$/ }, () => ({ path: 'api', namespace: 'fixture' }))
-    builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export const api = globalThis.__folderSettingsApi', loader: 'js' }))
+    builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export const api = globalThis.__folderSettingsApi; export const inboxFiltersApi = {}; export const trustedSendersApi = {}', loader: 'js' }))
   } }],
 })).outputFiles[0].text
 
@@ -73,7 +75,7 @@ function uiFixture(t, view, folder = 'dmarc-reports') {
     async moveEmails(ids, destination) { moves.push([ids, destination]); mailbox.emails = [] },
   })
   const route = reactive({ path: '/received', fullPath: `/received?folder=${folder}`, params: {}, query: { folder } })
-  globalThis.__folderFixture = { mailbox, route, router: { push: value => navigation.push(value), replace: value => navigation.push(value) }, composer: {}, domains: { identities: [], domains: [], fetchIdentities: async () => {}, fetchDomains: async () => {} }, api: {} }
+  globalThis.__folderFixture = { mailbox, route, router: { push: value => navigation.push(value), replace: value => navigation.push(value) }, composer: {}, settings: {}, domains: { identities: [], domains: [], fetchIdentities: async () => {}, fetchDomains: async () => {} }, api: {} }
   const root = node('root'); const app = renderer.createApp({ setup: () => () => h(evaluate(outputs[view]).default) }); app.mount(root); t.after(() => app.unmount())
   return { root, mailbox, report, route, calls, moves, navigation, button: label => all(root).find(n => n.type === 'button' && (n.props['aria-label'] === label || n.props.title === label || text(n) === label)) }
 }

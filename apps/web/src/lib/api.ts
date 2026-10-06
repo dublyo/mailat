@@ -133,6 +133,8 @@ export interface Email {
   sourceAttachments?: ReceivedEmailAttachment[]
   // For received emails - identity that received/will send the email
   identityId?: number
+  /** True only when remote images may be quoted into a reply or forward. */
+  remoteImagesAllowed?: boolean
 }
 
 export interface EmailAddress {
@@ -395,6 +397,8 @@ export interface SendResult {
   status: 'sent' | 'delivered' | 'bounced' | 'complained' | 'failed' | 'unknown' | 'sending'
   sentAt?: string
   sendError?: string
+  /** A failed send that SES never accepted (throttling); a retry is safe. */
+  retryable?: boolean
 }
 
 export const composeApi = {
@@ -989,6 +993,7 @@ export interface ReceivedEmail {
   domainId: number
   identityId: number
   envelopeRecipients?: string[]
+  direction?: 'inbound' | 'outbound'
   draftVersion?: number
   version?: number
   sendStatus?: string
@@ -1031,6 +1036,9 @@ export interface ReceivedEmail {
   createdAt: string
   updatedAt: string
   attachments?: ReceivedEmailAttachment[]
+  /** Viewer-specific decision, present on single-message reads. */
+  remoteImages?: 'blocked' | 'allowed'
+  trustedSender?: boolean
   // Identity info for unified inbox display
   identityEmail?: string
   identityDisplayName?: string
@@ -1086,9 +1094,13 @@ export interface EmailLabel {
   updatedAt: string
 }
 
+export type InboxFilterKind = 'filter' | 'blocked_sender'
+
 export interface InboxFilter {
   id: number
   uuid: string
+  kind: InboxFilterKind
+  identityId?: number | null
   name: string
   priority: number
   active: boolean
@@ -1109,7 +1121,7 @@ export interface InboxFilter {
 
 export interface FilterCondition {
   field: 'from' | 'to' | 'subject' | 'body' | 'hasAttachment'
-  operator: 'contains' | 'equals' | 'startsWith' | 'endsWith' | 'regex'
+  operator: 'contains' | 'equals' | 'startsWith' | 'endsWith' | 'regex' | 'notContains' | 'notEquals'
   value: string
 }
 
@@ -1204,12 +1216,15 @@ export const labelApi = {
 
 // ============ Inbox Filters API ============
 
-export const filterApi = {
-  list: () => api.get<InboxFilter[]>('/api/v1/inbox/filters'),
+export type InboxFilterInput = Partial<Omit<InboxFilter, 'id' | 'uuid' | 'matchCount' | 'lastMatchedAt' | 'createdAt' | 'updatedAt'>>
+
+export const inboxFiltersApi = {
+  list: (kind?: InboxFilterKind) => api.get<InboxFilter[]>(`/api/v1/inbox/filters${kind ? `?kind=${kind}` : ''}`),
 
   create: (data: {
+    kind?: InboxFilterKind
     name: string
-    identityId?: number
+    identityId?: number | null
     priority?: number
     conditions: FilterCondition[]
     conditionLogic?: 'all' | 'any'
@@ -1222,10 +1237,34 @@ export const filterApi = {
     actionForward?: string
   }) => api.post<InboxFilter>('/api/v1/inbox/filters', data),
 
-  update: (uuid: string, data: Partial<InboxFilter>) =>
+  update: (uuid: string, data: InboxFilterInput) =>
     api.put<InboxFilter>(`/api/v1/inbox/filters/${uuid}`, data),
 
   delete: (uuid: string) => api.delete(`/api/v1/inbox/filters/${uuid}`),
+
+  /** Blocks an address or @domain; the server returns the existing rule for duplicates. */
+  blockSender: (sender: string, folder: 'spam' | 'trash' = 'spam') => {
+    const value = sender.trim().toLowerCase()
+    return api.post<InboxFilter>('/api/v1/inbox/filters', {
+      kind: 'blocked_sender', name: `Blocked: ${value}`, priority: 0, active: true,
+      conditions: [{ field: 'from', operator: value.startsWith('@') ? 'endsWith' : 'equals', value }],
+      conditionLogic: 'all', actionFolder: folder, actionMarkRead: true,
+    })
+  },
+}
+
+// ============ Trusted senders (remote images) ============
+
+export interface TrustedSender {
+  uuid: string
+  sender: string
+  createdAt: string
+}
+
+export const trustedSendersApi = {
+  list: () => api.get<TrustedSender[]>('/api/v1/inbox/trusted-senders'),
+  add: (sender: string) => api.post<TrustedSender>('/api/v1/inbox/trusted-senders', { sender }),
+  delete: (uuid: string) => api.delete(`/api/v1/inbox/trusted-senders/${uuid}`),
 }
 
 // ============ SSE (Server-Sent Events) ============

@@ -18,13 +18,13 @@ func init() {
 			apiRouteScopes[method+" /api/v1"+path] = scope
 		}
 	}
-	add("email:read", "GET", "/inbox /inbox/mailboxes /inbox/emails/:id /inbox/threads/:id /inbox/search /inbox/received /inbox/received/counts /inbox/received/:uuid /inbox/received/:uuid/attachments/:attachmentUuid /inbox/changes /emails/:id /compose/reply/:id /compose/forward/:id /sse/connect /inbox/labels /labels /inbox/filters /inbox/filters/:uuid /rules /rules/:id")
+	add("email:read", "GET", "/inbox /inbox/mailboxes /inbox/emails/:id /inbox/threads/:id /inbox/search /inbox/received /inbox/received/counts /inbox/received/:uuid /inbox/received/:uuid/attachments/:attachmentUuid /inbox/changes /emails/:id /compose/reply/:id /compose/forward/:id /sse/connect /inbox/labels /labels /inbox/filters /inbox/filters/:uuid /inbox/trusted-senders /rules /rules/:id")
 	add("email:send", "POST", "/emails /emails/batch /compose/send /compose/drafts /compose/attachments")
 	add("email:send", "PUT", "/compose/drafts/:id")
 	add("email:send", "DELETE", "/compose/drafts/:id")
-	add("email:manage", "POST", "/inbox/received/mark /inbox/received/star /inbox/received/move /inbox/received/trash /inbox/received/labels /inbox/mark-read /inbox/toggle-flag /inbox/move /inbox/delete /inbox/labels /labels /inbox/filters /inbox/filters/:uuid/test /rules /rules/reorder /rules/:id/test")
+	add("email:manage", "POST", "/inbox/received/mark /inbox/received/star /inbox/received/move /inbox/received/trash /inbox/received/labels /inbox/mark-read /inbox/toggle-flag /inbox/move /inbox/delete /inbox/labels /labels /inbox/filters /inbox/filters/:uuid/test /inbox/trusted-senders /rules /rules/reorder /rules/:id/test")
 	add("email:manage", "PUT", "/inbox/labels/:uuid /labels/:uuid /inbox/filters/:uuid /rules/:id")
-	add("email:manage", "DELETE", "/emails/:id /inbox/labels/:uuid /labels/:uuid /inbox/filters/:uuid /rules/:id")
+	add("email:manage", "DELETE", "/emails/:id /inbox/labels/:uuid /labels/:uuid /inbox/filters/:uuid /inbox/trusted-senders/:uuid /rules/:id")
 	add("domains:read", "GET", "/domains /domains/:uuid /domains/:uuid/dmarc /domains/:uuid/ses-status /domains/:uuid/sending-status")
 	add("domains:manage", "POST", "/domains /domains/:uuid/verify /domains/:uuid/ses-verify /domains/:uuid/dns/cloudflare /domains/cloudflare/zones /domains/:uuid/setup-sending /inbox/setup")
 	add("domains:manage", "DELETE", "/domains/:uuid")

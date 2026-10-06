@@ -5,6 +5,7 @@ import { User, Shield, Bell, Palette, Filter, Webhook, Check, X, Plus, Copy, Dow
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import Modal from '@/components/common/Modal.vue'
+import MailRulesSettings from '@/components/settings/MailRulesSettings.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { webhookApi, oauthApi, type OAuthConnection, type TwoFactorSetup, type Webhook as WebhookType, type WebhookDelivery, type WebhookAttempt } from '@/lib/api'
@@ -52,15 +53,9 @@ const newPassword = ref('')
 const confirmPassword = ref('')
 const passwordError = ref('')
 
-// Filter modal
-const showFilterModal = ref(false)
-const filterName = ref('')
-const filterConditions = ref('')
-const filterActions = ref('')
-
-// Block sender modal
-const showBlockModal = ref(false)
-const blockEmail = ref('')
+// Trusted senders (remote images load for their DMARC-passing mail)
+const trustedInput = ref('')
+const trustedError = ref('')
 
 // 2FA enable modal: scan the QR (or type the manual code), verify, then save backup codes
 const show2FAModal = ref(false)
@@ -265,6 +260,7 @@ onMounted(async () => {
   settingsStore.fetchSettings()
   settingsStore.fetchSessions()
   settingsStore.fetch2FAStatus()
+  settingsStore.fetchTrustedSenders()
   fetchWebhooks()
   fetchDeliveries()
   const ticket = route.query.oauthLink
@@ -408,37 +404,13 @@ async function submitFactorAction() {
   }
 }
 
-// Filters
-function handleAddFilter() {
-  if (!filterName.value || !filterConditions.value || !filterActions.value) return
-
-  settingsStore.addFilter({
-    name: filterName.value,
-    conditions: filterConditions.value,
-    actions: filterActions.value,
-    enabled: true,
-  })
-
-  showFilterModal.value = false
-  filterName.value = ''
-  filterConditions.value = ''
-  filterActions.value = ''
-}
-
-function handleDeleteFilter(id: string) {
-  settingsStore.deleteFilter(id)
-}
-
-// Blocked senders
-function handleBlockSender() {
-  if (!blockEmail.value) return
-  settingsStore.blockSender(blockEmail.value)
-  showBlockModal.value = false
-  blockEmail.value = ''
-}
-
-function handleUnblockSender(id: string) {
-  settingsStore.unblockSender(id)
+// Trusted senders
+async function handleAddTrustedSender() {
+  trustedError.value = ''
+  const value = trustedInput.value.trim().toLowerCase()
+  if (!value) return
+  if (await settingsStore.addTrustedSender(value)) trustedInput.value = ''
+  else trustedError.value = settingsStore.rulesError || 'The trusted sender was not saved.'
 }
 
 // Browser notifications
@@ -554,6 +526,37 @@ async function handleSignOutAll() {
               </div>
             </section>
 
+            <section class="pt-6 border-t border-gmail-border" aria-labelledby="remote-images-title">
+              <h3 id="remote-images-title" class="text-sm font-medium text-gmail-gray mb-2">Remote images</h3>
+              <p class="text-xs text-gmail-gray mb-3">Remote images can tell senders when and where you opened a message.</p>
+              <div class="space-y-2" role="radiogroup" aria-labelledby="remote-images-title">
+                <label class="flex items-center gap-3 cursor-pointer">
+                  <input type="radio" value="ask" v-model="settingsStore.settings.remoteImages" class="w-4 h-4 text-gmail-blue border-gmail-border focus:ring-gmail-blue" />
+                  <span class="text-sm">Ask before showing (recommended)</span>
+                </label>
+                <label class="flex items-center gap-3 cursor-pointer">
+                  <input type="radio" value="always" v-model="settingsStore.settings.remoteImages" class="w-4 h-4 text-gmail-blue border-gmail-border focus:ring-gmail-blue" />
+                  <span class="text-sm">Always show</span>
+                </label>
+              </div>
+
+              <h4 class="text-sm font-medium mt-5 mb-1">Trusted senders</h4>
+              <p class="text-xs text-gmail-gray mb-3">Images from these senders show automatically when the message passes DMARC and isn't in Spam.</p>
+              <form class="flex gap-2 mb-2" @submit.prevent="handleAddTrustedSender">
+                <label for="trusted-sender-input" class="sr-only">Address or @domain to trust</label>
+                <input id="trusted-sender-input" v-model="trustedInput" type="text" autocomplete="off" placeholder="news@example.com or @example.com" class="flex-1 min-w-0 px-3 py-2 border border-gmail-border rounded-lg text-sm focus:outline-none focus:border-gmail-blue" />
+                <Button type="submit" variant="secondary" :disabled="!trustedInput.trim()">Add</Button>
+              </form>
+              <p v-if="trustedError" role="alert" class="text-sm text-red-700 mb-2">{{ trustedError }}</p>
+              <p v-if="settingsStore.trustedSenders.length === 0" class="text-sm text-gmail-gray">No trusted senders</p>
+              <ul v-else class="space-y-2">
+                <li v-for="trusted in settingsStore.trustedSenders" :key="trusted.uuid" class="flex items-center justify-between gap-3 p-2 bg-gmail-lightGray rounded-lg">
+                  <span class="text-sm break-all">{{ trusted.sender }}</span>
+                  <button class="text-gmail-red text-sm hover:underline shrink-0" @click="settingsStore.removeTrustedSender(trusted.uuid)">Remove</button>
+                </li>
+              </ul>
+            </section>
+
             <div class="pt-6">
               <Button @click="saveGeneral" :disabled="settingsStore.isSaving">
                 {{ settingsStore.isSaving ? 'Saving...' : 'Save Changes' }}
@@ -634,6 +637,10 @@ async function handleSignOutAll() {
 
             <section class="pt-6 border-t border-gmail-border">
               <h3 class="text-sm font-medium text-gmail-gray mb-4">Active Sessions</h3>
+              <div v-if="settingsStore.sessionsError" role="alert" class="mb-3 p-3 bg-red-50 text-red-700 rounded-lg text-sm flex gap-3">
+                <span class="flex-1">Could not load your sessions: {{ settingsStore.sessionsError }}</span>
+                <button class="underline" @click="settingsStore.fetchSessions()">Retry</button>
+              </div>
               <div class="space-y-2">
                 <div
                   v-for="session in settingsStore.sessions"
@@ -892,71 +899,7 @@ async function handleSignOutAll() {
             </div>
           </section>
 
-          <div class="space-y-6">
-            <div class="flex items-center justify-between">
-              <p class="text-gmail-gray text-sm">Create rules to automatically organize incoming emails</p>
-              <Button @click="showFilterModal = true">
-                <Plus class="w-4 h-4" />
-                Create Filter
-              </Button>
-            </div>
-
-            <div class="border border-gmail-border rounded-lg overflow-hidden">
-              <div class="bg-gmail-lightGray px-4 py-3 border-b border-gmail-border">
-                <span class="text-sm font-medium">Active Filters ({{ settingsStore.filters.length }})</span>
-              </div>
-              <div v-if="settingsStore.filters.length === 0" class="p-8 text-center text-gmail-gray">
-                <Filter class="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p>No filters created yet</p>
-              </div>
-              <div v-else class="divide-y divide-gmail-border">
-                <div
-                  v-for="filter in settingsStore.filters"
-                  :key="filter.id"
-                  class="p-4 flex items-center justify-between"
-                >
-                  <div>
-                    <p class="font-medium text-sm">{{ filter.name }}</p>
-                    <p class="text-xs text-gmail-gray">{{ filter.conditions }} → {{ filter.actions }}</p>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <button class="text-gmail-blue text-sm hover:underline">Edit</button>
-                    <button
-                      @click="handleDeleteFilter(filter.id)"
-                      class="text-gmail-red text-sm hover:underline"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <section class="pt-6 border-t border-gmail-border">
-              <h3 class="text-sm font-medium text-gmail-gray mb-4">Blocked Senders ({{ settingsStore.blockedSenders.length }})</h3>
-              <div v-if="settingsStore.blockedSenders.length === 0" class="text-center text-gmail-gray py-4">
-                <p class="text-sm">No blocked senders</p>
-              </div>
-              <div v-else class="space-y-2">
-                <div
-                  v-for="blocked in settingsStore.blockedSenders"
-                  :key="blocked.id"
-                  class="flex items-center justify-between p-3 bg-gmail-lightGray rounded-lg"
-                >
-                  <span class="text-sm">{{ blocked.email }}</span>
-                  <button
-                    @click="handleUnblockSender(blocked.id)"
-                    class="text-gmail-red text-sm hover:underline"
-                  >
-                    Unblock
-                  </button>
-                </div>
-              </div>
-              <Button variant="secondary" class="mt-4" @click="showBlockModal = true">
-                Add Blocked Address
-              </Button>
-            </section>
-          </div>
+          <MailRulesSettings />
         </div>
 
         <!-- Integrations Settings -->
@@ -1218,71 +1161,6 @@ async function handleSignOutAll() {
           <Button type="submit" :disabled="!factorPassword || !factorCode.trim() || twoFABusy">
             {{ factorAction === 'disable' ? 'Turn off' : 'Generate codes' }}
           </Button>
-        </div>
-      </form>
-    </Modal>
-
-    <!-- Filter Modal -->
-    <Modal :open="showFilterModal" @close="showFilterModal = false" title="Create Filter">
-      <form @submit.prevent="handleAddFilter" class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium mb-1">Filter Name</label>
-          <input
-            type="text"
-            v-model="filterName"
-            placeholder="e.g., Newsletter Filter"
-            class="w-full px-4 py-2 border border-gmail-border rounded-lg focus:outline-none focus:border-gmail-blue"
-            required
-          />
-        </div>
-        <div>
-          <label class="block text-sm font-medium mb-1">Conditions</label>
-          <input
-            type="text"
-            v-model="filterConditions"
-            placeholder="e.g., From: *@newsletter.*"
-            class="w-full px-4 py-2 border border-gmail-border rounded-lg focus:outline-none focus:border-gmail-blue"
-            required
-          />
-          <p class="text-xs text-gmail-gray mt-1">Use * as wildcard. Examples: From:, To:, Subject:, Has:</p>
-        </div>
-        <div>
-          <label class="block text-sm font-medium mb-1">Actions</label>
-          <input
-            type="text"
-            v-model="filterActions"
-            placeholder="e.g., Label: Newsletters, Skip Inbox"
-            class="w-full px-4 py-2 border border-gmail-border rounded-lg focus:outline-none focus:border-gmail-blue"
-            required
-          />
-          <p class="text-xs text-gmail-gray mt-1">Available: Label, Skip Inbox, Mark Read, Star, Delete</p>
-        </div>
-        <div class="flex justify-end gap-3 pt-4">
-          <Button type="button" variant="secondary" @click="showFilterModal = false">Cancel</Button>
-          <Button type="submit">Create Filter</Button>
-        </div>
-      </form>
-    </Modal>
-
-    <!-- Block Sender Modal -->
-    <Modal :open="showBlockModal" @close="showBlockModal = false" title="Block Sender">
-      <form @submit.prevent="handleBlockSender" class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium mb-1">Email Address</label>
-          <input
-            type="email"
-            v-model="blockEmail"
-            placeholder="spam@example.com"
-            class="w-full px-4 py-2 border border-gmail-border rounded-lg focus:outline-none focus:border-gmail-blue"
-            required
-          />
-        </div>
-        <p class="text-sm text-gmail-gray">
-          Emails from this address will be automatically moved to spam.
-        </p>
-        <div class="flex justify-end gap-3 pt-4">
-          <Button type="button" variant="secondary" @click="showBlockModal = false">Cancel</Button>
-          <Button type="submit">Block Sender</Button>
         </div>
       </form>
     </Modal>

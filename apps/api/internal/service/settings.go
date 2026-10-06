@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -28,6 +29,7 @@ type UserSettings struct {
 	Theme                    string    `json:"theme"`
 	Density                  string    `json:"density"`
 	InboxLayout              string    `json:"inboxLayout"`
+	RemoteImages             string    `json:"remoteImages"` // ask | always
 	TwoFactorEnabled         bool      `json:"twoFactorEnabled"`
 	TwoFactorMethod          *string   `json:"twoFactorMethod"`
 	CreatedAt                time.Time `json:"createdAt"`
@@ -51,7 +53,11 @@ type UpdateSettingsRequest struct {
 	Theme                    *string `json:"theme"`
 	Density                  *string `json:"density"`
 	InboxLayout              *string `json:"inboxLayout"`
+	RemoteImages             *string `json:"remoteImages"`
 }
+
+// ErrInvalidSettings marks a client-side settings validation failure.
+var ErrInvalidSettings = errors.New("invalid settings")
 
 // ChangePasswordRequest for password changes
 type ChangePasswordRequest struct {
@@ -76,7 +82,7 @@ func (s *SettingsService) GetSettings(ctx context.Context, userID int64) (*UserS
 		SELECT id, user_id, COALESCE(display_name, ''), show_snippets, conversation_view, auto_advance,
 			   new_email_notifications, campaign_reports, weekly_digest, blacklist_alerts,
 			   bounce_rate_warnings, quota_warnings, browser_notifications, theme, density,
-			   inbox_layout, two_factor_enabled, two_factor_method, auto_organize_dmarc_reports, created_at, updated_at
+			   inbox_layout, two_factor_enabled, two_factor_method, auto_organize_dmarc_reports, remote_images, created_at, updated_at
 		FROM user_settings
 		WHERE user_id = $1
 	`, userID).Scan(
@@ -85,7 +91,7 @@ func (s *SettingsService) GetSettings(ctx context.Context, userID int64) (*UserS
 		&settings.CampaignReports, &settings.WeeklyDigest, &settings.BlacklistAlerts,
 		&settings.BounceRateWarnings, &settings.QuotaWarnings, &settings.BrowserNotifications,
 		&settings.Theme, &settings.Density, &settings.InboxLayout, &settings.TwoFactorEnabled,
-		&settings.TwoFactorMethod, &settings.AutoOrganizeDMARCReports, &settings.CreatedAt, &settings.UpdatedAt,
+		&settings.TwoFactorMethod, &settings.AutoOrganizeDMARCReports, &settings.RemoteImages, &settings.CreatedAt, &settings.UpdatedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -125,6 +131,7 @@ func (s *SettingsService) createDefaultSettings(ctx context.Context, userID int6
 		Theme:                    "light",
 		Density:                  "comfortable",
 		InboxLayout:              "default",
+		RemoteImages:             "ask",
 		TwoFactorEnabled:         false,
 		TwoFactorMethod:          nil,
 	}
@@ -133,8 +140,8 @@ func (s *SettingsService) createDefaultSettings(ctx context.Context, userID int6
 		INSERT INTO user_settings (user_id, org_id, display_name, show_snippets, conversation_view, auto_advance,
 			new_email_notifications, campaign_reports, weekly_digest, blacklist_alerts,
 			bounce_rate_warnings, quota_warnings, browser_notifications, theme, density,
-			inbox_layout, two_factor_enabled, two_factor_method, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
+			inbox_layout, two_factor_enabled, two_factor_method, remote_images, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
 		ON CONFLICT (user_id) DO NOTHING
 		RETURNING id, created_at, updated_at
 	`, userID, orgID, settings.DisplayName, settings.ShowSnippets, settings.ConversationView,
@@ -142,6 +149,7 @@ func (s *SettingsService) createDefaultSettings(ctx context.Context, userID int6
 		settings.WeeklyDigest, settings.BlacklistAlerts, settings.BounceRateWarnings,
 		settings.QuotaWarnings, settings.BrowserNotifications, settings.Theme,
 		settings.Density, settings.InboxLayout, settings.TwoFactorEnabled, settings.TwoFactorMethod,
+		settings.RemoteImages,
 	).Scan(&settings.ID, &settings.CreatedAt, &settings.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -157,6 +165,9 @@ func (s *SettingsService) createDefaultSettings(ctx context.Context, userID int6
 
 // UpdateSettings updates user settings
 func (s *SettingsService) UpdateSettings(ctx context.Context, userID int64, req *UpdateSettingsRequest) (*UserSettings, error) {
+	if req.RemoteImages != nil && *req.RemoteImages != "ask" && *req.RemoteImages != "always" {
+		return nil, fmt.Errorf("%w: remoteImages must be ask or always", ErrInvalidSettings)
+	}
 	// First ensure settings exist
 	_, err := s.GetSettings(ctx, userID)
 	if err != nil {
@@ -190,12 +201,13 @@ func (s *SettingsService) UpdateSettings(ctx context.Context, userID int64, req 
 			density = COALESCE($14, density),
 			inbox_layout = COALESCE($15, inbox_layout),
 			auto_organize_dmarc_reports = COALESCE($16, auto_organize_dmarc_reports),
+			remote_images = COALESCE($17, remote_images),
 			updated_at = NOW()
 		WHERE user_id = $1
 	`, userID, req.DisplayName, req.ShowSnippets, req.ConversationView, req.AutoAdvance,
 		req.NewEmailNotifications, req.CampaignReports, req.WeeklyDigest, req.BlacklistAlerts,
 		req.BounceRateWarnings, req.QuotaWarnings, req.BrowserNotifications, req.Theme,
-		req.Density, req.InboxLayout, req.AutoOrganizeDMARCReports)
+		req.Density, req.InboxLayout, req.AutoOrganizeDMARCReports, req.RemoteImages)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to update settings: %w", err)

@@ -437,7 +437,9 @@ func containsString(values []string, target string) bool {
 }
 
 func (s *ReceivingService) applyReceivedFilters(ctx context.Context, tx *sql.Tx, userID int64, email *model.ReceivedEmail) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id,conditions,condition_logic,action_labels,action_folder,action_star,action_mark_read,action_archive,action_trash FROM inbox_filters WHERE org_id=$1 AND user_id=$2 AND active=true AND (identity_id IS NULL OR identity_id=$3) ORDER BY priority DESC,id`, email.OrgID, userID, email.IdentityID)
+	// Every matching rule applies and later folders win, so blocked-sender rules
+	// run last: a user rule like "from example.com -> inbox" can never un-block.
+	rows, err := tx.QueryContext(ctx, `SELECT id,conditions,condition_logic,action_labels,action_folder,action_star,action_mark_read,action_archive,action_trash FROM inbox_filters WHERE org_id=$1 AND user_id=$2 AND active=true AND (identity_id IS NULL OR identity_id=$3) ORDER BY (kind='blocked_sender'),priority DESC,id`, email.OrgID, userID, email.IdentityID)
 	if err != nil {
 		return err
 	}

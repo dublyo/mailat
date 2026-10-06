@@ -523,6 +523,7 @@ func customize(op object, verb, path string) {
 		"POST /domains":                  object{"name": "example.com"},
 		"POST /identities":               object{"domainId": "00000000-0000-4000-8000-000000000001", "email": "hello@example.com", "displayName": "Example"},
 		"POST /inbox/filters/:uuid/test": object{"from": "sender@example.net", "to": []string{"hello@example.com"}, "subject": "Invoice 42", "body": "Invoice details", "hasAttachments": false},
+		"POST /inbox/trusted-senders":    object{"sender": "@example.net"},
 		"POST /oauth/link/confirm":       object{"ticket": "4f9c2a7e0b1d3c5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6"},
 		"POST /security/2fa/disable":     object{"password": "current-password", "code": "123456"},
 		"POST /auth/2fa/disable":         object{"password": "current-password", "code": "123456"},
@@ -563,7 +564,7 @@ func customize(op object, verb, path string) {
 		op["description"] = "Read changes after a commit-ordered cursor. Start with cursor=now before an initial inbox snapshot, then replay changes after that cursor. Deduplicate by cursor and messageUuid. Deleted messages remain as tombstones. A cursor older than 90 days returns 410; resynchronize. limit is 1–500."
 	}
 	if path == "/inbox/received/:uuid" && verb == "GET" {
-		op["description"] = "Read an owned message and authenticated attachment URLs without changing unread state. Use POST /inbox/received/mark explicitly."
+		op["description"] = "Read an owned message and authenticated attachment URLs without changing unread state. Use POST /inbox/received/mark explicitly. remoteImages is allowed for sent mail, for users whose remoteImages setting is always, and for trusted senders whose DMARC passed outside Spam; otherwise it is blocked and clients should not load remote content until the user asks."
 	}
 	if path == "/inbox/received" && verb == "GET" {
 		op["description"] = fmt.Sprint(op["description"]) + " The built-in dmarc-reports folder holds authenticated aggregate reports; all includes those messages. Search, pagination and identity/domain filters work normally. Reading does not change unread state."
@@ -585,7 +586,36 @@ func customize(op object, verb, path string) {
 		for _, n := range []string{"id", "uuid", "orgId", "userId", "matchCount", "lastMatchedAt", "createdAt", "updatedAt"} {
 			delete(p, n)
 		}
-		op["requestBody"] = object{"required": true, "content": object{"application/json": object{"schema": s, "example": object{"name": "Invoice mail", "conditions": []object{{"field": "subject", "operator": "contains", "value": "invoice"}}, "conditionLogic": "all", "actionFolder": "archive", "active": true}}}}
+		media := object{"schema": s, "example": object{"name": "Invoice mail", "conditions": []object{{"field": "subject", "operator": "contains", "value": "invoice"}}, "conditionLogic": "all", "actionFolder": "archive", "active": true}}
+		if verb == "POST" {
+			delete(media, "example")
+			media["examples"] = object{
+				"filter":        object{"summary": "Filter", "value": object{"kind": "filter", "name": "Invoice mail", "conditions": []object{{"field": "subject", "operator": "contains", "value": "invoice"}}, "conditionLogic": "all", "actionFolder": "archive", "active": true}},
+				"blockedSender": object{"summary": "Blocked sender", "value": object{"kind": "blocked_sender", "name": "Blocked: @spam.example", "priority": 0, "active": true, "conditions": []object{{"field": "from", "operator": "endsWith", "value": "@spam.example"}}, "conditionLogic": "all", "actionFolder": "spam", "actionMarkRead": true}},
+			}
+		}
+		op["requestBody"] = object{"required": true, "content": object{"application/json": media}}
+	}
+	if path == "/inbox/filters" && verb == "GET" {
+		op["parameters"] = []object{{"name": "kind", "in": "query", "required": false, "schema": object{"type": "string", "enum": []string{"filter", "blocked_sender"}}, "description": "Omit for every rule in evaluation order (blocked senders last)."}}
+	}
+	if path == "/inbox/filters" && verb == "POST" {
+		op["description"] = fmt.Sprint(op["description"]) + " kind=blocked_sender takes exactly one from condition (equals an address, or endsWith @domain; subdomains are not covered) and actionFolder spam or trash, with only actionMarkRead as an extra action; the value is lowercased and priority forced to 0. Blocked-sender rules always run after every other filter, so no filter can route a blocked sender back to the inbox. Blocking an already blocked sender returns the existing rule with 200."
+	}
+	if strings.HasPrefix(path, "/inbox/filters/") && verb == "PUT" {
+		op["description"] = fmt.Sprint(op["description"]) + " kind cannot be changed (400)."
+	}
+	if strings.HasPrefix(path, "/inbox/trusted-senders") {
+		op["description"] = "Per-user trusted senders (an address or @domain, max 500). Remote images in their mail load automatically only when DMARC passed and the message is not in Spam. POST is idempotent: 201 when created, 200 with the existing entry otherwise; 409 limit_reached at the cap."
+		if verb == "POST" {
+			op["requestBody"] = object{"required": true, "content": object{"application/json": object{"schema": object{"type": "object", "required": []string{"sender"}, "properties": object{"sender": object{"type": "string", "minLength": 3, "maxLength": 320, "description": "name@example.com or @example.com"}}}, "example": object{"sender": "@example.net"}}}}
+			if responses, ok := op["responses"].(object); ok {
+				if created, ok := responses["201"].(object); ok {
+					responses["200"] = object{"description": "Sender was already trusted; the existing entry is returned", "content": created["content"]}
+				}
+				responses["409"] = object{"description": "limit_reached: remove a trusted sender before adding another", "content": object{"application/json": object{"schema": envelope(nil)}}}
+			}
+		}
 	}
 	if strings.HasPrefix(path, "/inbox/filters") {
 		op["description"] = fmt.Sprint(op["description"]) + " Explicit user filter destinations override the automatic DMARC report folder. actionFolder accepts dmarc-reports; label-only and mark-read filters retain the automatically selected folder. Spam and virus decisions are preserved."
@@ -628,6 +658,9 @@ func customizeSchema(name string, s object) {
 		set("folder", destinations, "A manual move is retained; automatic classification is not repeated.")
 	case "model.InboxFilter":
 		set("actionFolder", append([]string{""}, destinations...), "An explicit destination overrides automatic DMARC organization. Empty leaves the selected folder unchanged.")
+		set("kind", []string{"filter", "blocked_sender"}, "filter (default) or blocked_sender. Blocked senders run after every other filter. Immutable after creation.")
+	case "model.ReceivedEmail":
+		set("remoteImages", []string{"blocked", "allowed"}, "Viewer-specific remote-content decision; present on single-message reads.")
 	case "model.InboxCountsResponse":
 		for _, field := range []string{"inboxUnread", "dmarcReports", "dmarcReportsUnread", "unread"} {
 			if v, ok := p[field].(object); ok {
@@ -638,6 +671,10 @@ func customizeSchema(name string, s object) {
 		p["dmarcReports"].(object)["description"] = "Messages in the dedicated DMARC Reports folder."
 		p["dmarcReportsUnread"].(object)["description"] = "Unread messages in the dedicated DMARC Reports folder."
 		p["unread"].(object)["description"] = "Global unread total excluding Trash; includes Spam and unread DMARC reports."
+	case "service.UserSettings", "service.UpdateSettingsRequest":
+		set("remoteImages", []string{"ask", "always"}, "ask (default) blocks remote images until the user shows them; always loads them for every message.")
+	}
+	switch name {
 	case "service.UserSettings":
 		if v, ok := p["autoOrganizeDmarcReports"].(object); ok {
 			v["default"] = true

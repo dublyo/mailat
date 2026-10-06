@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
-import { api, type TwoFactorSetup, type TwoFactorStatus } from '@/lib/api'
+import { api, inboxFiltersApi, trustedSendersApi, type InboxFilter, type InboxFilterInput, type TrustedSender, type TwoFactorSetup, type TwoFactorStatus } from '@/lib/api'
 
 // Browser-local copies of account data. They are cleared on logout so a shared
 // browser does not show the previous user's settings or rules.
@@ -28,6 +28,9 @@ export interface UserSettings {
   density: 'comfortable' | 'cozy' | 'compact'
   inboxLayout: 'default' | 'split'
 
+  // Privacy: 'ask' blocks remote images until shown per message
+  remoteImages: 'ask' | 'always'
+
   // Security
   twoFactorEnabled: boolean
   twoFactorMethod: 'authenticator' | 'webauthn' | null
@@ -49,22 +52,43 @@ const defaultSettings: UserSettings = {
   theme: 'light',
   density: 'comfortable',
   inboxLayout: 'default',
+  remoteImages: 'ask',
   twoFactorEnabled: false,
   twoFactorMethod: null,
 }
 
-export interface Filter {
+// Rules older versions kept only in this browser. They were never applied by
+// the server; the user can import them (blocked senders) or recreate them.
+export interface LocalFilter {
   id: string
   name: string
   conditions: string
   actions: string
-  enabled: boolean
+  enabled?: boolean
 }
 
-export interface BlockedSender {
+export interface LocalBlockedSender {
   id: string
   email: string
-  blockedAt: string
+  blockedAt?: string
+}
+
+export interface LocalMailRules {
+  filters: LocalFilter[]
+  blockedSenders: LocalBlockedSender[]
+}
+
+function readLocalList<T>(key: string): T[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || '[]')
+    return Array.isArray(parsed) ? parsed.filter(item => item && typeof item === 'object') : []
+  } catch {
+    return []
+  }
+}
+
+function errorMessage(e: unknown, fallback: string) {
+  return e instanceof Error && e.message ? e.message : fallback
 }
 
 export interface Session {
@@ -82,9 +106,14 @@ export interface Session {
 
 export const useSettingsStore = defineStore('settings', () => {
   const settings = ref<UserSettings>({ ...defaultSettings })
-  const filters = ref<Filter[]>([])
-  const blockedSenders = ref<BlockedSender[]>([])
+  const filters = ref<InboxFilter[]>([])
+  const blockedSenders = ref<InboxFilter[]>([])
+  const trustedSenders = ref<TrustedSender[]>([])
+  const rulesLoading = ref(false)
+  const rulesError = ref<string | null>(null)
+  const localRules = ref<LocalMailRules>({ filters: [], blockedSenders: [] })
   const sessions = ref<Session[]>([])
+  const sessionsError = ref<string | null>(null)
   const twoFactor = ref<TwoFactorStatus | null>(null)
   const isLoading = ref(false)
   const isSaving = ref(false)
@@ -105,33 +134,11 @@ export const useSettingsStore = defineStore('settings', () => {
         settings.value = { ...defaultSettings }
       }
     }
-
-    // Load filters
-    const storedFilters = localStorage.getItem('userFilters')
-    if (storedFilters) {
-      try {
-        filters.value = JSON.parse(storedFilters)
-      } catch {
-        filters.value = []
-      }
-    }
-
-    // Load blocked senders
-    const storedBlocked = localStorage.getItem('blockedSenders')
-    if (storedBlocked) {
-      try {
-        blockedSenders.value = JSON.parse(storedBlocked)
-      } catch {
-        blockedSenders.value = []
-      }
-    }
   }
 
-  // Save settings to localStorage
+  // Save settings to localStorage (display preferences only; rules are server-side)
   function saveToStorage() {
     localStorage.setItem('userSettings', JSON.stringify(settings.value))
-    localStorage.setItem('userFilters', JSON.stringify(filters.value))
-    localStorage.setItem('blockedSenders', JSON.stringify(blockedSenders.value))
   }
 
   async function fetchSettings() {
@@ -215,64 +222,169 @@ export const useSettingsStore = defineStore('settings', () => {
     settings.value[key] = value
   }
 
-  // Filters
-  function addFilter(filter: Omit<Filter, 'id'>) {
-    const newFilter: Filter = {
-      ...filter,
-      id: crypto.randomUUID(),
-    }
-    filters.value.push(newFilter)
-    saveToStorage()
-  }
-
-  function updateFilter(id: string, updates: Partial<Filter>) {
-    const index = filters.value.findIndex(f => f.id === id)
-    if (index !== -1) {
-      filters.value[index] = { ...filters.value[index], ...updates }
-      saveToStorage()
+  // Filters and blocked senders live on the server (/inbox/filters).
+  async function fetchMailRules() {
+    rulesLoading.value = true
+    rulesError.value = null
+    try {
+      const [userFilters, blocked] = await Promise.all([inboxFiltersApi.list('filter'), inboxFiltersApi.list('blocked_sender')])
+      filters.value = userFilters ?? []
+      blockedSenders.value = blocked ?? []
+    } catch (e) {
+      rulesError.value = errorMessage(e, 'Could not load your filters. Try again.')
+    } finally {
+      rulesLoading.value = false
     }
   }
 
-  function deleteFilter(id: string) {
-    filters.value = filters.value.filter(f => f.id !== id)
-    saveToStorage()
+  async function saveFilter(input: InboxFilterInput, uuid?: string) {
+    rulesError.value = null
+    try {
+      const saved = uuid ? await inboxFiltersApi.update(uuid, input) : await inboxFiltersApi.create({ ...input, kind: 'filter', name: input.name || '', conditions: input.conditions || [] })
+      const index = filters.value.findIndex(f => f.uuid === saved.uuid)
+      if (index === -1) filters.value.push(saved)
+      else filters.value[index] = saved
+      filters.value.sort((a, b) => b.priority - a.priority || a.id - b.id)
+      return saved
+    } catch (e) {
+      rulesError.value = errorMessage(e, 'The filter was not saved.')
+      return null
+    }
   }
 
-  // Blocked senders
-  function blockSender(email: string) {
-    if (blockedSenders.value.some(b => b.email === email)) return
-    blockedSenders.value.push({
-      id: crypto.randomUUID(),
-      email,
-      blockedAt: new Date().toISOString(),
-    })
-    saveToStorage()
+  async function setFilterActive(filter: InboxFilter, active: boolean) {
+    return saveFilter({ active }, filter.uuid)
   }
 
-  function unblockSender(id: string) {
-    blockedSenders.value = blockedSenders.value.filter(b => b.id !== id)
-    saveToStorage()
+  async function deleteFilter(uuid: string) {
+    rulesError.value = null
+    try {
+      await inboxFiltersApi.delete(uuid)
+      filters.value = filters.value.filter(f => f.uuid !== uuid)
+      return true
+    } catch (e) {
+      rulesError.value = errorMessage(e, 'The filter was not deleted.')
+      return false
+    }
+  }
+
+  async function blockSender(sender: string, folder: 'spam' | 'trash' = 'spam') {
+    rulesError.value = null
+    try {
+      const saved = await inboxFiltersApi.blockSender(sender, folder)
+      if (!blockedSenders.value.some(b => b.uuid === saved.uuid)) blockedSenders.value.push(saved)
+      return saved
+    } catch (e) {
+      rulesError.value = errorMessage(e, 'The sender was not blocked.')
+      return null
+    }
+  }
+
+  async function unblockSender(uuid: string) {
+    rulesError.value = null
+    try {
+      await inboxFiltersApi.delete(uuid)
+      blockedSenders.value = blockedSenders.value.filter(b => b.uuid !== uuid)
+      return true
+    } catch (e) {
+      rulesError.value = errorMessage(e, 'The sender was not unblocked.')
+      return false
+    }
+  }
+
+  // Trusted senders: their DMARC-passing mail loads remote images.
+  async function fetchTrustedSenders() {
+    try {
+      trustedSenders.value = (await trustedSendersApi.list()) ?? []
+    } catch (e) {
+      rulesError.value = errorMessage(e, 'Could not load trusted senders.')
+    }
+  }
+
+  async function addTrustedSender(sender: string) {
+    rulesError.value = null
+    try {
+      const saved = await trustedSendersApi.add(sender.trim().toLowerCase())
+      if (!trustedSenders.value.some(t => t.uuid === saved.uuid)) trustedSenders.value.push(saved)
+      return saved
+    } catch (e) {
+      rulesError.value = errorMessage(e, 'The trusted sender was not saved.')
+      return null
+    }
+  }
+
+  async function removeTrustedSender(uuid: string) {
+    rulesError.value = null
+    try {
+      await trustedSendersApi.delete(uuid)
+      trustedSenders.value = trustedSenders.value.filter(t => t.uuid !== uuid)
+      return true
+    } catch (e) {
+      rulesError.value = errorMessage(e, 'The trusted sender was not removed.')
+      return false
+    }
+  }
+
+  // Browser-local rules from older versions. Nothing migrates silently, so a
+  // shared browser never pushes another person's rules into this account.
+  function loadLocalMailRules() {
+    localRules.value = {
+      filters: readLocalList<LocalFilter>('userFilters'),
+      blockedSenders: readLocalList<LocalBlockedSender>('blockedSenders').filter(b => typeof b.email === 'string' && b.email.trim()),
+    }
+    return localRules.value
+  }
+
+  // POSTs every local blocked sender (the server is idempotent). The browser
+  // key is removed only after all of them succeed.
+  async function importLocalMailRules() {
+    const pending = loadLocalMailRules().blockedSenders
+    let imported = 0
+    const failed: string[] = []
+    for (const local of pending) {
+      try {
+        const saved = await inboxFiltersApi.blockSender(local.email)
+        if (!blockedSenders.value.some(b => b.uuid === saved.uuid)) blockedSenders.value.push(saved)
+        imported++
+      } catch {
+        failed.push(local.email)
+      }
+    }
+    if (failed.length === 0) {
+      try { localStorage.removeItem('blockedSenders') } catch { /* storage unavailable */ }
+    } else {
+      rulesError.value = `${failed.length} blocked sender${failed.length === 1 ? '' : 's'} could not be imported: ${failed.join(', ')}`
+    }
+    loadLocalMailRules()
+    return { imported, failed }
+  }
+
+  // Called after a local filter was recreated on the server (or dismissed).
+  function forgetLocalFilter(id: string) {
+    const remaining = readLocalList<LocalFilter>('userFilters').filter(f => f.id !== id)
+    try {
+      if (remaining.length) localStorage.setItem('userFilters', JSON.stringify(remaining))
+      else localStorage.removeItem('userFilters')
+    } catch { /* storage unavailable */ }
+    loadLocalMailRules()
+  }
+
+  function discardLocalMailRules() {
+    for (const key of ['userFilters', 'blockedSenders']) {
+      try { localStorage.removeItem(key) } catch { /* storage unavailable */ }
+    }
+    loadLocalMailRules()
   }
 
   // Sessions
   async function fetchSessions() {
+    sessionsError.value = null
     try {
       const result = await api.get<{ sessions: Session[] }>('/api/v1/auth/sessions')
       sessions.value = (result?.sessions ?? []).filter((s): s is Session => s != null)
-    } catch {
-      // Mock data for now
-      sessions.value = [{
-        id: '1',
-        uuid: '1',
-        deviceName: 'Chrome on macOS',
-        deviceType: 'desktop',
-        browser: 'Chrome',
-        os: 'macOS',
-        ipAddress: '',
-        location: 'Current Session',
-        lastSeenAt: new Date().toISOString(),
-        isCurrent: true,
-      }]
+    } catch (e) {
+      sessions.value = []
+      sessionsError.value = errorMessage(e, 'Could not load your sessions.')
     }
   }
 
@@ -368,7 +480,11 @@ export const useSettingsStore = defineStore('settings', () => {
     settings.value = { ...defaultSettings }
     filters.value = []
     blockedSenders.value = []
+    trustedSenders.value = []
+    localRules.value = { filters: [], blockedSenders: [] }
+    rulesError.value = null
     sessions.value = []
+    sessionsError.value = null
     twoFactor.value = null
     settingsLoaded.value = false
     settingsOwner = null
@@ -415,13 +531,19 @@ export const useSettingsStore = defineStore('settings', () => {
 
   // Initialize
   loadFromStorage()
+  loadLocalMailRules()
   applyTheme()
 
   return {
     settings,
     filters,
     blockedSenders,
+    trustedSenders,
+    rulesLoading,
+    rulesError,
+    localRules,
     sessions,
+    sessionsError,
     twoFactor,
     isLoading,
     isSaving,
@@ -432,11 +554,19 @@ export const useSettingsStore = defineStore('settings', () => {
     fetchSettings,
     saveSettings,
     updateSetting,
-    addFilter,
-    updateFilter,
+    fetchMailRules,
+    saveFilter,
+    setFilterActive,
     deleteFilter,
     blockSender,
     unblockSender,
+    fetchTrustedSenders,
+    addTrustedSender,
+    removeTrustedSender,
+    loadLocalMailRules,
+    importLocalMailRules,
+    forgetLocalFilter,
+    discardLocalMailRules,
     fetchSessions,
     revokeSession,
     revokeAllOtherSessions,

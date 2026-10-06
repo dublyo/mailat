@@ -1,25 +1,29 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import DOMPurify from 'dompurify'
-import { Archive, Trash2, Mail, MailOpen, RefreshCw, ChevronLeft, ChevronRight, Star, Filter, X, Reply, ReplyAll, Forward, ArrowLeft, Inbox, AlertTriangle, Paperclip, Send, FileText } from 'lucide-vue-next'
+import { Archive, Trash2, Mail, MailOpen, RefreshCw, ChevronLeft, ChevronRight, Star, Filter, X, Reply, ReplyAll, Forward, ArrowLeft, Inbox, AlertTriangle, Paperclip, FileText, ImageOff, Ban } from 'lucide-vue-next'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import { useReceivedInboxStore } from '@/stores/receivedInbox'
 import { useInboxStore } from '@/stores/inbox'
 import { useDomainsStore } from '@/stores/domains'
-import { api, type ReceivedEmail, type Email, type InboxListOptions, type ReceivedEmailAttachment } from '@/lib/api'
-import { escapeHtml } from '@/lib/compose'
+import { useSettingsStore } from '@/stores/settings'
+import { api, trustedSendersApi, type ReceivedEmail, type Email, type InboxListOptions, type ReceivedEmailAttachment } from '@/lib/api'
+import { renderMessageDocument } from '@/lib/mailHtml'
 
 const route = useRoute()
 const router = useRouter()
 const mailbox = useReceivedInboxStore()
 const composer = useInboxStore()
 const domains = useDomainsStore()
+const settingsStore = useSettingsStore()
 const showFilters = ref(false)
 const selectedUuid = ref('')
 const inlineUrls = ref<Record<string, string>>({})
 const downloading = ref('')
 let inlineSequence = 0
+// Messages whose remote images the user chose to show, in memory only.
+const revealed = ref(new Set<string>())
+const trusting = ref(false)
 const filterForm = ref({ identity: '', domain: '', read: '', starred: '', attachments: '', sender: '', after: '', before: '' })
 const folder = computed(() => String(route.query.folder || route.params.folder || 'inbox'))
 const folderTitle = computed(() => ({ 'dmarc-reports': 'DMARC Reports', all: 'All Mail', inbox: 'Inbox', starred: 'Starred', sent: 'Sent', drafts: 'Drafts', outbox: 'Outbox', archive: 'Archive', spam: 'Spam', trash: 'Trash' })[folder.value] || folder.value)
@@ -39,15 +43,44 @@ const queryOptions = computed<InboxListOptions>(() => ({
 }))
 const chips = computed(() => Object.entries(route.query).filter(([key, value]) => ['q', 'identity', 'domain', 'read', 'starred', 'attachments', 'sender', 'after', 'before'].includes(key) && value).map(([key, value]) => ({ key, label: key === 'identity' ? domains.identities.find(i => String(i.id) === value)?.email || String(value) : key === 'domain' ? domains.domains.find(d => String(d.id) === value)?.name || String(value) : key === 'q' ? `Search: ${value}` : key === 'starred' ? 'Starred' : key === 'attachments' ? (value === 'true' ? 'With attachments' : 'Without attachments') : `${key}: ${value}` })))
 const range = computed(() => mailbox.total ? `${(mailbox.page - 1) * mailbox.pageSize + 1}–${Math.min(mailbox.page * mailbox.pageSize, mailbox.total)} of ${mailbox.total}` : '0 messages')
-const sanitizedHtml = computed(() => {
-  if (!current.value?.htmlBody?.trim()) return ''
-  let html = current.value.htmlBody
+const remoteAllowed = computed(() => !!current.value && (current.value.remoteImages === 'allowed' || revealed.value.has(current.value.uuid)))
+const rendered = computed(() => {
+  if (!current.value?.htmlBody?.trim()) return { doc: '', remoteCount: 0 }
+  const cidUrls: Record<string, string> = {}
   for (const attachment of current.value.attachments || []) {
-    if (attachment.contentId && inlineUrls.value[attachment.uuid]) html = html.split(`cid:${attachment.contentId.replace(/[<>]/g, '')}`).join(escapeHtml(inlineUrls.value[attachment.uuid]))
+    if (attachment.contentId && inlineUrls.value[attachment.uuid]) cidUrls[attachment.contentId.replace(/[<>]/g, '')] = inlineUrls.value[attachment.uuid]
   }
-  const safe = DOMPurify.sanitize(html, { FORBID_TAGS: ['style', 'form', 'input', 'button'], FORBID_ATTR: ['srcset'], ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|cid|blob):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i })
-  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank"><style>body{font:14px/1.6 system-ui;color:#1f2937;margin:12px;overflow-wrap:anywhere}img,table{max-width:100%}img{height:auto}pre{white-space:pre-wrap}a{color:#2563eb}</style></head><body>${safe}</body></html>`
+  return renderMessageDocument(current.value.htmlBody, { inlineUrls: cidUrls, allowRemote: remoteAllowed.value, mode: 'view' })
 })
+const sanitizedHtml = computed(() => rendered.value.doc)
+const showRemoteBanner = computed(() => !remoteAllowed.value && rendered.value.remoteCount > 0)
+// Only DMARC-authenticated senders outside Spam can be trusted for images.
+const canTrustSender = computed(() => !!current.value && (current.value.dmarcVerdict || '').toUpperCase() === 'PASS' && current.value.folder !== 'spam' && !!current.value.fromEmail)
+const canBlockSender = computed(() => !!current.value?.fromEmail && current.value.direction !== 'outbound' && !['sent', 'drafts', 'outbox'].includes(current.value.folder))
+function showImages() {
+  if (current.value) revealed.value = new Set([...revealed.value, current.value.uuid])
+}
+async function trustSender() {
+  const email = current.value
+  if (!email || trusting.value) return
+  trusting.value = true
+  try {
+    await trustedSendersApi.add(email.fromEmail.toLowerCase())
+    email.remoteImages = 'allowed'
+    email.trustedSender = true
+    mailbox.notice = `Images from ${email.fromEmail} will be shown automatically.`
+  } catch (e) { mailbox.error = e instanceof Error ? e.message : 'Could not trust this sender.' }
+  finally { trusting.value = false }
+}
+async function blockSender() {
+  const email = current.value
+  if (!email || !canBlockSender.value || mailbox.isMutating) return
+  if (!confirm(`Block ${email.fromEmail}? Future messages from this address go to Spam.`)) return
+  const blocked = await settingsStore.blockSender(email.fromEmail)
+  if (!blocked) { mailbox.error = settingsStore.rulesError || 'Could not block this sender.'; return }
+  if (email.folder !== 'spam') await perform('spam')
+  mailbox.notice = `${email.fromEmail} is blocked. Manage blocked senders in Settings.`
+}
 watch(() => current.value?.uuid, async () => {
   const sequence = ++inlineSequence
   Object.values(inlineUrls.value).forEach(URL.revokeObjectURL)
@@ -103,7 +136,8 @@ function convert(email: ReceivedEmail): Email {
     isRead: email.isRead, isStarred: email.isStarred, hasAttachments: email.hasAttachments,
     receivedAt: email.receivedAt, createdAt: email.createdAt, identityId: email.identityId,
     replyToAddress: email.replyTo, inReplyTo: email.inReplyTo, references: email.references, envelopeRecipients: email.envelopeRecipients,
-    draftVersion: email.draftVersion ?? email.version, sourceAttachments: email.attachments }
+    draftVersion: email.draftVersion ?? email.version, sourceAttachments: email.attachments,
+    remoteImagesAllowed: email.remoteImages === 'allowed' || revealed.value.has(email.uuid) }
 }
 async function openEmail(email: ReceivedEmail) {
   selectedUuid.value = email.uuid
@@ -170,6 +204,7 @@ function formatDate(value: string, full = false) {
           <button @click="perform('unread')" :disabled="mailbox.isMutating" class="mail-action" title="Mark as unread"><Mail class="w-4 h-4" /></button>
           <button @click="perform(allActionStarred ? 'unstar' : 'star')" :disabled="mailbox.isMutating" class="mail-action" :title="allActionStarred ? 'Remove star' : 'Star'"><Star :class="['w-4 h-4', allActionStarred ? 'fill-yellow-400 text-yellow-500' : '']" /></button>
           <button v-if="folder !== 'spam'" @click="perform('spam')" :disabled="mailbox.isMutating" class="mail-action" title="Move to Spam"><AlertTriangle class="w-4 h-4" /></button>
+          <button v-if="selectedUuid && canBlockSender" @click="blockSender" :disabled="mailbox.isMutating" class="mail-action" title="Block sender" aria-label="Block sender"><Ban class="w-4 h-4" /></button>
         </div>
         <button v-else @click="load(true)" :disabled="mailbox.isLoading" class="mail-action" title="Refresh messages"><RefreshCw :class="['w-4 h-4', mailbox.isLoading ? 'animate-spin' : '']" /></button>
         <div class="flex-1" />
@@ -223,6 +258,11 @@ function formatDate(value: string, full = false) {
           <template v-else-if="current">
             <header class="px-4 sm:px-6 py-4 border-b break-words"><h2 class="text-xl mb-3">{{ current.subject || '(no subject)' }}</h2><div class="flex flex-wrap items-start justify-between gap-2 text-sm"><div class="min-w-0"><p class="font-medium break-all">{{ current.fromName }} &lt;{{ current.fromEmail }}&gt;</p><p class="text-gray-500 break-all mt-1">To: {{ current.toEmails?.join(', ') }}</p><p v-if="current.ccEmails?.length" class="text-gray-500 break-all">Cc: {{ current.ccEmails.join(', ') }}</p><p v-if="current.replyTo" class="text-gray-500 break-all">Reply to: {{ current.replyTo }}</p></div><time class="text-xs text-gray-500">{{ formatDate(current.receivedAt || current.createdAt, true) }}</time></div><p v-if="current.sendStatus !== 'received' && (current.sendStatus || current.deliveryStatus)" class="text-xs text-gray-500 mt-3">Send: {{ current.sendStatus || 'accepted' }}<span v-if="current.deliveryStatus"> · Delivery: {{ current.deliveryStatus }}</span></p></header>
             <div class="flex-1 min-h-0 overflow-y-auto">
+              <div v-if="showRemoteBanner" role="status" class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 sm:px-6 py-2 text-sm bg-gray-50 border-b">
+                <span class="flex items-center gap-2 text-gray-700"><ImageOff class="w-4 h-4 shrink-0" />Remote images are hidden to protect your privacy.</span>
+                <button @click="showImages" class="text-blue-600 hover:underline">Show images</button>
+                <button v-if="canTrustSender" @click="trustSender" :disabled="trusting" class="text-blue-600 hover:underline break-all disabled:opacity-50">Always show from {{ current.fromEmail }}</button>
+              </div>
               <iframe v-if="sanitizedHtml" :srcdoc="sanitizedHtml" sandbox="allow-popups allow-popups-to-escape-sandbox" title="Email message" class="w-full min-h-[50vh] border-0 bg-white" referrerpolicy="no-referrer" />
               <div v-else class="p-4 sm:p-6 text-sm whitespace-pre-wrap break-words leading-relaxed">{{ current.textBody?.trim() ? current.textBody : current.attachments?.length ? 'This message has no text body. Its content is in the attachment below.' : 'This message has no text body.' }}</div>
               <div v-if="current.attachments?.length" class="p-4 border-t"><h3 class="text-sm font-medium mb-2">Attachments</h3><div class="flex flex-wrap gap-2"><button v-for="attachment in current.attachments" :key="attachment.uuid" @click="downloadAttachment(attachment)" :disabled="downloading === attachment.uuid" class="max-w-full flex items-center gap-2 text-sm border rounded-lg p-2 hover:bg-gray-50"><Paperclip class="w-4 h-4 shrink-0" /><span class="truncate">{{ attachment.filename }}</span><span class="text-xs text-gray-500 shrink-0">{{ downloading === attachment.uuid ? 'Downloading…' : `${Math.ceil(attachment.sizeBytes / 1024)} KB` }}</span></button></div></div>
