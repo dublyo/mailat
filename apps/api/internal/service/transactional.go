@@ -678,6 +678,9 @@ func (s *TransactionalService) UpdateTemplate(ctx context.Context, orgID int64, 
 
 // DeleteTemplate deletes a template
 func (s *TransactionalService) DeleteTemplate(ctx context.Context, orgID int64, templateUUID string) error {
+	if err := automationRefInUse(ctx, s.db, orgID, templateUUID); err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM email_templates WHERE uuid = $1 AND org_id = $2
 	`, templateUUID, orgID)

@@ -276,6 +276,11 @@ func (c *TransactionalController) DeleteTemplate(r *ghttp.Request) {
 	}
 
 	err := c.transactionalService.DeleteTemplate(r.Context(), claims.OrgID, templateUUID)
+	var inUse *service.AutomationError
+	if errors.As(err, &inUse) {
+		response.BadRequest(r, inUse.Message)
+		return
+	}
 	if err != nil {
 		response.NotFound(r, err.Error())
 		return

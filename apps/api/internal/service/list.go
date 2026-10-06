@@ -242,6 +242,9 @@ func (s *ListService) DeleteList(ctx context.Context, orgID int64, listUUID stri
 	if campaignCount > 0 {
 		return fmt.Errorf("cannot delete list with active campaigns")
 	}
+	if err := automationRefInUse(ctx, s.db, orgID, listUUID); err != nil {
+		return err
+	}
 
 	result, err := s.db.ExecContext(ctx,
 		"DELETE FROM lists WHERE org_id = $1 AND uuid = $2",

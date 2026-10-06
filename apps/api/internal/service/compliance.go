@@ -420,8 +420,8 @@ func (s *ComplianceService) ExportContactData(ctx context.Context, orgID int64, 
 	}
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, uuid, email, first_name, last_name, attributes, status,
-			consent_source, consent_timestamp, created_at
+		SELECT id, uuid, email, COALESCE(first_name,''), COALESCE(last_name,''), attributes, status,
+			COALESCE(consent_source,''), consent_timestamp, created_at
 		FROM contacts WHERE uuid = $1 AND org_id = $2
 	`, contactUUID, orgID).Scan(
 		&contactID, &contact.UUID, &contact.Email, &contact.FirstName, &contact.LastName,
@@ -492,6 +492,35 @@ func (s *ComplianceService) ExportContactData(ctx context.Context, orgID int64, 
 		})
 	}
 
+	automationRows, err := s.db.QueryContext(ctx, `
+		SELECT a.name, e.status, e.exit_reason, e.enrolled_at, e.completed_at FROM automation_enrollments e
+		JOIN automations a ON a.id = e.automation_id AND a.org_id = $2
+		WHERE e.contact_id = $1 ORDER BY e.enrolled_at DESC, e.id DESC`, contactID, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to export automations: %w", err)
+	}
+	defer automationRows.Close()
+	automations := []map[string]interface{}{}
+	for automationRows.Next() {
+		var name, status string
+		var exitReason sql.NullString
+		var enrolledAt time.Time
+		var completedAt *time.Time
+		if err := automationRows.Scan(&name, &status, &exitReason, &enrolledAt, &completedAt); err != nil {
+			return nil, fmt.Errorf("failed to export automations: %w", err)
+		}
+		automations = append(automations, map[string]interface{}{
+			"automationName": name,
+			"status":         status,
+			"exitReason":     exitReason.String,
+			"enrolledAt":     enrolledAt,
+			"completedAt":    completedAt,
+		})
+	}
+	if err := automationRows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to export automations: %w", err)
+	}
+
 	// Include the disclosure and request history without exporting token digests.
 	var signupHistory json.RawMessage
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(jsonb_build_object('formId',f.uuid,'email',r.email,'firstName',r.first_name,'status',r.status,'confirmationMode',r.confirmation_mode,'disclosure',r.disclosure,'formVersion',r.form_version,'createdAt',r.created_at,'confirmedAt',r.confirmed_at)),'[]'::jsonb) FROM signup_requests r JOIN signup_forms f ON f.id=r.form_id WHERE f.org_id=$1 AND lower(r.email)=lower($2)`, orgID, contact.Email).Scan(&signupHistory); err != nil {
@@ -517,6 +546,7 @@ func (s *ComplianceService) ExportContactData(ctx context.Context, orgID int64, 
 		"consentHistory": consentHistory,
 		"signupHistory":  signupHistory,
 		"emailHistory":   emails,
+		"automations":    automations,
 		"exportedAt":     time.Now(),
 	}, nil
 }
@@ -589,7 +619,14 @@ func (s *ComplianceService) DeleteContactData(ctx context.Context, orgID int64, 
 		return out, rows.Err()
 	}
 
-	// Automation has no FK to contacts, so enrollments go explicitly.
+	// automation_logs has no FK. Enrollments, step runs, trigger events and
+	// queued automation emails also cascade with the contact; enrollments are
+	// deleted here so their logs go first. automation.webhook events carry the
+	// contact and go entirely (their deliveries cascade).
+	if err = exec("automation webhook events", `DELETE FROM webhook_events WHERE org_id = $1 AND event_type = 'automation.webhook'
+		AND payload->'data'->>'contactId' = ANY($2::text[])`, orgID, pq.Array(uuids)); err != nil {
+		return err
+	}
 	if err = exec("automation logs", `DELETE FROM automation_logs WHERE enrollment_id IN (SELECT id FROM automation_enrollments WHERE org_id = $1 AND contact_id = ANY($2))`, orgID, pq.Array(ids)); err != nil {
 		return err
 	}
