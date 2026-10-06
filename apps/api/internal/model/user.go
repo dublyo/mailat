@@ -679,22 +679,33 @@ type Campaign struct {
 	ReplyTo          string     `json:"replyTo,omitempty"`
 	ListID           int        `json:"listId"`
 	ListName         string     `json:"listName,omitempty"`
-	Status           string     `json:"status"` // draft, scheduled, sending, sent, paused, cancelled
+	ListType         string     `json:"listType"`     // static | dynamic
+	Status           string     `json:"status"`       // draft, scheduled, sending, paused, sent, cancelled
+	StatusReason     *string    `json:"statusReason"` // why it is paused, throttled or was reset
 	ScheduledAt      *time.Time `json:"scheduledAt,omitempty"`
 	StartedAt        *time.Time `json:"startedAt,omitempty"`
 	CompletedAt      *time.Time `json:"completedAt,omitempty"`
+	PreparedAt       *time.Time `json:"preparedAt"`     // null while sending = audience not yet snapshotted
+	ThrottledUntil   *time.Time `json:"throttledUntil"` // set while SES quota/throttling defers sending
 	TotalRecipients  int        `json:"totalRecipients"`
 	SentCount        int        `json:"sentCount"`
 	DeliveredCount   int        `json:"deliveredCount"`
-	OpenCount        int        `json:"openCount"`
-	ClickCount       int        `json:"clickCount"`
+	OpenCount        int        `json:"openCount"`  // unique opens
+	ClickCount       int        `json:"clickCount"` // unique clicks
 	BounceCount      int        `json:"bounceCount"`
 	UnsubscribeCount int        `json:"unsubscribeCount"`
 	ComplaintCount   int        `json:"complaintCount"`
+	FailedCount      int        `json:"failedCount"`
+	SkippedCount     int        `json:"skippedCount"`
+	UnknownCount     int        `json:"unknownCount"`
+	TrackOpens       bool       `json:"trackOpens"`
+	TrackClicks      bool       `json:"trackClicks"`
+	CreatedByUserID  *int64     `json:"createdByUserId,omitempty"`
 	IsAbTest         bool       `json:"isAbTest"`
 	AbTestSettings   any        `json:"abTestSettings,omitempty"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
+	Warnings         []string   `json:"warnings,omitempty"` // non-blocking notes on create/update
 }
 
 // Campaign API Request DTOs
@@ -709,34 +720,54 @@ type CreateCampaignRequest struct {
 	FromEmail   string `json:"fromEmail" v:"required|email"`
 	ReplyTo     string `json:"replyTo"`
 	ListID      int    `json:"listId" v:"required"`
+	TrackOpens  *bool  `json:"trackOpens"`  // default true
+	TrackClicks *bool  `json:"trackClicks"` // default true
 }
 
+// UpdateCampaignRequest changes only the fields that are present. An empty
+// replyTo or textContent (or JSON null) clears it.
 type UpdateCampaignRequest struct {
-	Name        string `json:"name"`
-	Subject     string `json:"subject"`
-	HTMLContent string `json:"htmlContent"`
-	TextContent string `json:"textContent"`
-	TemplateID  *int   `json:"templateId"`
-	FromName    string `json:"fromName"`
-	FromEmail   string `json:"fromEmail"`
-	ReplyTo     string `json:"replyTo"`
-	ListID      *int   `json:"listId"`
+	Name        *string `json:"name"`
+	Subject     *string `json:"subject"`
+	HTMLContent *string `json:"htmlContent"`
+	TextContent *string `json:"textContent"`
+	TemplateID  *int    `json:"templateId"`
+	FromName    *string `json:"fromName"`
+	FromEmail   *string `json:"fromEmail"`
+	ReplyTo     *string `json:"replyTo"`
+	ListID      *int    `json:"listId"`
+	TrackOpens  *bool   `json:"trackOpens"`
+	TrackClicks *bool   `json:"trackClicks"`
 }
 
 type ScheduleCampaignRequest struct {
-	ScheduledAt string `json:"scheduledAt" v:"required"` // RFC3339 timestamp
-	Timezone    string `json:"timezone" d:"UTC"`
+	ScheduledAt string `json:"scheduledAt" v:"required"` // RFC3339 timestamp; the offset sets the time zone
+	Timezone    string `json:"timezone" d:"UTC"`         // ignored
 }
 
+type LinkClicks struct {
+	URL          string `json:"url"`
+	Clicks       int    `json:"clicks"`
+	UniqueClicks int    `json:"uniqueClicks"`
+}
+
+type HourCount struct {
+	Hour  time.Time `json:"hour"`
+	Opens int       `json:"opens"`
+}
+
+// CampaignStatsResponse rates are percentages of sentCount; opens and clicks are unique.
 type CampaignStatsResponse struct {
-	Campaign        *Campaign      `json:"campaign"`
-	OpenRate        float64        `json:"openRate"`
-	ClickRate       float64        `json:"clickRate"`
-	BounceRate      float64        `json:"bounceRate"`
-	UnsubscribeRate float64        `json:"unsubscribeRate"`
-	ComplaintRate   float64        `json:"complaintRate"`
-	ClicksByLink    map[string]int `json:"clicksByLink,omitempty"`
-	OpensByHour     map[int]int    `json:"opensByHour,omitempty"`
+	Campaign        *Campaign    `json:"campaign"`
+	OpenRate        float64      `json:"openRate"`
+	ClickRate       float64      `json:"clickRate"`
+	ClickToOpenRate float64      `json:"clickToOpenRate"`
+	BounceRate      float64      `json:"bounceRate"`
+	UnsubscribeRate float64      `json:"unsubscribeRate"`
+	ComplaintRate   float64      `json:"complaintRate"`
+	DeliveredRate   float64      `json:"deliveredRate"`
+	ClicksByLink    []LinkClicks `json:"clicksByLink"`
+	OpensByHour     []HourCount  `json:"opensByHour"`
 }
 
 type CampaignListResponse struct {
@@ -745,6 +776,78 @@ type CampaignListResponse struct {
 	Page       int        `json:"page"`
 	PageSize   int        `json:"pageSize"`
 	TotalPages int        `json:"totalPages"`
+}
+
+type CampaignProgressResponse struct {
+	Status         string     `json:"status"`
+	StatusReason   *string    `json:"statusReason"`
+	Preparing      bool       `json:"preparing"`
+	Total          int        `json:"total"`
+	Pending        int        `json:"pending"`
+	InFlight       int        `json:"inFlight"` // claimed or sending
+	Sent           int        `json:"sent"`
+	Failed         int        `json:"failed"`
+	Unknown        int        `json:"unknown"`
+	Skipped        int        `json:"skipped"`
+	Cancelled      int        `json:"cancelled"`
+	ThrottledUntil *time.Time `json:"throttledUntil"`
+	Percent        float64    `json:"percent"`
+}
+
+// CampaignAudienceResponse is an estimate; the audience is snapshotted when sending starts.
+type CampaignAudienceResponse struct {
+	ListType           string   `json:"listType"`
+	Eligible           int64    `json:"eligible"`
+	ExcludedInactive   int64    `json:"excludedInactive"`
+	ExcludedSuppressed int64    `json:"excludedSuppressed"`
+	Warnings           []string `json:"warnings"` // dmarc_missing, sandbox_mode, no_postal_address, feedback_not_ready
+}
+
+type CampaignPreviewRequest struct {
+	ContactUUID string `json:"contactUuid"`
+}
+
+type CampaignPreviewResponse struct {
+	Subject          string   `json:"subject"`
+	HTML             string   `json:"html"`
+	Text             string   `json:"text"`
+	UnknownVariables []string `json:"unknownVariables"`
+}
+
+type CampaignTestRequest struct {
+	Emails []string `json:"emails"`
+}
+
+type CampaignTestResult struct {
+	Email  string `json:"email"`
+	Status string `json:"status"` // sent, failed, unknown
+	Error  string `json:"error,omitempty"`
+}
+
+type CampaignTestResponse struct {
+	Status  string               `json:"status"` // sending, sent, failed, unknown, partial
+	Results []CampaignTestResult `json:"results"`
+}
+
+type CampaignRecipient struct {
+	Email          string     `json:"email"`
+	Status         string     `json:"status"`
+	SkipReason     *string    `json:"skipReason"`
+	DeliveryStatus *string    `json:"deliveryStatus"`
+	SentAt         *time.Time `json:"sentAt"`
+	OpenCount      int        `json:"openCount"`
+	ClickCount     int        `json:"clickCount"`
+	UnsubscribedAt *time.Time `json:"unsubscribedAt"`
+	Error          *string    `json:"error"`
+}
+
+type CampaignRecipientListResponse struct {
+	Recipients []CampaignRecipient `json:"recipients"`
+	Total      int                 `json:"total"`
+}
+
+type CampaignSettings struct {
+	PostalAddress string `json:"postalAddress"`
 }
 
 // A/B Test DTOs

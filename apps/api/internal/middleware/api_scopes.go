@@ -10,6 +10,7 @@ var APIKeyPermissions = map[string]bool{
 	"email:send": true, "email:read": true, "email:manage": true,
 	"domains:read": true, "domains:manage": true, "identities:read": true, "identities:manage": true,
 	"templates:read": true, "templates:manage": true, "webhooks:manage": true, "contacts:manage": true,
+	"campaigns:read": true, "campaigns:manage": true,
 }
 
 func init() {
@@ -44,6 +45,11 @@ func init() {
 	add("contacts:manage", "GET", "/signup-forms /signup-forms/:uuid /signup-forms/:uuid/signups /contacts /contacts/:uuid /contacts/:uuid/export /contacts/:uuid/consent-audit /lists /lists/:uuid /lists/:uuid/contacts")
 	add("contacts:manage", "POST", "/signup-forms /contacts /contacts/import /contacts/export /contacts/unsubscribe /lists /lists/:uuid/contacts /lists/:uuid/contacts/import /lists/:uuid/contacts/manual")
 	add("contacts:manage", "PUT", "/signup-forms/:uuid /contacts/:uuid /lists/:uuid")
+	add("campaigns:read", "GET", "/campaigns /campaigns/:uuid /campaigns/:uuid/stats /campaigns/:uuid/progress /campaigns/:uuid/audience /campaigns/:uuid/recipients /campaign-settings")
+	add("campaigns:read", "POST", "/campaigns/:uuid/preview")
+	add("campaigns:manage", "POST", "/campaigns /campaigns/:uuid/schedule /campaigns/:uuid/send /campaigns/:uuid/pause /campaigns/:uuid/resume /campaigns/:uuid/cancel /campaigns/:uuid/test")
+	add("campaigns:manage", "PUT", "/campaigns/:uuid /campaign-settings")
+	add("campaigns:manage", "DELETE", "/campaigns/:uuid")
 	add("contacts:manage", "DELETE", "/signup-forms/:uuid /contacts/:uuid /contacts/:uuid/gdpr /lists/:uuid /lists/:uuid/contacts")
 }
 

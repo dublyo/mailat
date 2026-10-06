@@ -74,7 +74,7 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 	listService := service.NewListService(database.DB, cfg)
 	signupService := service.NewSignupFormService(database.DB, cfg, transactionalService)
 	go signupService.RunCleanup(ctx)
-	campaignService := service.NewCampaignService(database.DB, cfg, database.Redis)
+	campaignService := service.NewCampaignService(database.DB, cfg, service.NewCampaignProvider(ctx, cfg))
 	automationService := service.NewAutomationService(database.DB, cfg)
 	trackingService := service.NewTrackingService(database.DB, cfg)
 	complianceService := service.NewComplianceService(database.DB, cfg)
@@ -100,7 +100,6 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 
 	// Wire webhook trigger service to services that fire events (n8n/Zapier integration)
 	contactService.SetWebhookTriggerService(webhookTriggerService)
-	campaignService.SetWebhookTriggerService(webhookTriggerService)
 
 	// Email Receiving service
 	receivingService, receivingErr := service.NewReceivingService(
@@ -389,6 +388,11 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.GET("/campaigns/:uuid/stats", campaignCtrl.GetStats)
 			protectedGroup.POST("/campaigns/:uuid/preview", campaignCtrl.Preview)
 			protectedGroup.POST("/campaigns/:uuid/test", campaignCtrl.SendTest)
+			protectedGroup.GET("/campaigns/:uuid/progress", campaignCtrl.Progress)
+			protectedGroup.GET("/campaigns/:uuid/audience", campaignCtrl.Audience)
+			protectedGroup.GET("/campaigns/:uuid/recipients", campaignCtrl.Recipients)
+			protectedGroup.GET("/campaign-settings", campaignCtrl.GetSettings)
+			protectedGroup.PUT("/campaign-settings", campaignCtrl.UpdateSettings)
 
 			// Automations/Workflows
 			protectedGroup.POST("/automations", automationCtrl.Create)

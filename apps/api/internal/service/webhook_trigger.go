@@ -21,8 +21,6 @@ const (
 	TriggerContactUpdated    = "contact_updated"
 	TriggerContactDeleted    = "contact_deleted"
 	TriggerCampaignSent      = "campaign_sent"
-	TriggerCampaignOpened    = "campaign_opened"
-	TriggerCampaignClicked   = "campaign_clicked"
 	TriggerBounceReceived    = "bounce_received"
 	TriggerComplaintReceived = "complaint_received"
 	TriggerSubscribed        = "subscribed"

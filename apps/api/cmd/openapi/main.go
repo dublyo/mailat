@@ -418,6 +418,9 @@ func main() {
 		if full == "/api/v1/emails" && verb == "POST" || full == "/api/v1/emails/batch" || full == "/api/v1/compose/send" {
 			params = append(params, object{"name": "Idempotency-Key", "in": "header", "required": full != "/api/v1/emails", "schema": object{"type": "string", "minLength": 8, "maxLength": 128}, "description": "Persist one key per logical submission. Reuse it with the identical request on retries; changed content returns 409. Single-email sends accept either this header or JSON idempotencyKey; both must agree when supplied together. Batch and compose require this header."})
 		}
+		if full == "/api/v1/campaigns/:uuid/test" {
+			params = append(params, object{"name": "Idempotency-Key", "in": "header", "required": true, "schema": object{"type": "string", "minLength": 8, "maxLength": 128}, "description": "One key per logical test send. A retry with the same key and addresses returns the stored outcome without sending again; different addresses return 409."})
+		}
 		if len(params) > 0 {
 			op["parameters"] = params
 		}

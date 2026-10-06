@@ -181,6 +181,8 @@ func annotateBackend(op object, controller, path string) {
 		backend, note = "jmap", "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation."
 	} else if controller == "ReceivedInboxController" || controller == "DomainController" || strings.HasPrefix(path, "/emails") || strings.HasPrefix(path, "/rules") || path == "/webhooks/ses/incoming" {
 		backend, note = "ses", "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+	} else if strings.HasPrefix(path, "/campaigns") || strings.HasPrefix(path, "/campaign-settings") || strings.HasPrefix(path, "/tracking") {
+		backend, note = "ses", "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
 	} else if controller == "ComposeController" {
 		backend, note = "ses", "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP."
 	} else if controller == "IdentityController" {

@@ -128,6 +128,10 @@
               "email.unknown",
               "email.bounced",
               "email.complained",
+              "campaign.started",
+              "campaign.paused",
+              "campaign.cancelled",
+              "campaign.sent",
               "webhook.test"
             ],
             "type": "string"
@@ -493,6 +497,7 @@
             "type": "integer"
           },
           "clickCount": {
+            "description": "unique clicks",
             "format": "int64",
             "type": "integer"
           },
@@ -513,7 +518,20 @@
             "format": "date-time",
             "type": "string"
           },
+          "createdByUserId": {
+            "allOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              }
+            ],
+            "nullable": true
+          },
           "deliveredCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "failedCount": {
             "format": "int64",
             "type": "integer"
           },
@@ -540,16 +558,31 @@
           "listName": {
             "type": "string"
           },
+          "listType": {
+            "description": "static | dynamic",
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
           "openCount": {
+            "description": "unique opens",
             "format": "int64",
             "type": "integer"
           },
           "orgId": {
             "format": "int64",
             "type": "integer"
+          },
+          "preparedAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "description": "null while sending = audience not yet snapshotted",
+            "nullable": true
           },
           "replyTo": {
             "type": "string"
@@ -567,6 +600,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "skippedCount": {
+            "format": "int64",
+            "type": "integer"
+          },
           "startedAt": {
             "allOf": [
               {
@@ -577,8 +614,17 @@
             "nullable": true
           },
           "status": {
-            "description": "draft, scheduled, sending, sent, paused, cancelled",
+            "description": "draft, scheduled, sending, paused, sent, cancelled",
             "type": "string"
+          },
+          "statusReason": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "description": "why it is paused, throttled or was reset",
+            "nullable": true
           },
           "subject": {
             "type": "string"
@@ -595,7 +641,27 @@
           "textContent": {
             "type": "string"
           },
+          "throttledUntil": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "description": "set while SES quota/throttling defers sending",
+            "nullable": true
+          },
           "totalRecipients": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "trackClicks": {
+            "type": "boolean"
+          },
+          "trackOpens": {
+            "type": "boolean"
+          },
+          "unknownCount": {
             "format": "int64",
             "type": "integer"
           },
@@ -609,6 +675,40 @@
           },
           "uuid": {
             "type": "string"
+          },
+          "warnings": {
+            "description": "non-blocking notes on create/update",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "model.CampaignAudienceResponse": {
+        "properties": {
+          "eligible": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "excludedInactive": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "excludedSuppressed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "listType": {
+            "type": "string"
+          },
+          "warnings": {
+            "description": "dmarc_missing, sandbox_mode, no_postal_address, feedback_not_ready",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "type": "object"
@@ -640,6 +740,182 @@
         },
         "type": "object"
       },
+      "model.CampaignPreviewRequest": {
+        "properties": {
+          "contactUuid": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "model.CampaignPreviewResponse": {
+        "properties": {
+          "html": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "unknownVariables": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "model.CampaignProgressResponse": {
+        "properties": {
+          "cancelled": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "failed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "inFlight": {
+            "description": "claimed or sending",
+            "format": "int64",
+            "type": "integer"
+          },
+          "pending": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "percent": {
+            "type": "number"
+          },
+          "preparing": {
+            "type": "boolean"
+          },
+          "sent": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "skipped": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "statusReason": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "throttledUntil": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "unknown": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "model.CampaignRecipient": {
+        "properties": {
+          "clickCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "deliveryStatus": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "email": {
+            "type": "string"
+          },
+          "error": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "openCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "sentAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "skipReason": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "status": {
+            "type": "string"
+          },
+          "unsubscribedAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "type": "object"
+      },
+      "model.CampaignRecipientListResponse": {
+        "properties": {
+          "recipients": {
+            "items": {
+              "$ref": "#/components/schemas/model.CampaignRecipient"
+            },
+            "type": "array"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "model.CampaignSettings": {
+        "properties": {
+          "postalAddress": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "model.CampaignStatsResponse": {
         "properties": {
           "bounceRate": {
@@ -656,28 +932,73 @@
           "clickRate": {
             "type": "number"
           },
+          "clickToOpenRate": {
+            "type": "number"
+          },
           "clicksByLink": {
-            "additionalProperties": {
-              "format": "int64",
-              "type": "integer"
+            "items": {
+              "$ref": "#/components/schemas/model.LinkClicks"
             },
-            "type": "object"
+            "type": "array"
           },
           "complaintRate": {
+            "type": "number"
+          },
+          "deliveredRate": {
             "type": "number"
           },
           "openRate": {
             "type": "number"
           },
           "opensByHour": {
-            "additionalProperties": {
-              "format": "int64",
-              "type": "integer"
+            "items": {
+              "$ref": "#/components/schemas/model.HourCount"
             },
-            "type": "object"
+            "type": "array"
           },
           "unsubscribeRate": {
             "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "model.CampaignTestRequest": {
+        "properties": {
+          "emails": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "model.CampaignTestResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/model.CampaignTestResult"
+            },
+            "type": "array"
+          },
+          "status": {
+            "description": "sending, sent, failed, unknown, partial",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "model.CampaignTestResult": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "status": {
+            "description": "sent, failed, unknown",
+            "type": "string"
           }
         },
         "type": "object"
@@ -917,6 +1238,8 @@
           "permissions": {
             "items": {
               "enum": [
+                "campaigns:manage",
+                "campaigns:read",
                 "contacts:manage",
                 "domains:manage",
                 "domains:read",
@@ -1018,6 +1341,24 @@
           },
           "textContent": {
             "type": "string"
+          },
+          "trackClicks": {
+            "allOf": [
+              {
+                "type": "boolean"
+              }
+            ],
+            "description": "default true",
+            "nullable": true
+          },
+          "trackOpens": {
+            "allOf": [
+              {
+                "type": "boolean"
+              }
+            ],
+            "description": "default true",
+            "nullable": true
           }
         },
         "required": [
@@ -1178,6 +1519,10 @@
                 "email.unknown",
                 "email.bounced",
                 "email.complained",
+                "campaign.started",
+                "campaign.paused",
+                "campaign.cancelled",
+                "campaign.sent",
                 "contact_subscribed",
                 "email_received",
                 "email_sent",
@@ -1186,6 +1531,10 @@
                 "email_unknown",
                 "email_bounced",
                 "email_complained",
+                "campaign_started",
+                "campaign_paused",
+                "campaign_cancelled",
+                "campaign_sent",
                 "bounce_received",
                 "complaint_received"
               ],
@@ -1669,6 +2018,19 @@
         },
         "type": "object"
       },
+      "model.HourCount": {
+        "properties": {
+          "hour": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "opens": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "model.Identity": {
         "properties": {
           "canReceive": {
@@ -2081,6 +2443,22 @@
         "required": [
           "emailUuids"
         ],
+        "type": "object"
+      },
+      "model.LinkClicks": {
+        "properties": {
+          "clicks": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "uniqueClicks": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "model.List": {
@@ -2716,11 +3094,12 @@
       "model.ScheduleCampaignRequest": {
         "properties": {
           "scheduledAt": {
-            "description": "RFC3339 timestamp",
+            "description": "RFC3339 timestamp; the offset sets the time zone",
             "type": "string"
           },
           "timezone": {
             "default": "UTC",
+            "description": "ignored",
             "type": "string"
           }
         },
@@ -3125,13 +3504,28 @@
       "model.UpdateCampaignRequest": {
         "properties": {
           "fromEmail": {
-            "type": "string"
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
           },
           "fromName": {
-            "type": "string"
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
           },
           "htmlContent": {
-            "type": "string"
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
           },
           "listId": {
             "allOf": [
@@ -3143,13 +3537,28 @@
             "nullable": true
           },
           "name": {
-            "type": "string"
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
           },
           "replyTo": {
-            "type": "string"
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
           },
           "subject": {
-            "type": "string"
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
           },
           "templateId": {
             "allOf": [
@@ -3161,7 +3570,28 @@
             "nullable": true
           },
           "textContent": {
-            "type": "string"
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "trackClicks": {
+            "allOf": [
+              {
+                "type": "boolean"
+              }
+            ],
+            "nullable": true
+          },
+          "trackOpens": {
+            "allOf": [
+              {
+                "type": "boolean"
+              }
+            ],
+            "nullable": true
           }
         },
         "type": "object"
@@ -3300,6 +3730,10 @@
                 "email.unknown",
                 "email.bounced",
                 "email.complained",
+                "campaign.started",
+                "campaign.paused",
+                "campaign.cancelled",
+                "campaign.sent",
                 "contact_subscribed",
                 "email_received",
                 "email_sent",
@@ -3308,6 +3742,10 @@
                 "email_unknown",
                 "email_bounced",
                 "email_complained",
+                "campaign_started",
+                "campaign_paused",
+                "campaign_cancelled",
+                "campaign_sent",
                 "bounce_received",
                 "complaint_received"
               ],
@@ -4306,6 +4744,10 @@
               "email.unknown",
               "email.bounced",
               "email.complained",
+              "campaign.started",
+              "campaign.paused",
+              "campaign.cancelled",
+              "campaign.sent",
               "contact_subscribed",
               "email_received",
               "email_sent",
@@ -4314,6 +4756,10 @@
               "email_unknown",
               "email_bounced",
               "email_complained",
+              "campaign_started",
+              "campaign_paused",
+              "campaign_cancelled",
+              "campaign_sent",
               "bounce_received",
               "complaint_received"
             ],
@@ -15147,6 +15593,520 @@
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
       }
     },
+    "/api/v1/campaign-settings": {
+      "get": {
+        "description": "GetSettings returns the org's campaign settings (postal address)\nGET /api/v1/campaign-settings",
+        "operationId": "get_api_v1_campaign_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.CampaignSettings"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GetSettings",
+        "tags": [
+          "campaign-settings"
+        ],
+        "x-api-key-scope": "campaigns:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+      },
+      "put": {
+        "description": "UpdateSettings stores the postal address; owner/admin sessions only\nPUT /api/v1/campaign-settings",
+        "operationId": "put_api_v1_campaign_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/model.CampaignSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.CampaignSettings"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "UpdateSettings",
+        "tags": [
+          "campaign-settings"
+        ],
+        "x-api-key-scope": "campaigns:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+      }
+    },
     "/api/v1/campaigns": {
       "get": {
         "description": "List retrieves campaigns with pagination\nGET /api/v1/campaigns",
@@ -15207,7 +16167,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -15412,9 +16381,9 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       },
       "post": {
         "description": "Create creates a new campaign\nPOST /api/v1/campaigns",
@@ -15459,7 +16428,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -15664,14 +16642,14 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/campaigns/{uuid}": {
       "delete": {
-        "description": "Delete deletes a campaign\nDELETE /api/v1/campaigns/:uuid",
+        "description": "Delete deletes a draft, or a cancelled campaign that never sent\nDELETE /api/v1/campaigns/:uuid",
         "operationId": "delete_api_v1_campaigns_uuid",
         "parameters": [
           {
@@ -15705,7 +16683,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -15910,9 +16897,9 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       },
       "get": {
         "description": "Get retrieves a campaign by UUID\nGET /api/v1/campaigns/:uuid",
@@ -15957,7 +16944,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -16162,12 +17158,12 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       },
       "put": {
-        "description": "Update updates a campaign\nPUT /api/v1/campaigns/:uuid",
+        "description": "Update updates a campaign; absent fields are unchanged and a JSON null\nreplyTo or textContent clears it.\nPUT /api/v1/campaigns/:uuid",
         "operationId": "put_api_v1_campaigns_uuid",
         "parameters": [
           {
@@ -16219,7 +17215,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -16424,9 +17429,272 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+      }
+    },
+    "/api/v1/campaigns/{uuid}/audience": {
+      "get": {
+        "description": "Audience estimates eligible recipients and lists readiness warnings\nGET /api/v1/campaigns/:uuid/audience",
+        "operationId": "get_api_v1_campaigns_uuid_audience",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.CampaignAudienceResponse"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Audience",
+        "tags": [
+          "campaigns"
+        ],
+        "x-api-key-scope": "campaigns:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/campaigns/{uuid}/cancel": {
@@ -16473,7 +17741,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -16678,9 +17955,9 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/campaigns/{uuid}/pause": {
@@ -16727,7 +18004,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -16932,14 +18218,14 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/campaigns/{uuid}/preview": {
       "post": {
-        "description": "Preview renders a campaign preview\nPOST /api/v1/campaigns/:uuid/preview",
+        "description": "Preview renders a campaign preview without tracking\nPOST /api/v1/campaigns/:uuid/preview",
         "operationId": "post_api_v1_campaigns_uuid_preview",
         "parameters": [
           {
@@ -16951,6 +18237,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/model.CampaignPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -16962,10 +18258,12 @@
                       "type": "integer"
                     },
                     "data": {
-                      "additionalProperties": {
-                        "type": "string"
-                      },
-                      "type": "object"
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.CampaignPreviewResponse"
+                        }
+                      ],
+                      "nullable": true
                     },
                     "message": {
                       "type": "string"
@@ -16979,7 +18277,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -17184,9 +18491,559 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+      }
+    },
+    "/api/v1/campaigns/{uuid}/progress": {
+      "get": {
+        "description": "Progress summarises recipient rows by status\nGET /api/v1/campaigns/:uuid/progress",
+        "operationId": "get_api_v1_campaigns_uuid_progress",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.CampaignProgressResponse"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Progress",
+        "tags": [
+          "campaigns"
+        ],
+        "x-api-key-scope": "campaigns:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+      }
+    },
+    "/api/v1/campaigns/{uuid}/recipients": {
+      "get": {
+        "description": "Recipients pages through the campaign's recipients\nGET /api/v1/campaigns/:uuid/recipients",
+        "operationId": "get_api_v1_campaigns_uuid_recipients",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pageSize",
+            "schema": {
+              "default": 50,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "default": "",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.CampaignRecipientListResponse"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Recipients",
+        "tags": [
+          "campaigns"
+        ],
+        "x-api-key-scope": "campaigns:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/campaigns/{uuid}/resume": {
@@ -17233,7 +19090,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -17438,9 +19304,9 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/campaigns/{uuid}/schedule": {
@@ -17497,7 +19363,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -17702,9 +19577,9 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/campaigns/{uuid}/send": {
@@ -17751,7 +19626,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -17956,9 +19840,9 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/campaigns/{uuid}/stats": {
@@ -18005,7 +19889,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -18210,14 +20103,14 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/campaigns/{uuid}/test": {
       "post": {
-        "description": "SendTest sends a test email for a campaign\nPOST /api/v1/campaigns/:uuid/test",
+        "description": "SendTest sends a test of the campaign to 1-5 addresses; requires an Idempotency-Key header\nPOST /api/v1/campaigns/:uuid/test",
         "operationId": "post_api_v1_campaigns_uuid_test",
         "parameters": [
           {
@@ -18227,22 +20120,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "One key per logical test send. A retry with the same key and addresses returns the stored outcome without sending again; different addresses return 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 8,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "properties": {
-                  "email": {
-                    "format": "email",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "email"
-                ],
-                "type": "object"
+                "$ref": "#/components/schemas/model.CampaignTestRequest"
               }
             }
           },
@@ -18258,6 +20153,14 @@
                       "example": 0,
                       "type": "integer"
                     },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.CampaignTestResponse"
+                        }
+                      ],
+                      "nullable": true
+                    },
                     "message": {
                       "type": "string"
                     }
@@ -18270,7 +20173,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -18475,9 +20387,9 @@
         "tags": [
           "campaigns"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "campaigns:manage",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/compose/attachments": {
@@ -64699,8 +66611,8 @@
           "tracking"
         ],
         "x-human-session-required": false,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/tracking/open/{token}": {
@@ -64929,8 +66841,8 @@
           "tracking"
         ],
         "x-human-session-required": false,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
       }
     },
     "/api/v1/unsubscribe/{token}": {
