@@ -31,6 +31,7 @@ const appNavItems = [
   { id: 'campaigns', label: 'Campaigns', icon: Mail, route: '/campaigns' },
   { id: 'automations', label: 'Automations', icon: Zap, route: '/automations' },
   { id: 'contacts', label: 'Contacts', icon: Users, route: '/contacts' },
+  { id: 'forms', label: 'Signup forms', icon: FileText, route: '/forms' },
   { id: 'domains', label: 'Domains', icon: Globe, route: '/domains' },
   { id: 'health', label: 'Health', icon: Activity, route: '/health' },
   { id: 'api', label: 'API', icon: BarChart3, route: '/api-docs' },

@@ -10,12 +10,13 @@ import (
 
 type Config struct {
 	// Server
-	Port      int
-	Env       string
-	APIUrl    string
-	WebUrl    string
-	AppDomain string // Domain for WebAuthn and email (e.g., "mailat.co")
-	AppName   string // Application name for branding (e.g., "Mailat")
+	Port              int
+	Env               string
+	APIUrl            string
+	WebUrl            string
+	AppDomain         string // Domain for WebAuthn and email (e.g., "mailat.co")
+	TrustedProxyCIDRs string // Explicit networks allowed to supply the client-IP forwarding chain.
+	AppName           string // Application name for branding (e.g., "Mailat")
 
 	// Database
 	DatabaseURL string
@@ -98,12 +99,13 @@ func Load() (*Config, error) {
 
 	Cfg = &Config{
 		// Server
-		Port:      port,
-		Env:       getEnv("NODE_ENV", "development"),
-		APIUrl:    getEnv("API_URL", "http://localhost:3001"),
-		WebUrl:    getEnv("WEB_URL", "http://localhost:3000"),
-		AppDomain: getEnv("APP_DOMAIN", "localhost"),
-		AppName:   getEnv("APP_NAME", "Mailat"),
+		Port:              port,
+		TrustedProxyCIDRs: getEnv("TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128"),
+		Env:               getEnv("NODE_ENV", "development"),
+		APIUrl:            getEnv("API_URL", "http://localhost:3001"),
+		WebUrl:            getEnv("WEB_URL", "http://localhost:3000"),
+		AppDomain:         getEnv("APP_DOMAIN", "localhost"),
+		AppName:           getEnv("APP_NAME", "Mailat"),
 
 		// Database
 		DatabaseURL: getEnv("DATABASE_URL", ""),

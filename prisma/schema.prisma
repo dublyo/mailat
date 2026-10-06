@@ -35,6 +35,7 @@ model Organization {
   webhooks          Webhook[]
   composeUploads    ComposeUpload[]
   submissionKeys    EmailSubmissionKey[]
+  signupForms       SignupForm[]
   sendUsage         OrganizationSendUsage[]
 
   @@map("organizations")
@@ -70,6 +71,7 @@ model User {
   webauthnCredentials      WebAuthnCredential[]
   submittedEmails          ReceivedEmail[] @relation("SubmissionUser")
   composeUploads           ComposeUpload[]
+  signupForms              SignupForm[]
   composeSubmissionKeys    ComposeSubmissionKey[]
 
   @@map("users")
@@ -197,6 +199,7 @@ model Identity {
   receivedEmails    ReceivedEmail[]
   domain            Domain            @relation(fields: [domainId], references: [id], onDelete: Cascade)
   user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  signupForms       SignupForm[]
   messageMetadata   MessageMetadata[]
 
   @@index([stalwartAccountId])
@@ -271,6 +274,7 @@ model Contact {
 }
 
 model List {
+  confirmationMode String @default("single") @map("confirmation_mode")
   id           Int           @id @default(autoincrement())
   uuid         String        @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   orgId        Int           @map("org_id")
@@ -285,6 +289,9 @@ model List {
   contacts     ListContact[]
   organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
+  signupForms SignupForm[]
+
+  @@unique([id, orgId], map: "lists_id_org_unique")
   @@map("lists")
 }
 
@@ -1229,4 +1236,59 @@ model OrganizationSendUsage {
  organization Organization @relation(fields:[orgId],references:[id],onDelete:Cascade)
  @@id([orgId,month])
  @@map("organization_send_usage")
+}
+
+// Runtime checks and migration ordering are maintained in the Go SQL migrations.
+model SignupForm {
+  id BigInt @id @default(autoincrement())
+  uuid String @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId Int @map("org_id")
+  listId Int @map("list_id")
+  createdBy Int @map("created_by")
+  identityId Int? @map("identity_id")
+  name String @db.VarChar(100)
+  title String @db.VarChar(150)
+  description String @default("") @db.VarChar(1000)
+  consentText String @map("consent_text") @db.VarChar(1000)
+  buttonText String @default("Subscribe") @map("button_text") @db.VarChar(60)
+  privacyUrl String @default("") @map("privacy_url") @db.VarChar(2048)
+  collectName Boolean @default(false) @map("collect_name")
+  published Boolean @default(false)
+  version Int @default(1)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  organization Organization @relation(fields:[orgId],references:[id],onDelete:Cascade)
+  list List @relation(fields:[listId,orgId],references:[id,orgId],onDelete:Cascade)
+  creator User @relation(fields:[createdBy],references:[id],onDelete:Cascade)
+  identity Identity? @relation(fields:[identityId],references:[id],onDelete:SetNull)
+  requests SignupRequest[]
+  @@index([orgId,id], map:"signup_forms_org")
+  @@map("signup_forms")
+}
+model SignupRequest {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  formId BigInt @map("form_id")
+  email String @db.VarChar(255)
+  firstName String @default("") @map("first_name") @db.VarChar(100)
+  status String
+  confirmationMode String @map("confirmation_mode")
+  disclosure String
+  formVersion Int @map("form_version")
+  tokenHash String? @unique @map("token_hash")
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(6)
+  sentAt DateTime? @map("sent_at") @db.Timestamptz(6)
+  confirmedAt DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  form SignupForm @relation(fields:[formId],references:[id],onDelete:Cascade)
+  @@unique([formId,email])
+  @@index([formId,createdAt(sort:Desc),id], map:"signup_requests_recent")
+  @@map("signup_requests")
+}
+model SignupRateLimit {
+  key String @id
+  windowStart DateTime @map("window_start") @db.Timestamptz(6)
+  hits Int
+  @@index([windowStart],map:"signup_rate_expiry")
+  @@map("signup_rate_limits")
 }

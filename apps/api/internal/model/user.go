@@ -527,16 +527,17 @@ type ListMembership struct {
 
 // List represents a contact list
 type List struct {
-	ID           int       `json:"id"`
-	UUID         string    `json:"uuid"`
-	OrgID        int64     `json:"orgId"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description,omitempty"`
-	Type         string    `json:"type"` // static, dynamic
-	SegmentRules any       `json:"segmentRules,omitempty"`
-	ContactCount int       `json:"contactCount"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	ConfirmationMode string    `json:"confirmationMode"`
+	ID               int       `json:"id"`
+	UUID             string    `json:"uuid"`
+	OrgID            int64     `json:"orgId"`
+	Name             string    `json:"name"`
+	Description      string    `json:"description,omitempty"`
+	Type             string    `json:"type"` // static, dynamic
+	SegmentRules     any       `json:"segmentRules,omitempty"`
+	ContactCount     int       `json:"contactCount"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 // Contact API Request DTOs
@@ -608,16 +609,18 @@ type ContactSearchRequest struct {
 // List API Request DTOs
 
 type CreateListRequest struct {
-	Name         string `json:"name" v:"required|min-length:2"`
-	Description  string `json:"description"`
-	Type         string `json:"type" d:"static"` // static, dynamic
-	SegmentRules any    `json:"segmentRules"`
+	ConfirmationMode string `json:"confirmationMode"`
+	Name             string `json:"name" v:"required|min-length:2"`
+	Description      string `json:"description"`
+	Type             string `json:"type" d:"static"` // static, dynamic
+	SegmentRules     any    `json:"segmentRules"`
 }
 
 type UpdateListRequest struct {
-	Name         string `json:"name"`
-	Description  string `json:"description"`
-	SegmentRules any    `json:"segmentRules"`
+	ConfirmationMode string `json:"confirmationMode"`
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	SegmentRules     any    `json:"segmentRules"`
 }
 
 type AddContactsToListRequest struct {

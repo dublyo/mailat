@@ -175,6 +175,8 @@ export interface Contact {
 }
 
 export interface ContactList {
+  confirmationMode: 'single' | 'double'
+  type?: string
   id: string
   uuid: string
   name: string
@@ -561,12 +563,12 @@ export interface ImportToListResponse {
 export const listApi = {
   list: () => api.get<ContactList[]>('/api/v1/lists'),
 
-  create: (data: { name: string; description?: string }) =>
+  create: (data: { name: string; description?: string; confirmationMode?: 'single' | 'double' }) =>
     api.post<ContactList>('/api/v1/lists', data),
 
   get: (uuid: string) => api.get<ContactList>(`/api/v1/lists/${uuid}`),
 
-  update: (uuid: string, data: { name?: string; description?: string }) =>
+  update: (uuid: string, data: { name?: string; description?: string; confirmationMode?: 'single' | 'double' }) =>
     api.put<ContactList>(`/api/v1/lists/${uuid}`, data),
 
   delete: (uuid: string) => api.delete(`/api/v1/lists/${uuid}`),

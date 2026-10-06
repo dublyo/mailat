@@ -13,6 +13,30 @@ Mailat guide, key management, examples and searchable route reference. Generate
 the contract from `apps/api` with `go run ./cmd/openapi`. `--check` and the normal
 Go test suite detect route/DTO/documentation drift.
 
+For a documentation mirror such as Mailat.co, pin the generated contract to a
+Mailat source revision and show that revision with the download. The contract's
+relative server URL refers to the running Mailat instance, not the hosting
+control panel. Examples must use `https://YOUR-MAILAT-INSTANCE/api/v1`; never
+send an email API key to Mailat.co's billing or deployment APIs. The public
+reference does not require a live request executor or visitor credentials.
+
+Every operation includes `x-mailat-backend` and `x-mailat-backend-note`:
+
+| Value | Meaning |
+| --- | --- |
+| `ses` | The SES sending/receiving workflow and its stored mailbox/configuration resources; provider actions still require AWS setup and owned verified domains |
+| `jmap` | Legacy inbox operations that require Stalwart/JMAP accounts; these are not the SES mailbox API |
+| `mailat` | Shared application/account/configuration resources; see the operation note for external-service or execution limitations |
+
+These labels describe dependencies, not proof that a deployment is ready or that
+every route has been exercised against its external provider. In particular,
+`/inbox`, `/inbox/emails`, `/inbox/threads` and the older inbox mutation/search
+routes use JMAP; SES integrations should use `/inbox/received`, `/inbox/changes`
+and `/inbox/filters`. Stored Sieve, shared-mailbox, auto-reply or forwarding
+configuration does not by itself prove that the SES receive pipeline executes
+it. Legacy `/settings/aws/*` uses a different JSON envelope; prefer the current
+domain sending-setup and explicit inbox receiving-setup routes.
+
 Send `Authorization: Bearer <key>`. Keys belong to their creating user and
 organization. Choose only the scopes a workflow needs:
 
@@ -32,6 +56,13 @@ create stronger keys, administer sessions, change passwords or bypass MFA. The
 OpenAPI reference marks human-only routes. Browser SSE uses a 60-second stream
 ticket; ordinary API credentials are never accepted in a query string. Headless
 SSE clients can use an `email:read` bearer key.
+
+Most JSON responses use `{code: 0, message, data}`; failures use the HTTP status
+and `{code, message}`. An operation that returns no data may omit `data`. Follow
+each operation's documented status and content type: trigger creation returns
+201, attachments return bytes, SSE returns `text/event-stream`, and tracking or
+OAuth flows can return a pixel or redirect rather than a JSON envelope. A 200
+management response is not proof that a downstream provider action succeeded.
 
 ## Sending, attachment storage and delivery status
 
@@ -58,8 +89,11 @@ Private downloads require ownership of the parent message.
 Use the public Mailat message UUID for status, mailbox detail, and reply/forward
 contexts. The RFC `Message-ID`, SES provider ID and internal numeric database ID
 are different identifiers. `GET /compose/reply/:id` and `/compose/forward/:id`
-accept the SES mailbox UUID. Submit the context through `/compose/send`, retaining
-threading fields and authorized attachments. Sent mail is visible in unified Sent.
+accept the SES mailbox UUID. Map the context's `from.email` to `/compose/send`'s
+`fromEmail`; retain its `identityId`, recipient arrays, subject, bodies, threading
+fields and authorized attachments. Do not submit the context object unchanged:
+the response's `from` object is not the send request's scalar `fromEmail` field.
+Sent mail is visible in unified Sent.
 
 | State | Meaning |
 | --- | --- |
@@ -84,6 +118,13 @@ mutations validate the entire selection and ownership before changing anything.
 Label resources use UUIDs; existing message label arrays and filter actions use
 owned label names. Rename/delete propagates to both under a per-user transaction
 lock.
+
+Pagination is endpoint-specific. `/inbox/received?page=1&pageSize=50` returns
+`data: {emails, total, unread, page, pageSize, totalPages}`. The default page size
+is 50 and values above 100 are capped at 100. `/webhook-deliveries` accepts
+`status`, `page` and `pageSize` and returns
+`data: {deliveries, page, pageSize, total}`; page sizes outside 1–100 use 50.
+The change feed instead uses `cursor`, `limit`, `nextCursor` and `hasMore`.
 
 Use `/inbox/filters` for rules applied by the SES ingestion pipeline. The test
 endpoint previews a sample without altering messages. Supported actions are
@@ -121,9 +162,13 @@ signature, delivery attempts and supported events:
 }
 ```
 
-Supported types are `email.received`, `email.sent`, `email.delivered`,
-`email.failed`, `email.bounced`, and `email.complained`. Identity UUID is included
+Supported types are `contact.subscribed`, `email.received`, `email.sent`, `email.delivered`,
+`email.failed`, `email.unknown`, `email.bounced`, and `email.complained`.
+Use these canonical dotted names for new subscriptions. Legacy underscored
+aliases remain accepted for compatibility. Identity UUID is included
 when the identity still exists; it can also be used in trigger filters.
+The test endpoints emit a separate `webhook.test` event targeted to the tested
+subscription; it is not an additional production subscription event type.
 
 Verify `X-Webhook-Signature: t=<unix>,v1=<hex>` over the **exact raw request bytes**:
 `HMAC-SHA256(secret, timestamp + "." + rawBody)`. Reject timestamps outside a
@@ -140,9 +185,12 @@ attempt detail and replay endpoint, or use Settings → Integrations. Test deliv
 shows the actual receiver HTTP outcome; HTTP 200 from the management endpoint
 does not mean the receiver accepted it.
 
-Replay preserves the event ID and body and records a new attempt cycle. Success
-and cancelled history are retained 30 days; dead letters are retained 90 days
-after their last update. Pending and retrying deliveries remain durable.
+Replay preserves the event ID and body and records a new attempt cycle. Events
+become eligible for hourly cleanup 30 days after their original `createdAt` when
+all deliveries are terminal. A dead letter updated within the past 90 days keeps
+its event; pending and retrying deliveries also prevent cleanup. Replay does not
+reset the event's age, so a successful replay of an old event does not start a
+new 30-day history period.
 Subscriptions are user-owned, so revoking a configuring API key does not delete
 them. Disable/delete the subscription separately; disabled owners cannot receive
 pending deliveries. Destinations must be public HTTPS; redirects and connections

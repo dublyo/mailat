@@ -21,6 +21,12 @@ func NewListService(db *sql.DB, cfg *config.Config) *ListService {
 
 // CreateList creates a new contact list
 func (s *ListService) CreateList(ctx context.Context, orgID int64, req *model.CreateListRequest) (*model.List, error) {
+	if req.ConfirmationMode == "" {
+		req.ConfirmationMode = "single"
+	}
+	if req.ConfirmationMode != "single" && req.ConfirmationMode != "double" {
+		return nil, fmt.Errorf("confirmationMode must be single or double")
+	}
 	// Handle nullable segment rules
 	var segmentRulesJSON interface{}
 	if req.SegmentRules != nil {
@@ -46,13 +52,13 @@ func (s *ListService) CreateList(ctx context.Context, orgID int64, req *model.Cr
 	var rulesJSON []byte
 	var descPtr sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO lists (org_id, name, description, type, segment_rules, contact_count, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, 0, NOW(), NOW())
-		RETURNING id, uuid, org_id, name, description, type, segment_rules, contact_count, created_at, updated_at
-	`, orgID, req.Name, description, listType, segmentRulesJSON,
+		INSERT INTO lists (org_id, name, description, type, segment_rules, contact_count, created_at, updated_at, confirmation_mode)
+		VALUES ($1, $2, $3, $4, $5, 0, NOW(), NOW(), $6)
+		RETURNING id, uuid, org_id, name, description, type, segment_rules, contact_count, created_at, updated_at, confirmation_mode
+	`, orgID, req.Name, description, listType, segmentRulesJSON, req.ConfirmationMode,
 	).Scan(
 		&list.ID, &list.UUID, &list.OrgID, &list.Name, &descPtr,
-		&list.Type, &rulesJSON, &list.ContactCount, &list.CreatedAt, &list.UpdatedAt,
+		&list.Type, &rulesJSON, &list.ContactCount, &list.CreatedAt, &list.UpdatedAt, &list.ConfirmationMode,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create list: %w", err)
@@ -75,12 +81,12 @@ func (s *ListService) GetList(ctx context.Context, orgID int64, listUUID string)
 	var descPtr sql.NullString
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, uuid, org_id, name, description, type, segment_rules, contact_count, created_at, updated_at
+		SELECT id, uuid, org_id, name, description, type, segment_rules, contact_count, created_at, updated_at, confirmation_mode
 		FROM lists
 		WHERE org_id = $1 AND uuid = $2
 	`, orgID, listUUID).Scan(
 		&list.ID, &list.UUID, &list.OrgID, &list.Name, &descPtr,
-		&list.Type, &rulesJSON, &list.ContactCount, &list.CreatedAt, &list.UpdatedAt,
+		&list.Type, &rulesJSON, &list.ContactCount, &list.CreatedAt, &list.UpdatedAt, &list.ConfirmationMode,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("list not found")
@@ -102,7 +108,7 @@ func (s *ListService) GetList(ctx context.Context, orgID int64, listUUID string)
 // ListLists retrieves all lists for an organization
 func (s *ListService) ListLists(ctx context.Context, orgID int64) ([]model.List, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, uuid, org_id, name, description, type, segment_rules, contact_count, created_at, updated_at
+		SELECT id, uuid, org_id, name, description, type, segment_rules, contact_count, created_at, updated_at, confirmation_mode
 		FROM lists
 		WHERE org_id = $1
 		ORDER BY name ASC
@@ -119,7 +125,7 @@ func (s *ListService) ListLists(ctx context.Context, orgID int64) ([]model.List,
 		var descPtr sql.NullString
 		if err := rows.Scan(
 			&list.ID, &list.UUID, &list.OrgID, &list.Name, &descPtr,
-			&list.Type, &rulesJSON, &list.ContactCount, &list.CreatedAt, &list.UpdatedAt,
+			&list.Type, &rulesJSON, &list.ContactCount, &list.CreatedAt, &list.UpdatedAt, &list.ConfirmationMode,
 		); err != nil {
 			continue
 		}
@@ -143,6 +149,32 @@ func (s *ListService) UpdateList(ctx context.Context, orgID int64, listUUID stri
 		return nil, err
 	}
 
+	if req.ConfirmationMode != "" && req.ConfirmationMode != "single" && req.ConfirmationMode != "double" {
+		return nil, fmt.Errorf("confirmationMode must be single or double")
+	}
+	mode := existing.ConfirmationMode
+	if req.ConfirmationMode != "" {
+		mode = req.ConfirmationMode
+	}
+	// Lock the list while checking senders; public publishing uses the same lock.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `SELECT id FROM lists WHERE id=$1 AND org_id=$2 FOR UPDATE`, existing.ID, orgID); err != nil {
+		return nil, err
+	}
+	if mode == "double" {
+		var invalid bool
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM signup_forms f LEFT JOIN identities i ON i.id=f.identity_id LEFT JOIN domains d ON d.id=i.domain_id LEFT JOIN users u ON u.id=i.user_id WHERE f.list_id=$1 AND f.published AND (i.id IS NULL OR NOT i.can_send OR i.user_id<>f.created_by OR u.status<>'active' OR d.org_id<>f.org_id OR d.status<>'active' OR ($2 AND NOT COALESCE(d.ses_verified,false))))`, existing.ID, s.cfg.EmailProvider == "ses").Scan(&invalid)
+		if err != nil {
+			return nil, err
+		}
+		if invalid {
+			return nil, fmt.Errorf("choose a verified sender for every published form before enabling double opt-in")
+		}
+	}
 	// Apply updates
 	name := existing.Name
 	if req.Name != "" {
@@ -153,23 +185,27 @@ func (s *ListService) UpdateList(ctx context.Context, orgID int64, listUUID stri
 		description = req.Description
 	}
 
-	var segmentRulesJSON []byte
+	var segmentRulesJSON interface{}
 	if req.SegmentRules != nil {
 		segmentRulesJSON, _ = json.Marshal(req.SegmentRules)
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		UPDATE lists SET
 			name = $1,
 			description = $2,
 			segment_rules = COALESCE($3::jsonb, segment_rules),
+            confirmation_mode = $6,
 			updated_at = NOW()
 		WHERE org_id = $4 AND uuid = $5
-	`, name, description, segmentRulesJSON, orgID, listUUID)
+	`, name, description, segmentRulesJSON, orgID, listUUID, mode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update list: %w", err)
 	}
 
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
 	return s.GetList(ctx, orgID, listUUID)
 }
 

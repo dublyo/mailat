@@ -2,10 +2,15 @@ package worker
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/tls"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html"
 	"net/smtp"
 	"strings"
 	"sync"
@@ -124,6 +129,9 @@ func (h *CampaignHandler) HandleCampaignProcess(ctx context.Context, task *asynq
 			// Send email to contact
 			contact := contacts[i]
 			err := h.sendCampaignEmail(ctx, campaign, contact)
+			if errors.Is(err, errCampaignIneligible) {
+				continue
+			}
 			if err != nil {
 				// Log error but continue with other contacts
 				fmt.Printf("Failed to send to %s: %v\n", contact.Email, err)
@@ -184,6 +192,9 @@ func (h *CampaignHandler) HandleCampaignBatch(ctx context.Context, task *asynq.T
 		<-rateLimiter.C
 
 		err := h.sendCampaignEmail(ctx, campaign, contact)
+		if errors.Is(err, errCampaignIneligible) {
+			continue
+		}
 		if err != nil {
 			fmt.Printf("Failed to send to %s: %v\n", contact.Email, err)
 			continue
@@ -313,8 +324,19 @@ func (h *CampaignHandler) getContactsByIDs(ctx context.Context, orgID int64, con
 	return contacts, nil
 }
 
+var errCampaignIneligible = errors.New("contact no longer eligible")
+
 // sendCampaignEmail sends an email to a contact
 func (h *CampaignHandler) sendCampaignEmail(ctx context.Context, campaign *campaignInfo, contact contactInfo) error {
+	// Recheck at delivery time: queued batches can outlive an unsubscribe.
+	var eligible bool
+	err := h.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM contacts c JOIN list_contacts lc ON lc.contact_id=c.id WHERE c.id=$1 AND c.org_id=$2 AND lc.list_id=$3 AND c.status='active' AND NOT EXISTS(SELECT 1 FROM suppressions s WHERE s.org_id=c.org_id AND lower(s.email)=lower(c.email)))`, contact.ID, campaign.OrgID, campaign.ListID).Scan(&eligible)
+	if err != nil {
+		return err
+	}
+	if !eligible {
+		return errCampaignIneligible
+	}
 	// Generate unique message ID
 	messageID := fmt.Sprintf("<%s@%s>", uuid.New().String(), h.extractDomain(campaign.FromEmail))
 
@@ -325,7 +347,7 @@ func (h *CampaignHandler) sendCampaignEmail(ctx context.Context, campaign *campa
 
 	// Insert email record
 	var emailID int64
-	err := h.db.QueryRowContext(ctx, `
+	err = h.db.QueryRowContext(ctx, `
 		INSERT INTO emails (
 			org_id, message_id, identity_id, from_email, from_name,
 			to_emails, subject, html_content, text_content,
@@ -372,8 +394,18 @@ func (h *CampaignHandler) sendCampaignEmail(ctx context.Context, campaign *campa
 	}
 
 	// Add List-Unsubscribe header (RFC 8058)
-	unsubToken := fmt.Sprintf("%d-%d-%d", contact.ID, campaign.OrgID, emailID)
-	msg.WriteString(fmt.Sprintf("List-Unsubscribe: <%s/api/v1/unsubscribe/%s>\r\n", h.cfg.APIUrl, unsubToken))
+	// Match ComplianceService's signed token format; plain numeric IDs were not
+	// accepted by its one-click endpoint.
+	unsubData, _ := json.Marshal(map[string]any{"c": contact.ID, "o": campaign.OrgID, "e": emailID, "n": uuid.New().String()})
+	mac := hmac.New(sha256.New, []byte(h.cfg.JWTSecret))
+	mac.Write(unsubData)
+	unsubToken := base64.URLEncoding.EncodeToString(append(unsubData, mac.Sum(nil)[:8]...))
+	unsubscribePage := strings.TrimRight(h.cfg.WebUrl, "/") + "/unsubscribe#" + unsubToken
+	textContent += "\n\nUnsubscribe: " + unsubscribePage
+	if htmlContent != "" {
+		htmlContent += "<p><a href=\"" + html.EscapeString(unsubscribePage) + "\">Unsubscribe</a></p>"
+	}
+	msg.WriteString(fmt.Sprintf("List-Unsubscribe: <%s/api/v1/unsubscribe/%s>\r\n", strings.TrimRight(h.cfg.APIUrl, "/"), unsubToken))
 	msg.WriteString(fmt.Sprintf("List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"))
 
 	if htmlContent != "" && textContent != "" {

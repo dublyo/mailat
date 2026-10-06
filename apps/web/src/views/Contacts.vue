@@ -78,6 +78,7 @@ const quickAddListTarget = ref<ContactList | null>(null)
 // List form
 const listForm = ref({
   name: '',
+  confirmationMode: 'single' as 'single' | 'double',
   description: ''
 })
 const isCreatingList = ref(false)
@@ -275,13 +276,13 @@ const deleteSelected = async () => {
 // List functions
 const openCreateListModal = () => {
   editingList.value = null
-  listForm.value = { name: '', description: '' }
+  listForm.value = { name: '', description: '', confirmationMode: 'single' }
   showListModal.value = true
 }
 
 const openEditListModal = (list: ContactList) => {
   editingList.value = list
-  listForm.value = { name: list.name, description: list.description || '' }
+  listForm.value = { name: list.name, description: list.description || '', confirmationMode: list.confirmationMode || 'single' }
   showListModal.value = true
 }
 
@@ -304,7 +305,7 @@ const saveListInline = async () => {
   isCreatingList.value = true
   try {
     await contactsStore.createList(listForm.value)
-    listForm.value = { name: '', description: '' }
+    listForm.value = { name: '', description: '', confirmationMode: 'single' }
   } catch (e) {
     console.error('Failed to create list:', e)
   } finally {
@@ -1244,6 +1245,14 @@ const formatDate = (dateStr: string) => {
               class="w-full px-3 py-2 border border-gmail-border rounded-lg focus:outline-none focus:border-gmail-blue resize-none"
               placeholder="Optional description for this list..."
             ></textarea>
+          </div>
+          <div>
+            <label for="list-confirmation" class="block text-sm font-medium mb-1">Signup confirmation</label>
+            <select id="list-confirmation" v-model="listForm.confirmationMode" class="w-full rounded-lg border border-gmail-border px-3 py-2">
+              <option value="single">Single opt-in — subscribe after signup</option>
+              <option value="double">Double opt-in — confirm by email first</option>
+            </select>
+            <p class="mt-2 text-xs text-gmail-gray">All public forms for this list inherit this setting. Existing subscribers stay unchanged.</p>
           </div>
         </div>
         <div class="flex justify-end gap-2 p-4 border-t">

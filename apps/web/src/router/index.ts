@@ -4,6 +4,10 @@ import { useAuthStore } from '@/stores/auth'
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
+    { path: '/unsubscribe', name: 'public-unsubscribe', component: () => import('@/views/PublicUnsubscribe.vue'), meta: { publicSignup: true } },
+    { path: '/forms', name: 'forms', component: () => import('@/views/SignupForms.vue'), meta: { requiresAuth: true } },
+    { path: '/subscribe/confirm', name: 'signup-confirm', component: () => import('@/views/PublicSignup.vue'), meta: { publicSignup: true } },
+    { path: '/subscribe/:uuid', name: 'public-signup', component: () => import('@/views/PublicSignup.vue'), meta: { publicSignup: true } },
     {
       path: '/',
       redirect: '/inbox'
@@ -114,6 +118,10 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to, _from, next) => {
+  // An embedded public document must never navigate into authenticated SPA views.
+  if (window.top !== window.self && to.name !== 'public-signup') { next(false); return }
+  // Embedded signup pages work without cookies, localStorage or a login session.
+  if (to.meta.publicSignup) { next(); return }
   const authStore = useAuthStore()
 
   // Check if we need to restore auth state

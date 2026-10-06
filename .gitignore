@@ -17,6 +17,7 @@ docs/*
 !docs/api-automation.md
 !docs/api-automation-validation.md
 !docs/dmarc-reports.md
+!docs/signup-forms.md
 *.private.md
 readme2.md
 

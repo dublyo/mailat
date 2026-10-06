@@ -24,32 +24,32 @@ type ComplianceService struct {
 
 // UnsubscribeData contains encoded unsubscribe information
 type UnsubscribeData struct {
-	ContactID int64  `json:"c"`
-	OrgID     int64  `json:"o"`
-	ListID    int    `json:"l,omitempty"`
-	EmailID   int64  `json:"e,omitempty"`
+	ContactID int64 `json:"c"`
+	OrgID     int64 `json:"o"`
+	ListID    int   `json:"l,omitempty"`
+	EmailID   int64 `json:"e,omitempty"`
 }
 
 // ConsentRecord tracks consent changes for audit trail
 type ConsentRecord struct {
-	ID           int64     `json:"id"`
-	ContactID    int64     `json:"contactId"`
-	OrgID        int64     `json:"orgId"`
-	Action       string    `json:"action"` // subscribe, unsubscribe, resubscribe, consent_given
-	Source       string    `json:"source"` // api, form, import, one-click, preference-center
-	ListID       *int      `json:"listId,omitempty"`
-	IPAddress    string    `json:"ipAddress,omitempty"`
-	UserAgent    string    `json:"userAgent,omitempty"`
-	Details      string    `json:"details,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
+	ID        int64     `json:"id"`
+	ContactID int64     `json:"contactId"`
+	OrgID     int64     `json:"orgId"`
+	Action    string    `json:"action"` // subscribe, unsubscribe, resubscribe, consent_given
+	Source    string    `json:"source"` // api, form, import, one-click, preference-center
+	ListID    *int      `json:"listId,omitempty"`
+	IPAddress string    `json:"ipAddress,omitempty"`
+	UserAgent string    `json:"userAgent,omitempty"`
+	Details   string    `json:"details,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // PreferenceData contains subscriber preferences
 type PreferenceData struct {
-	ContactID      int64    `json:"contactId"`
-	Email          string   `json:"email"`
-	SubscribedLists []int   `json:"subscribedLists"`
-	AllLists       []ListInfo `json:"allLists"`
+	ContactID       int64      `json:"contactId"`
+	Email           string     `json:"email"`
+	SubscribedLists []int      `json:"subscribedLists"`
+	AllLists        []ListInfo `json:"allLists"`
 }
 
 // ListInfo contains list information for preference center
@@ -352,10 +352,10 @@ func (s *ComplianceService) ConfirmDoubleOptIn(ctx context.Context, token string
 	}
 
 	var data struct {
-		ContactID int64   `json:"c"`
-		OrgID     int64   `json:"o"`
-		ListIDs   []int   `json:"l"`
-		Timestamp int64   `json:"ts"`
+		ContactID int64 `json:"c"`
+		OrgID     int64 `json:"o"`
+		ListIDs   []int `json:"l"`
+		Timestamp int64 `json:"ts"`
 	}
 	if err := json.Unmarshal(jsonData, &data); err != nil {
 		return fmt.Errorf("invalid token")
@@ -407,15 +407,15 @@ func (s *ComplianceService) ConfirmDoubleOptIn(ctx context.Context, token string
 func (s *ComplianceService) ExportContactData(ctx context.Context, orgID int64, contactUUID string) (map[string]interface{}, error) {
 	var contactID int64
 	var contact struct {
-		UUID       string
-		Email      string
-		FirstName  string
-		LastName   string
-		Attributes json.RawMessage
-		Status     string
-		ConsentSource string
+		UUID             string
+		Email            string
+		FirstName        string
+		LastName         string
+		Attributes       json.RawMessage
+		Status           string
+		ConsentSource    string
 		ConsentTimestamp *time.Time
-		CreatedAt  time.Time
+		CreatedAt        time.Time
 	}
 
 	err := s.db.QueryRowContext(ctx, `
@@ -491,6 +491,12 @@ func (s *ComplianceService) ExportContactData(ctx context.Context, orgID int64, 
 		})
 	}
 
+	// Include the disclosure and request history without exporting token digests.
+	var signupHistory json.RawMessage
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(jsonb_build_object('formId',f.uuid,'email',r.email,'firstName',r.first_name,'status',r.status,'confirmationMode',r.confirmation_mode,'disclosure',r.disclosure,'formVersion',r.form_version,'createdAt',r.created_at,'confirmedAt',r.confirmed_at)),'[]'::jsonb) FROM signup_requests r JOIN signup_forms f ON f.id=r.form_id WHERE f.org_id=$1 AND lower(r.email)=lower($2)`, orgID, contact.Email).Scan(&signupHistory); err != nil {
+		return nil, fmt.Errorf("failed to export signup history: %w", err)
+	}
+
 	var attributes map[string]interface{}
 	json.Unmarshal(contact.Attributes, &attributes)
 
@@ -508,6 +514,7 @@ func (s *ComplianceService) ExportContactData(ctx context.Context, orgID int64, 
 		},
 		"lists":          lists,
 		"consentHistory": consentHistory,
+		"signupHistory":  signupHistory,
 		"emailHistory":   emails,
 		"exportedAt":     time.Now(),
 	}, nil
@@ -546,6 +553,12 @@ func (s *ComplianceService) DeleteContactData(ctx context.Context, orgID int64, 
 			updated_at = NOW()
 		WHERE contact_id = $1
 	`, contactID)
+
+	// Public signup history contains personal data too; erasure also revokes
+	// outstanding confirmation links for this address in this organization.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM signup_requests r USING signup_forms f WHERE r.form_id=f.id AND f.org_id=$1 AND lower(r.email)=lower($2)`, orgID, email); err != nil {
+		return fmt.Errorf("failed to delete signup history: %w", err)
+	}
 
 	// Delete the contact
 	tx.ExecContext(ctx, "DELETE FROM contacts WHERE id = $1", contactID)

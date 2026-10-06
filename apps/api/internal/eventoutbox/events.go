@@ -166,7 +166,7 @@ func QueueTarget(ctx context.Context, q DBTX, event Event, webhookID, triggerID 
 	return id, delivery, err
 }
 
-var Types = []string{"email.received", "email.sent", "email.delivered", "email.failed", "email.unknown", "email.bounced", "email.complained"}
+var Types = []string{"contact.subscribed", "email.received", "email.sent", "email.delivered", "email.failed", "email.unknown", "email.bounced", "email.complained"}
 
 func KnownType(kind string) bool {
 	for _, v := range Types {

@@ -160,7 +160,7 @@ export const useContactsStore = defineStore('contacts', () => {
     }
   }
 
-  async function createList(data: { name: string; description?: string }) {
+  async function createList(data: { name: string; description?: string; confirmationMode?: 'single' | 'double' }) {
     try {
       const newList = await listApi.create(data)
       lists.value.push(newList)
@@ -171,7 +171,7 @@ export const useContactsStore = defineStore('contacts', () => {
     }
   }
 
-  async function updateList(uuid: string, data: { name?: string; description?: string }) {
+  async function updateList(uuid: string, data: { name?: string; description?: string; confirmationMode?: 'single' | 'double' }) {
     try {
       const updated = await listApi.update(uuid, data)
       const index = lists.value.findIndex(l => l.uuid === uuid)

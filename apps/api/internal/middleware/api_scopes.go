@@ -41,10 +41,10 @@ func init() {
 	add("webhooks:manage", "POST", "/webhooks /webhooks/:uuid/test /webhooks/:uuid/rotate-secret /webhooks/:uuid/replay /webhooks/:uuid/calls/:id/replay /webhook-deliveries/:uuid/replay /webhook-triggers /webhook-triggers/:id/test /webhook-triggers/:id/rotate-secret /webhook-triggers/:id/replay")
 	add("webhooks:manage", "PUT", "/webhooks/:uuid /webhook-triggers/:id")
 	add("webhooks:manage", "DELETE", "/webhooks/:uuid /webhook-triggers/:id")
-	add("contacts:manage", "GET", "/contacts /contacts/:uuid /contacts/:uuid/export /contacts/:uuid/consent-audit /lists /lists/:uuid /lists/:uuid/contacts")
-	add("contacts:manage", "POST", "/contacts /contacts/import /contacts/export /contacts/unsubscribe /lists /lists/:uuid/contacts /lists/:uuid/contacts/import /lists/:uuid/contacts/manual")
-	add("contacts:manage", "PUT", "/contacts/:uuid /lists/:uuid")
-	add("contacts:manage", "DELETE", "/contacts/:uuid /contacts/:uuid/gdpr /lists/:uuid /lists/:uuid/contacts")
+	add("contacts:manage", "GET", "/signup-forms /signup-forms/:uuid /signup-forms/:uuid/signups /contacts /contacts/:uuid /contacts/:uuid/export /contacts/:uuid/consent-audit /lists /lists/:uuid /lists/:uuid/contacts")
+	add("contacts:manage", "POST", "/signup-forms /contacts /contacts/import /contacts/export /contacts/unsubscribe /lists /lists/:uuid/contacts /lists/:uuid/contacts/import /lists/:uuid/contacts/manual")
+	add("contacts:manage", "PUT", "/signup-forms/:uuid /contacts/:uuid /lists/:uuid")
+	add("contacts:manage", "DELETE", "/signup-forms/:uuid /contacts/:uuid /contacts/:uuid/gdpr /lists/:uuid /lists/:uuid/contacts")
 }
 
 func APIKeyScope(method, path string) (string, bool) {

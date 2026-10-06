@@ -102,12 +102,10 @@ func schema(expr ast.Expr, pkg string) object {
 			}
 			v := reflect.StructTag(tag).Get("v")
 			p := schema(f.Type, pkg)
-			if strings.Contains(v, "required") {
+			if hasValidation(v, "required") {
 				required = append(required, name)
 			}
-			if strings.Contains(v, "email") {
-				p["format"] = "email"
-			}
+			fieldConstraints(p, reflect.StructTag(tag))
 			if f.Comment != nil {
 				p["description"] = strings.TrimSpace(f.Comment.Text())
 			}
@@ -122,7 +120,7 @@ func schema(expr ast.Expr, pkg string) object {
 	return object{}
 }
 func load() {
-	for _, pkg := range []string{"model", "service", "controller", "eventoutbox", "handler"} {
+	for _, pkg := range []string{"model", "service", "controller", "eventoutbox", "handler", "provider"} {
 		files, err := filepath.Glob("internal/" + pkg + "/*.go")
 		must(err)
 		for _, path := range files {
@@ -155,6 +153,9 @@ func load() {
 						k := typeName(x.Recv.List[0].Type) + "." + x.Name.Name
 						methods[k] = x
 						methodPackages[k] = pkg
+					} else {
+						methods[key(pkg, x.Name.Name)] = x
+						methodPackages[key(pkg, x.Name.Name)] = pkg
 					}
 				}
 			}
@@ -187,6 +188,9 @@ func methodResult(controller string, call *ast.CallExpr) (*ast.FuncDecl, string)
 	if !ok {
 		return nil, ""
 	}
+	if name := typeName(sel.X) + "." + sel.Sel.Name; methods[name] != nil {
+		return methods[name], methodPackages[name]
+	}
 	var serviceType func(ast.Expr) string
 	serviceType = func(expr ast.Expr) string {
 		switch x := expr.(type) {
@@ -212,6 +216,9 @@ func resultSchema(controller string, f *ast.FuncDecl) object {
 	infer = func(expr ast.Expr) object {
 		switch x := expr.(type) {
 		case *ast.Ident:
+			if x.Name == "nil" {
+				return nil
+			}
 			if s, ok := locals[x.Name]; ok {
 				return s
 			}
@@ -222,7 +229,14 @@ func resultSchema(controller string, f *ast.FuncDecl) object {
 			if x.Kind == token.STRING {
 				return object{"type": "string"}
 			}
-			return object{"type": "number"}
+			if x.Kind == token.FLOAT {
+				return object{"type": "number"}
+			}
+			return object{"type": "integer"}
+		case *ast.UnaryExpr:
+			return infer(x.X)
+		case *ast.SelectorExpr:
+			return selectedField(infer(x.X), x.Sel.Name)
 		case *ast.CompositeLit:
 			if _, ok := x.Type.(*ast.MapType); ok {
 				props := object{}
@@ -238,6 +252,14 @@ func resultSchema(controller string, f *ast.FuncDecl) object {
 			}
 			return schema(x.Type, "controller")
 		case *ast.CallExpr:
+			if id, ok := x.Fun.(*ast.Ident); ok {
+				if id.Name == "make" && len(x.Args) > 0 {
+					return schema(x.Args[0], "controller")
+				}
+				if id.Name == "append" && len(x.Args) > 1 {
+					return object{"type": "array", "items": infer(x.Args[1])}
+				}
+			}
 			m, pkg := methodResult(controller, x)
 			if m != nil && m.Type.Results != nil && len(m.Type.Results.List) > 0 {
 				return schema(m.Type.Results.List[0].Type, pkg)
@@ -247,7 +269,26 @@ func resultSchema(controller string, f *ast.FuncDecl) object {
 	}
 	out := object{}
 	ast.Inspect(f.Body, func(n ast.Node) bool {
+		if v, ok := n.(*ast.ValueSpec); ok && v.Type != nil {
+			for _, name := range v.Names {
+				locals[name.Name] = schema(v.Type, "controller")
+			}
+		}
+		if loop, ok := n.(*ast.RangeStmt); ok {
+			if value, ok := loop.Value.(*ast.Ident); ok {
+				if items, ok := resolveSchema(infer(loop.X))["items"].(object); ok {
+					locals[value.Name] = items
+				}
+			}
+		}
 		if a, ok := n.(*ast.AssignStmt); ok && len(a.Rhs) == 1 {
+			if len(a.Lhs) == 1 {
+				if id, ok := a.Lhs[0].(*ast.Ident); ok {
+					if s := infer(a.Rhs[0]); len(s) > 0 {
+						locals[id.Name] = s
+					}
+				}
+			}
 			if call, ok := a.Rhs[0].(*ast.CallExpr); ok {
 				m, pkg := methodResult(controller, call)
 				if m != nil && m.Type.Results != nil {
@@ -282,7 +323,11 @@ func resultSchema(controller string, f *ast.FuncDecl) object {
 	return out
 }
 func envelope(data object) object {
-	return object{"type": "object", "required": []string{"code", "message"}, "properties": object{"code": object{"type": "integer", "example": 0}, "message": object{"type": "string"}, "data": data}}
+	props := object{"code": object{"type": "integer", "example": 0}, "message": object{"type": "string"}}
+	if data != nil {
+		props["data"] = data
+	}
+	return object{"type": "object", "required": []string{"code", "message"}, "properties": props}
 }
 func must(err error) {
 	if err != nil {
@@ -319,7 +364,7 @@ func main() {
 			description = strings.TrimSpace(f.Doc.Text())
 		}
 		op := object{"operationId": strings.ToLower(verb) + strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(full, "/", "_"), ":", ""), "-", "_"), "summary": method, "description": description, "tags": []string{strings.Split(strings.TrimPrefix(path, "/"), "/")[0]}, "security": []object{{"bearerAuth": []string{}}}}
-		if public[path] || strings.HasPrefix(path, "/tracking/") || strings.HasPrefix(path, "/unsubscribe/") || strings.HasPrefix(path, "/preferences/") || strings.HasPrefix(path, "/confirm/") {
+		if public[path] || strings.HasPrefix(path, "/public/forms") || strings.HasPrefix(path, "/tracking/") || strings.HasPrefix(path, "/unsubscribe/") || strings.HasPrefix(path, "/preferences/") || strings.HasPrefix(path, "/confirm/") {
 			op["security"] = []object{}
 		}
 		if scope, ok := middleware.APIKeyScope(verb, full); ok {
@@ -327,6 +372,7 @@ func main() {
 		} else {
 			op["x-human-session-required"] = len(op["security"].([]object)) > 0
 		}
+		annotateBackend(op, controller, path)
 		params := []object{}
 		for _, p := range paramRx.FindAllStringSubmatch(path, -1) {
 			params = append(params, object{"name": p[1], "in": "path", "required": true, "schema": object{"type": "string"}})
@@ -351,7 +397,7 @@ func main() {
 				}
 			}
 		}
-		if verb == "POST" || verb == "PUT" || verb == "PATCH" {
+		if verb == "POST" || verb == "PUT" || verb == "PATCH" || verb == "DELETE" {
 			if req != nil {
 				op["requestBody"] = object{"required": true, "content": object{"application/json": object{"schema": req}}}
 			}
@@ -361,26 +407,13 @@ func main() {
 			for _, p := range params {
 				seen[fmt.Sprint(p["name"])] = true
 			}
-			ast.Inspect(f.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok || len(call.Args) == 0 {
-					return true
-				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || typeName(sel.X) != "r" || sel.Sel.Name != "GetQuery" {
-					return true
-				}
-				v, ok := call.Args[0].(*ast.BasicLit)
-				if !ok {
-					return true
-				}
-				name, _ := strconv.Unquote(v.Value)
+			for _, parameter := range queryParameters(f, verb) {
+				name := parameter["name"].(string)
 				if !seen[name] {
-					params = append(params, object{"name": name, "in": "query", "schema": object{"type": "string"}})
+					params = append(params, parameter)
 					seen[name] = true
 				}
-				return true
-			})
+			}
 		}
 		if full == "/api/v1/emails" && verb == "POST" || full == "/api/v1/emails/batch" || full == "/api/v1/compose/send" {
 			params = append(params, object{"name": "Idempotency-Key", "in": "header", "required": full != "/api/v1/emails", "schema": object{"type": "string", "minLength": 8, "maxLength": 128}, "description": "Persist one key per logical submission. Reuse it with the identical request on retries; changed content returns 409. Single-email sends accept either this header or JSON idempotencyKey; both must agree when supplied together. Batch and compose require this header."})
@@ -388,7 +421,7 @@ func main() {
 		if len(params) > 0 {
 			op["parameters"] = params
 		}
-		responses := object{"200": object{"description": "Success. Collections return an empty array when no resources match.", "content": object{"application/json": object{"schema": envelope(resultSchema(controller, f))}}}}
+		responses := object{successStatus(f): object{"description": "Success", "content": object{"application/json": object{"schema": envelope(resultSchema(controller, f))}}}}
 		for _, status := range []string{"400", "401", "403", "404", "409", "410", "429", "500"} {
 			responses[status] = object{"description": map[string]string{"400": "Invalid input", "401": "Missing, expired or revoked authentication", "403": "Insufficient permission", "404": "Resource not found", "409": "Conflict or changed idempotency payload", "410": "Recovery cursor expired; resynchronize", "429": "Rate limit exceeded; respect Retry-After", "500": "Internal failure; retain the idempotency key"}[status], "content": object{"application/json": object{"schema": envelope(object{})}}}
 		}
@@ -399,6 +432,7 @@ func main() {
 		responses["429"].(object)["headers"] = object{"Retry-After": object{"description": "Seconds until the next fixed-minute request window.", "schema": object{"type": "integer", "minimum": 1}}}
 		op["responses"] = responses
 		customize(op, verb, path)
+		customizeContract(op, verb, path)
 		if paths[templated] == nil {
 			paths[templated] = object{}
 		}
@@ -500,7 +534,7 @@ func customize(op object, verb, path string) {
 		}
 	}
 	if path == "/compose/reply/:id" || path == "/compose/forward/:id" {
-		op["description"] = "Get a context using the public SES mailbox message UUID as id. Use returned identityId, to, subject, inReplyTo, references and attachments to compose the submission; forward context includes authenticated attachment blob references. replyAll=true is supported on reply."
+		op["description"] = "Get a context using the public SES mailbox message UUID as id. Map returned from.email to compose/send's fromEmail, and retain identityId, recipients, subject, bodies, inReplyTo, references and authorized attachments; do not post the context unchanged. Forward context includes authenticated attachment blob references. replyAll=true is supported on reply."
 	}
 	if path == "/domains/:uuid/setup-sending" || path == "/domains/:uuid/sending-status" {
 		op["description"] = "Separate attachment storage and outbound SES feedback readiness. Setup does not enable receiving or change MX. Inspect storageReady, feedbackConfigured, subscriptionStatus, feedbackReady and reason even for HTTP 200: an existing foreign SES topic is preserved and reported as a conflict. SNS confirmation can remain pending."
@@ -562,6 +596,7 @@ func customize(op object, verb, path string) {
 // These enum/semantic constraints are enforced in service routing rather than
 // DTO validation tags, so keep them alongside the generated structural schema.
 func customizeSchema(name string, s object) {
+	semanticConstraints(name, s)
 	p, ok := s["properties"].(object)
 	if !ok {
 		return
