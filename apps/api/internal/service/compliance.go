@@ -355,7 +355,7 @@ func (s *ComplianceService) UpdatePreferences(ctx context.Context, token string,
 	}
 	for _, id := range additions {
 		listID := id
-		if _, err = tx.ExecContext(ctx, `INSERT INTO list_contacts (list_id, contact_id, created_at) VALUES ($1, $2, NOW()) ON CONFLICT DO NOTHING`, listID, data.ContactID); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO list_contacts (list_id, contact_id, source, created_at) VALUES ($1, $2, 'preference_center', NOW()) ON CONFLICT DO NOTHING`, listID, data.ContactID); err != nil {
 			return fmt.Errorf("failed to join list: %w", err)
 		}
 		if err = recordConsentChangeTx(ctx, tx, data.ContactID, data.OrgID, "subscribe", "preference-center", &listID, ipAddress, userAgent, "Subscribed via preference center"); err != nil {

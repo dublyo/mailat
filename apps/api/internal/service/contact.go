@@ -79,8 +79,8 @@ func (s *ContactService) CreateContact(ctx context.Context, orgID int64, req *mo
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO contacts (
 			org_id, email, first_name, last_name, attributes,
-			status, consent_source, consent_timestamp, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, NOW(), NOW())
+			status, consent_source, consent_timestamp, created_source, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, 'api', NOW(), NOW())
 		RETURNING id, uuid, org_id, email, first_name, last_name, attributes,
 			status, consent_source, consent_timestamp, engagement_score, created_at, updated_at
 	`,
@@ -103,8 +103,8 @@ func (s *ContactService) CreateContact(ctx context.Context, orgID int64, req *mo
 
 	for _, listID := range listIDs {
 		if _, err = tx.ExecContext(ctx, `
-			INSERT INTO list_contacts (list_id, contact_id, created_at)
-			VALUES ($1, $2, NOW())
+			INSERT INTO list_contacts (list_id, contact_id, source, created_at)
+			VALUES ($1, $2, 'api', NOW())
 			ON CONFLICT (list_id, contact_id) DO NOTHING
 		`, listID, contact.ID); err != nil {
 			return nil, fmt.Errorf("failed to add contact to list: %w", err)
@@ -495,7 +495,7 @@ func (s *ContactService) ImportContacts(ctx context.Context, orgID int64, req *m
 		if _, err = tx.ExecContext(ctx, `SAVEPOINT import_row`); err != nil {
 			return nil, fmt.Errorf("failed to import contacts: %w", err)
 		}
-		outcome, err := importContactRow(ctx, tx, orgID, email, row, listIDs, req.UpdateExisting, req.ConsentSource)
+		outcome, err := importContactRow(ctx, tx, orgID, email, row, listIDs, req.UpdateExisting, req.ConsentSource, membershipImport)
 		if err != nil {
 			if _, rbErr := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT import_row`); rbErr != nil {
 				return nil, fmt.Errorf("failed to import contacts: %w", rbErr)
@@ -536,9 +536,17 @@ const (
 	importSuppressed
 )
 
+// Membership/creation sources recorded in list_contacts.source and
+// contacts.created_source; automation triggers filter on them.
+const (
+	membershipImport = "import"
+	membershipManual = "manual"
+)
+
 // importContactRow upserts one normalized row and adds it to listIDs when the
-// address may receive marketing mail. Shared by contact and list imports.
-func importContactRow(ctx context.Context, tx *sql.Tx, orgID int64, email string, row model.ImportContactRow, listIDs []int, updateExisting bool, consentSource string) (importOutcome, error) {
+// address may receive marketing mail. Shared by contact and list imports;
+// source is the created/membership source (import or manual).
+func importContactRow(ctx context.Context, tx *sql.Tx, orgID int64, email string, row model.ImportContactRow, listIDs []int, updateExisting bool, consentSource, source string) (importOutcome, error) {
 	// nil (SQL NULL) keeps existing attributes on update.
 	var attributesJSON any
 	if row.Attributes != nil {
@@ -570,10 +578,10 @@ func importContactRow(ctx context.Context, tx *sql.Tx, orgID int64, email string
 		if err = tx.QueryRowContext(ctx, `
 			INSERT INTO contacts (
 				org_id, email, first_name, last_name, attributes,
-				status, consent_source, consent_timestamp, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb), 'active', $6, $7, NOW(), NOW())
+				status, consent_source, consent_timestamp, created_source, created_at, updated_at
+			) VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb), 'active', $6, $7, $8, NOW(), NOW())
 			RETURNING id
-		`, orgID, email, row.FirstName, row.LastName, attributesJSON, consentSource, consentTimestamp).Scan(&contactID); err != nil {
+		`, orgID, email, row.FirstName, row.LastName, attributesJSON, consentSource, consentTimestamp, source).Scan(&contactID); err != nil {
 			return 0, err
 		}
 		if err = recordConsentChangeTx(ctx, tx, contactID, orgID, "consent_given", "import", nil, "", "", consentSource); err != nil {
@@ -604,10 +612,10 @@ func importContactRow(ctx context.Context, tx *sql.Tx, orgID int64, email string
 
 	for _, listID := range listIDs {
 		if _, err = tx.ExecContext(ctx, `
-			INSERT INTO list_contacts (list_id, contact_id, created_at)
-			VALUES ($1, $2, NOW())
+			INSERT INTO list_contacts (list_id, contact_id, source, created_at)
+			VALUES ($1, $2, $3, NOW())
 			ON CONFLICT (list_id, contact_id) DO NOTHING
-		`, listID, contactID); err != nil {
+		`, listID, contactID, source); err != nil {
 			return 0, err
 		}
 	}

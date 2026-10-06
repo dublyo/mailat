@@ -312,12 +312,12 @@ func (s *SignupFormService) subscribe(ctx context.Context, tx *sql.Tx, f *model.
 	var contactUUID string
 	err = tx.QueryRowContext(ctx, `SELECT id,uuid FROM contacts WHERE org_id=$1 AND lower(email)=$2 ORDER BY id LIMIT 1`, f.OrgID, email).Scan(&contactID, &contactUUID)
 	if err == sql.ErrNoRows {
-		err = tx.QueryRowContext(ctx, `INSERT INTO contacts(org_id,email,first_name,last_name,status,consent_source,consent_timestamp,consent_ip,consent_user_agent,updated_at) VALUES($1,$2,$3,'','active','signup_form',now(),$4,$5,now()) RETURNING id,uuid`, f.OrgID, email, name, ip, ua).Scan(&contactID, &contactUUID)
+		err = tx.QueryRowContext(ctx, `INSERT INTO contacts(org_id,email,first_name,last_name,status,consent_source,consent_timestamp,consent_ip,consent_user_agent,created_source,updated_at) VALUES($1,$2,$3,'','active','signup_form',now(),$4,$5,'signup_form',now()) RETURNING id,uuid`, f.OrgID, email, name, ip, ua).Scan(&contactID, &contactUUID)
 	}
 	if err != nil {
 		return false, err
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO list_contacts(list_id,contact_id) VALUES($1,$2) ON CONFLICT(list_id,contact_id) DO NOTHING`, f.ListID, contactID)
+	result, err := tx.ExecContext(ctx, `INSERT INTO list_contacts(list_id,contact_id,source) VALUES($1,$2,'signup_form') ON CONFLICT(list_id,contact_id) DO NOTHING`, f.ListID, contactID)
 	if err != nil {
 		return false, err
 	}

@@ -277,8 +277,8 @@ func (s *ListService) AddContactsToList(ctx context.Context, orgID int64, listUU
 	// Verify contacts belong to org and insert by UUID
 	for _, contactUUID := range contactUUIDs {
 		_, err = s.db.ExecContext(ctx, `
-			INSERT INTO list_contacts (list_id, contact_id, created_at)
-			SELECT $1, c.id, NOW()
+			INSERT INTO list_contacts (list_id, contact_id, source, created_at)
+			SELECT $1, c.id, 'api', NOW()
 			FROM contacts c
 			WHERE c.uuid = $2 AND c.org_id = $3
 			ON CONFLICT (list_id, contact_id) DO NOTHING
@@ -472,7 +472,7 @@ func (s *ListService) ImportContactsToList(ctx context.Context, orgID int64, lis
 		if _, err = tx.ExecContext(ctx, `SAVEPOINT import_row`); err != nil {
 			return nil, fmt.Errorf("failed to import contacts: %w", err)
 		}
-		outcome, err := importContactRow(ctx, tx, orgID, email, row, []int{listID}, req.UpdateExisting, consentSource)
+		outcome, err := importContactRow(ctx, tx, orgID, email, row, []int{listID}, req.UpdateExisting, consentSource, membershipImport)
 		if err != nil {
 			if _, rbErr := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT import_row`); rbErr != nil {
 				return nil, fmt.Errorf("failed to import contacts: %w", rbErr)
@@ -534,7 +534,7 @@ func (s *ListService) ManualAddContactToList(ctx context.Context, orgID int64, l
 
 	outcome, err := importContactRow(ctx, tx, orgID, email, model.ImportContactRow{
 		Email: email, FirstName: req.FirstName, LastName: req.LastName, Attributes: req.Attributes,
-	}, []int{listID}, false, "manual")
+	}, []int{listID}, false, "manual", membershipManual)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add contact to list: %w", err)
 	}
