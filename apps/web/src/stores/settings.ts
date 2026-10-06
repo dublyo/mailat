@@ -494,22 +494,6 @@ export const useSettingsStore = defineStore('settings', () => {
     error.value = null
   }
 
-  // Browser notifications
-  async function requestBrowserNotifications() {
-    if (!('Notification' in window)) {
-      error.value = 'Browser notifications not supported'
-      return false
-    }
-
-    const permission = await Notification.requestPermission()
-    if (permission === 'granted') {
-      settings.value.browserNotifications = true
-      saveToStorage()
-      return true
-    }
-    return false
-  }
-
   // Apply theme
   function applyTheme() {
     const theme = settings.value.theme
@@ -580,7 +564,6 @@ export const useSettingsStore = defineStore('settings', () => {
     disable2FA,
     regenerateBackupCodes,
     clearLocalSettings,
-    requestBrowserNotifications,
     applyTheme,
   }
 })

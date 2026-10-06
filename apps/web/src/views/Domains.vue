@@ -8,10 +8,15 @@ import Spinner from '@/components/common/Spinner.vue'
 import DomainDmarcStatus from '@/components/settings/DomainDmarcStatus.vue'
 import DomainSendingReadiness from '@/components/settings/DomainSendingReadiness.vue'
 import { useDomainsStore } from '@/stores/domains'
-import type { CloudflareZone, CloudflareDNSResult, DomainDMARCStatus } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth'
+import { isOrgAdmin, type CloudflareZone, type CloudflareDNSResult, type DomainDMARCStatus } from '@/lib/api'
 import { sendingDNSRecords, dnsResultStatus, dnsExportRecords } from '@/lib/domainDns'
 
 const domainsStore = useDomainsStore()
+const authStore = useAuthStore()
+// Domain, receiving and identity management is for owners and admins; the
+// server enforces it, so members simply do not see those actions.
+const canManage = computed(() => isOrgAdmin(authStore.user))
 
 // Modal state
 const showAddDomainModal = ref(false)
@@ -421,7 +426,7 @@ async function handleSetupReceiving(domain: any) {
             <h1 class="text-2xl font-semibold text-gray-900">Domains</h1>
             <p class="text-sm text-gray-500 mt-1">Manage your email domains and sender identities</p>
           </div>
-          <Button @click="showAddDomainModal = true" class="shadow-md hover:shadow-lg transition-shadow">
+          <Button v-if="canManage" @click="showAddDomainModal = true" class="shadow-md hover:shadow-lg transition-shadow">
             <Plus class="w-4 h-4" />
             Add Domain
           </Button>
@@ -462,9 +467,9 @@ async function handleSetupReceiving(domain: any) {
             </div>
             <h3 class="text-xl font-semibold text-gray-900 mb-2">No domains configured</h3>
             <p class="text-gray-500 mb-6 text-center max-w-sm">
-              Add your first domain to start sending emails with your own brand identity
+              {{ canManage ? 'Add your first domain to start sending emails with your own brand identity' : 'Ask an organization admin to add a domain and an identity for you.' }}
             </p>
-            <Button @click="showAddDomainModal = true" size="lg">
+            <Button v-if="canManage" @click="showAddDomainModal = true" size="lg">
               <Plus class="w-5 h-5" />
               Add your first domain
             </Button>
@@ -543,16 +548,16 @@ async function handleSetupReceiving(domain: any) {
                     </div>
                   </div>
                   <div class="flex items-center gap-2">
-                    <Button v-if="domain.status !== 'active'" variant="primary" size="sm" @click="openSetupWizard(domain.uuid)">
+                    <Button v-if="canManage && domain.status !== 'active'" variant="primary" size="sm" @click="openSetupWizard(domain.uuid)">
                       <Zap class="w-4 h-4" />
                       Set up sending
                     </Button>
-                    <Button v-if="domain.status !== 'active'" variant="secondary" size="sm" @click="handleVerifyDomain(domain.uuid)">
+                    <Button v-if="canManage && domain.status !== 'active'" variant="secondary" size="sm" @click="handleVerifyDomain(domain.uuid)">
                       <RefreshCw class="w-4 h-4" />
                       Verify
                     </Button>
                     <Button
-                      v-if="domain.status === 'active'"
+                      v-if="canManage && domain.status === 'active'"
                       variant="secondary"
                       size="sm"
                       @click="receivingOptionsDomain = receivingOptionsDomain === domain.uuid ? '' : domain.uuid; submitError = ''"
@@ -567,6 +572,7 @@ async function handleSetupReceiving(domain: any) {
                       Receiving prepared
                     </Badge>
                     <button
+                      v-if="canManage"
                       @click="handleDeleteDomain(domain)"
                       class="p-2 hover:bg-red-50 rounded-lg transition-colors group"
                       :disabled="deletingDomain === domain.uuid"
@@ -714,7 +720,7 @@ async function handleSetupReceiving(domain: any) {
                       <Mail class="w-4 h-4" />
                       Sender Identities
                     </h4>
-                    <Button variant="secondary" size="sm" @click="openAddIdentityModal(domain.uuid)">
+                    <Button v-if="canManage" variant="secondary" size="sm" @click="openAddIdentityModal(domain.uuid)">
                       <Plus class="w-4 h-4" />
                       Add Identity
                     </Button>
@@ -737,12 +743,13 @@ async function handleSetupReceiving(domain: any) {
                             <span class="font-medium text-gray-900">{{ identity.displayName }}</span>
                             <Badge v-if="identity.isDefault" variant="info" size="sm">Default</Badge>
                             <Badge v-if="identity.isCatchAll" variant="warning" size="sm">Catch-All</Badge>
+                            <Badge v-if="identity.shared" variant="default" size="sm">Shared</Badge>
                           </div>
                           <span class="text-sm text-gray-500">{{ identity.email }}</span>
                         </div>
                       </div>
-                      <!-- Identity Actions Menu -->
-                      <div class="relative">
+                      <!-- Identity Actions Menu: shared mailboxes are managed in Settings -->
+                      <div v-if="!identity.shared && (canManage || !identity.isDefault)" class="relative">
                         <button
                           @click.stop="toggleIdentityMenu(identity.uuid)"
                           class="p-2 hover:bg-gray-200 rounded-lg transition-colors"
@@ -771,14 +778,16 @@ async function handleSetupReceiving(domain: any) {
                               Set as Default
                             </button>
                             <button
+                              v-if="canManage"
                               @click="toggleIdentityCatchAll(identity.uuid, identity.isCatchAll || false)"
                               class="w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-gray-50"
                             >
                               <Inbox class="w-4 h-4 text-gray-400" />
                               {{ identity.isCatchAll ? 'Disable Catch-All' : 'Enable Catch-All' }}
                             </button>
-                            <div class="border-t border-gray-100 my-1"></div>
+                            <div v-if="canManage" class="border-t border-gray-100 my-1"></div>
                             <button
+                              v-if="canManage"
                               @click="handleDeleteIdentity(identity.uuid)"
                               class="w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-red-50 text-red-600"
                             >

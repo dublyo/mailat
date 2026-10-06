@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { User, Shield, Bell, Palette, Filter, Webhook, Check, X, Plus, Copy, Download } from 'lucide-vue-next'
+import { User, Shield, Bell, Palette, Filter, Webhook, Check, X, Plus, Copy, Download, Plane, Users, Inbox } from 'lucide-vue-next'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import Modal from '@/components/common/Modal.vue'
 import MailRulesSettings from '@/components/settings/MailRulesSettings.vue'
+import PushNotificationsSection from '@/components/settings/PushNotificationsSection.vue'
+import VacationForwardingSettings from '@/components/settings/VacationForwardingSettings.vue'
+import TeamSettings from '@/components/settings/TeamSettings.vue'
+import SharedMailboxesSettings from '@/components/settings/SharedMailboxesSettings.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
-import { webhookApi, oauthApi, type OAuthConnection, type TwoFactorSetup, type Webhook as WebhookType, type WebhookDelivery, type WebhookAttempt } from '@/lib/api'
+import { webhookApi, oauthApi, isOrgAdmin, type OAuthConnection, type TwoFactorSetup, type Webhook as WebhookType, type WebhookDelivery, type WebhookAttempt } from '@/lib/api'
 
 const authStore = useAuthStore()
 const settingsStore = useSettingsStore()
@@ -32,19 +36,23 @@ function formatDate(dateStr: string): string {
   return date.toLocaleDateString()
 }
 
-type SettingsTab = 'general' | 'security' | 'notifications' | 'appearance' | 'filters' | 'integrations'
+type SettingsTab = 'general' | 'security' | 'notifications' | 'appearance' | 'filters' | 'vacation' | 'shared' | 'team' | 'integrations'
 
-const settingsTabs: SettingsTab[] = ['general', 'security', 'notifications', 'appearance', 'filters', 'integrations']
-const activeTab = ref<SettingsTab>(settingsTabs.includes(route.query.tab as SettingsTab) ? route.query.tab as SettingsTab : 'general')
-
-const tabs = [
+const allTabs: { id: SettingsTab; label: string; icon: typeof User; adminOnly?: boolean }[] = [
   { id: 'general', label: 'General', icon: User },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'filters', label: 'Filters & Rules', icon: Filter },
+  { id: 'vacation', label: 'Vacation & forwarding', icon: Plane },
+  { id: 'shared', label: 'Shared mailboxes', icon: Inbox },
+  { id: 'team', label: 'Team', icon: Users, adminOnly: true },
   { id: 'integrations', label: 'Integrations', icon: Webhook },
-] as const
+]
+// The server enforces roles; hiding Team only avoids showing a 403.
+const tabs = computed(() => allTabs.filter(tab => !tab.adminOnly || isOrgAdmin(authStore.user)))
+const requestedTab = route.query.tab as SettingsTab
+const activeTab = ref<SettingsTab>(tabs.value.some(tab => tab.id === requestedTab) ? requestedTab : 'general')
 
 // Password change modal
 const showPasswordModal = ref(false)
@@ -417,11 +425,6 @@ async function handleAddTrustedSender() {
   else trustedError.value = settingsStore.rulesError || 'The trusted sender was not saved.'
 }
 
-// Browser notifications
-async function handleEnableBrowserNotifications() {
-  await settingsStore.requestBrowserNotifications()
-}
-
 // Sign out all sessions
 async function handleSignOutAll() {
   await settingsStore.revokeAllOtherSessions()
@@ -747,25 +750,7 @@ async function handleSignOutAll() {
               </div>
             </section>
 
-            <section class="pt-6 border-t border-gmail-border">
-              <h3 class="text-sm font-medium text-gmail-gray mb-4">Desktop Notifications</h3>
-              <div class="flex items-center justify-between p-4 bg-gmail-lightGray rounded-lg">
-                <div>
-                  <p class="font-medium">Browser Notifications</p>
-                  <p class="text-sm text-gmail-gray">Get notified when you receive new emails</p>
-                </div>
-                <Button
-                  v-if="!settingsStore.settings.browserNotifications"
-                  variant="secondary"
-                  @click="handleEnableBrowserNotifications"
-                >
-                  Enable
-                </Button>
-                <span v-else class="text-green-600 text-sm font-medium flex items-center gap-1">
-                  <Check class="w-4 h-4" /> Enabled
-                </span>
-              </div>
-            </section>
+            <PushNotificationsSection />
 
             <div class="pt-6">
               <Button @click="saveNotifications" :disabled="settingsStore.isSaving">
@@ -904,6 +889,21 @@ async function handleSignOutAll() {
           </section>
 
           <MailRulesSettings />
+        </div>
+
+        <div v-else-if="activeTab === 'vacation'" class="max-w-3xl">
+          <h2 class="text-lg font-medium mb-6">Vacation &amp; forwarding</h2>
+          <VacationForwardingSettings />
+        </div>
+
+        <div v-else-if="activeTab === 'shared'" class="max-w-3xl">
+          <h2 class="text-lg font-medium mb-6">Shared mailboxes</h2>
+          <SharedMailboxesSettings />
+        </div>
+
+        <div v-else-if="activeTab === 'team'" class="max-w-3xl">
+          <h2 class="text-lg font-medium mb-6">Team</h2>
+          <TeamSettings />
         </div>
 
         <!-- Integrations Settings -->

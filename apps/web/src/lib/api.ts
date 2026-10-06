@@ -2,6 +2,9 @@ import axios, { type AxiosInstance, type AxiosResponse } from 'axios'
 
 const API_BASE = import.meta.env.VITE_API_URL || ''
 
+/** SPA pages that work with or without a session (router meta.public). */
+export const PUBLIC_PATHS = ['/invite', '/forwards/verify']
+
 interface ApiResponse<T> {
   code: number
   message: string
@@ -39,7 +42,9 @@ class ApiClient {
         const belongsToCurrentSession = !requestToken || requestToken === `Bearer ${this.getToken()}`
         if (error.response?.status === 401 && belongsToCurrentSession && !['/api/v1/auth/login', '/api/v1/auth/2fa/challenge'].includes(error.config?.url)) {
           this.setToken(null)
-          window.location.href = '/login'
+          // Invite and forward-confirmation pages work signed out; an expired
+          // session must not navigate away from them and lose the link.
+          if (!PUBLIC_PATHS.includes(window.location.pathname)) window.location.href = '/login'
         }
         // data carries structured details such as an automation's validation errors[].
         return Promise.reject(Object.assign(new Error(error.response?.data?.message || error.message || 'Request failed'), { status: error.response?.status, data: error.response?.data?.data }))

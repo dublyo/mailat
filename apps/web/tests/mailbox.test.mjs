@@ -16,7 +16,7 @@ const storeBuild = await build({
 })
 const composeBuild = await build({ entryPoints: [fileURLToPath(new URL('../src/lib/compose.ts', import.meta.url))], bundle: true, write: false, platform: 'node', format: 'cjs' })
 function evaluate(code) { const module = { exports: {} }; new Function('require', 'module', 'exports', code)(require, module, module.exports); return module.exports }
-const { replyRecipients, replySender, prefixedSubject, composeThreadHeaders, failedRetryPayload, retainSendAttempt } = evaluate(composeBuild.outputFiles[0].text)
+const { replyRecipients, replySender, prefixedSubject, composeThreadHeaders, failedRetryPayload, retainSendAttempt, memberAliasAllowed } = evaluate(composeBuild.outputFiles[0].text)
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b }); return { promise, resolve, reject } }
 function email(uuid, extra = {}) { return { uuid, identityId: 1, folder: 'inbox', isRead: false, isStarred: false, ...extra } }
 function result(emails) { return { emails, total: emails.length, totalPages: emails.length ? 1 : 0 } }
@@ -151,6 +151,11 @@ test('catch-all replies prefer actual envelope alias and missing identities fall
   assert.equal(selected.fromEmail, 'shop@aliases.test')
   assert.equal(Number(selected.identity.id), 2)
   assert.equal(replySender({ ...message, identityId: 999 }, identities).identity.id, 1)
+})
+test('members may send only as the identity address or a +tag of it, like the server', () => {
+  assert.equal(memberAliasAllowed('Support@Acme.test', 'support@acme.test'), true)
+  assert.equal(memberAliasAllowed('support@acme.test', 'support+billing@acme.test'), true)
+  for (const alias of ['sales@acme.test', 'support+@acme.test', 'support+x@other.test', 'support+a@b@acme.test', 'xsupport+a@acme.test']) assert.equal(memberAliasAllowed('support@acme.test', alias), false, alias)
 })
 test('reply subject prefixes do not grow on each reply', () => {
   assert.equal(prefixedSubject('Re: Existing', 'Re'), 'Re: Existing')

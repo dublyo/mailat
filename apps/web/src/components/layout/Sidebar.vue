@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Inbox, Star, Send, FileText, Trash2, AlertCircle,
@@ -6,10 +7,16 @@ import {
   ChevronDown, ChevronRight, Zap, Archive
 } from 'lucide-vue-next'
 import { useReceivedInboxStore } from '@/stores/receivedInbox'
+import { useDomainsStore } from '@/stores/domains'
 
 const route = useRoute()
 const router = useRouter()
 const receivedInboxStore = useReceivedInboxStore()
+const domainsStore = useDomainsStore()
+// Shared mailboxes the user reads; each opens the inbox filtered to it.
+const sharedIdentities = computed(() => domainsStore.identities.filter(i => i.shared && i.canRead !== false))
+const isSharedActive = (id: string | number) => ['/received', '/inbox'].includes(route.path) && String(route.query.identity || '') === String(id)
+onMounted(() => { if (!domainsStore.identities.length) void domainsStore.fetchIdentities() })
 
 const mainNavItems = [
   { id: 'inbox', label: 'Inbox', icon: Inbox, route: '/received', folder: 'inbox' },
@@ -123,6 +130,24 @@ const emit = defineEmits<{
           </li>
         </ul>
       </details>
+
+      <template v-if="sharedIdentities.length">
+        <h2 class="px-6 pt-4 pb-1 text-xs font-medium uppercase tracking-wide text-gmail-gray">Shared</h2>
+        <ul class="space-y-0.5">
+          <li v-for="identity in sharedIdentities" :key="identity.uuid">
+            <button
+              @click="router.push({ path: '/received', query: { identity: String(identity.id) } })"
+              :aria-current="isSharedActive(identity.id) ? 'page' : undefined"
+              :class="{ 'active': isSharedActive(identity.id) }"
+              :title="identity.email"
+              class="nav-item w-full"
+            >
+              <Users class="w-5 h-5 text-gmail-gray" />
+              <span class="flex-1 text-left text-sm truncate">{{ identity.sharedMailboxName || identity.email }}</span>
+            </button>
+          </li>
+        </ul>
+      </template>
 
       <!-- Divider -->
       <div class="my-4 border-t border-gmail-border" />

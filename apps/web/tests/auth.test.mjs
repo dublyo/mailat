@@ -64,6 +64,15 @@ test('protected API 401 still clears the expired token and navigates to login', 
   assert.equal(window.location.href, '/login')
 })
 
+test('an expired session on a public invite page clears the token without leaving the page', async () => {
+  const { api, rejectResponse } = apiFixture()
+  window.location = { href: '/invite#token=abc', pathname: '/invite' }
+  api.setToken('expired-token')
+  await assert.rejects(rejectResponse({ config: { url: '/api/v1/auth/me' }, response: { status: 401, data: {} } }))
+  assert.equal(api.getToken(), null)
+  assert.equal(window.location.href, '/invite#token=abc')
+})
+
 test('logout rejects late domain and identity list responses', async () => {
   const { domains, auth, endpoints } = storesFixture()
   const d = deferred(), i = deferred()

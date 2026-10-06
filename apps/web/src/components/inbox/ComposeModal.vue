@@ -9,7 +9,9 @@ import { useInboxStore } from '@/stores/inbox'
 import { useReceivedInboxStore } from '@/stores/receivedInbox'
 import { useDomainsStore } from '@/stores/domains'
 import { composeApi, receivedInboxApi, type ComposeAttachment, type ComposeRequest, type SendResult } from '@/lib/api'
-import { replyRecipients, replySender, prefixedSubject, escapeHtml, plainAddress, composeThreadHeaders, failedRetryPayload, retainSendAttempt } from '@/lib/compose'
+import { replyRecipients, replySender, prefixedSubject, escapeHtml, plainAddress, composeThreadHeaders, failedRetryPayload, retainSendAttempt, memberAliasAllowed } from '@/lib/compose'
+import { useAuthStore } from '@/stores/auth'
+import { isOrgAdmin } from '@/lib/api'
 import { renderMessageDocument } from '@/lib/mailHtml'
 
 const inboxStore = useInboxStore()
@@ -17,6 +19,13 @@ const mailbox = useReceivedInboxStore()
 const domainsStore = useDomainsStore()
 const isOpen = computed(() => inboxStore.isComposeOpen)
 const identities = computed(() => domainsStore.identities.filter(i => i.canSend !== false))
+const authStore = useAuthStore()
+// Owners and admins may use any free address on the domain; members only the
+// identity address or a +tag of it.
+const restrictAlias = computed(() => !isOrgAdmin(authStore.user))
+const selectedIdentity = computed(() => identities.value.find(i => Number(i.id) === Number(selectedIdentityId.value)))
+const aliasError = computed(() => restrictAlias.value && selectedIdentity.value && fromEmail.value.trim() && !memberAliasAllowed(selectedIdentity.value.email, fromEmail.value)
+  ? `Send as ${selectedIdentity.value.email} or a +tag of it, like ${selectedIdentity.value.email.replace('@', '+news@')}.` : '')
 const to = ref('')
 const cc = ref('')
 const bcc = ref('')
@@ -91,6 +100,7 @@ watch(isOpen, async open => {
   const identity = selected?.identity || identities.value.find(i => i.isDefault) || identities.value[0]
   selectedIdentityId.value = identity ? Number(identity.id) : 0
   fromEmail.value = selected?.fromEmail || identity?.email || ''
+  if (identity && restrictAlias.value && !memberAliasAllowed(identity.email, fromEmail.value)) fromEmail.value = identity.email
   let content = ''
   if (original) {
     if (inboxStore.composeMode === 'draft') {
@@ -214,6 +224,7 @@ async function send() {
         error.value = 'Select a sender and enter valid recipient email addresses separated by commas.'; return
       }
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.fromEmail || '')) { error.value = 'Enter a valid From address on your verified domain.'; return }
+      if (aliasError.value) { error.value = aliasError.value; return }
       submissionPayload = { ...payload, draftId: draftId.value || undefined, draftVersion: draftVersion.value }
       submissionKey.value = crypto.randomUUID()
     }
@@ -300,9 +311,9 @@ onBeforeUnmount(() => { clearTimeout(saveTimer); editor.value?.destroy(); window
         <p v-if="!identities.length && initialized" class="px-4 py-3 text-sm bg-amber-50">Add a sending identity on a verified domain in <RouterLink to="/domains" class="underline">Domains</RouterLink>.</p>
         <fieldset :disabled="locked" class="min-h-0 flex-1 flex flex-col disabled:opacity-70">
           <div class="p-3 border-b space-y-2">
-            <label class="flex items-center gap-3 text-sm"><span class="w-12 shrink-0 text-gray-500">Identity</span><select v-model="selectedIdentityId" @change="identityChanged" class="flex-1 min-w-0 bg-white border rounded p-1"><option v-for="identity in identities" :key="identity.id" :value="Number(identity.id)">{{ identity.displayName }} &lt;{{ identity.email }}&gt;</option></select></label>
-            <label class="flex items-center gap-3 text-sm"><span class="w-12 shrink-0 text-gray-500">From</span><input v-model="fromEmail" type="email" class="flex-1 min-w-0 p-1 border-b" aria-label="Sender email or alias" /></label>
-            <p class="text-xs text-gray-500 pl-16">You can use an alias on this identity's verified domain.</p>
+            <label class="flex items-center gap-3 text-sm"><span class="w-12 shrink-0 text-gray-500">Identity</span><select v-model="selectedIdentityId" @change="identityChanged" class="flex-1 min-w-0 bg-white border rounded p-1"><option v-for="identity in identities" :key="identity.id" :value="Number(identity.id)">{{ identity.shared ? identity.sharedMailboxName || identity.displayName : identity.displayName }} &lt;{{ identity.email }}&gt;{{ identity.shared ? ' (shared)' : '' }}</option></select></label>
+            <label class="flex items-center gap-3 text-sm"><span class="w-12 shrink-0 text-gray-500">From</span><input v-model="fromEmail" type="email" class="flex-1 min-w-0 p-1 border-b" aria-label="Sender email or alias" :aria-invalid="!!aliasError" aria-describedby="compose-from-hint" /></label>
+            <p id="compose-from-hint" :class="['text-xs pl-16', aliasError ? 'text-red-700' : 'text-gray-500']">{{ aliasError || (restrictAlias ? 'You can add a +tag to this address, like name+tag@domain.' : "You can use an alias on this identity's verified domain.") }}</p>
           </div>
           <div class="px-3 py-2 border-b space-y-2">
             <div class="flex items-center gap-3 text-sm"><label for="compose-to" class="w-12 shrink-0 text-gray-500">To</label><input id="compose-to" ref="recipientInput" v-model="to" class="flex-1 min-w-0 outline-none" placeholder="Recipients, separated by commas" /><button type="button" @click="showCcBcc = !showCcBcc" class="text-blue-600">Cc/Bcc</button></div>

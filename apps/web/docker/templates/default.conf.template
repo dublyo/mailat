@@ -56,6 +56,25 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # The service worker must never be cached as an immutable asset: browsers
+    # only pick up a new worker when this response revalidates. Exact matches
+    # win over the static regex below. Under the SPA CSP, worker-src falls back
+    # to script-src 'self' and manifest-src to default-src 'self'.
+    location = /sw.js {
+        try_files /sw.js =404;
+        add_header Cache-Control "no-cache" always;
+        add_header Service-Worker-Allowed "/" always;
+        include /etc/nginx/snippets/spa-headers.conf;
+    }
+
+    location = /manifest.webmanifest {
+        types { }
+        default_type application/manifest+json;
+        try_files /manifest.webmanifest =404;
+        add_header Cache-Control "public, max-age=3600" always;
+        include /etc/nginx/snippets/spa-headers.conf;
+    }
+
     # Static assets caching
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
         expires 1y;

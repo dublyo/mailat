@@ -74,3 +74,15 @@ export function retainSendAttempt(status: number | undefined, wasUncertain: bool
   // happen. Keep the exact payload/key until a definitive result is obtained.
   return wasUncertain || status === undefined || status < 400 || status >= 500
 }
+
+/** Members may send only as the identity address or a +tag of it (the server enforces this). */
+export function memberAliasAllowed(identityEmail: string, alias: string): boolean {
+  const identity = identityEmail.trim().toLowerCase(), from = alias.trim().toLowerCase()
+  if (from === identity) return true
+  const at = identity.lastIndexOf('@')
+  if (at < 1) return false
+  const local = identity.slice(0, at), domain = identity.slice(at)
+  if (!from.startsWith(`${local}+`) || !from.endsWith(domain)) return false
+  const tag = from.slice(local.length + 1, from.length - domain.length)
+  return tag.length > 0 && !tag.includes('@')
+}

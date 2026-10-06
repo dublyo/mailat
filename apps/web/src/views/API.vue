@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useAuthStore } from '@/stores/auth'
 import {
   Copy, Key, Plus, Eye, EyeOff, Trash2, ChevronRight, ChevronDown,
   Send, Mail, Inbox, Globe, User, FileText, Bell, Tag, Filter,
@@ -9,10 +10,13 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import Badge from '@/components/common/Badge.vue'
 import Spinner from '@/components/common/Spinner.vue'
-import { apiKeyApi, API_KEY_PERMISSIONS, type ApiKey, type CreateApiKeyRequest } from '@/lib/api'
+import { apiKeyApi, isOrgAdmin, API_KEY_PERMISSIONS, type ApiKey, type CreateApiKeyRequest } from '@/lib/api'
 
 // State
 const apiKeys = ref<ApiKey[]>([])
+// API keys are owner/admin only on the server.
+const authStore = useAuthStore()
+const canManageKeys = computed(() => isOrgAdmin(authStore.user))
 const isLoading = ref(false)
 const error = ref('')
 
@@ -27,7 +31,7 @@ const isCreating = ref(false)
 const createdKey = ref<string | null>(null)
 
 // Sidebar navigation
-const activeSection = ref('keys')
+const activeSection = ref(canManageKeys.value ? 'keys' : 'getting-started')
 const expandedEndpoints = ref<Set<string>>(new Set(['transactional']))
 
 // API sections for documentation
@@ -171,7 +175,7 @@ function toggleSchema(event: Event, key: string) {
   if ((event.target as HTMLDetailsElement).open) expandedSchemas.value.add(key)
   else expandedSchemas.value.delete(key)
 }
-const apiSections = computed(() => [...documentationSections, {
+const apiSections = computed(() => [...documentationSections.filter(section => section.id !== 'keys' || canManageKeys.value), {
   id: 'reference', label: 'Full API Reference', icon: Code,
   description: 'All registered routes. Human administration and deprecated routes are marked.',
   endpoints: Object.entries(contract.value?.paths ?? {}).flatMap(([path, operations]) =>
@@ -414,7 +418,7 @@ function getEndpointExample(method: string, path: string): string {
 
 onMounted(() => {
   loadContract()
-  loadApiKeys()
+  if (canManageKeys.value) loadApiKeys()
 })
 </script>
 

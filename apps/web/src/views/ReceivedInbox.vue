@@ -108,12 +108,36 @@ async function downloadAttachment(attachment: ReceivedEmailAttachment) {
 async function load(force = false) {
   await Promise.all([mailbox.fetchEmails(identityId.value, { ...queryOptions.value, force }), mailbox.fetchCounts(identityId.value, force)])
 }
+// ?message=<uuid> (a push notification click) opens that message once; the
+// parameter is dropped so later navigation does not reopen it.
+let pendingMessage = ''
 watch(() => route.fullPath, () => {
+  const deepLink = typeof route.query.message === 'string' ? route.query.message : ''
+  if (deepLink) {
+    pendingMessage = deepLink
+    const { message: _message, ...query } = route.query
+    void router.replace({ path: route.path, query })
+    return
+  }
   closeEmail()
   mailbox.clearSelection()
   for (const key of Object.keys(filterForm.value) as (keyof typeof filterForm.value)[]) filterForm.value[key] = String(route.query[key] || '')
   void load()
+  if (pendingMessage) {
+    const uuid = pendingMessage
+    pendingMessage = ''
+    void openEmail({ uuid } as ReceivedEmail)
+  }
 }, { immediate: true })
+// A message deleted in another tab or device closes here too.
+watch(() => mailbox.currentEmail, (email) => {
+  if (!email && selectedUuid.value && !mailbox.detailLoading && !mailbox.error) selectedUuid.value = ''
+})
+function showNewMail() {
+  mailbox.newMailPill = false
+  void router.replace({ query: { ...route.query, page: undefined } })
+  if (mailbox.page <= 1) void load(true)
+}
 onMounted(() => {
   void Promise.all([domains.fetchIdentities(), domains.fetchDomains()])
   mailbox.connectSSE()
@@ -225,6 +249,7 @@ function formatDate(value: string, full = false) {
       <div v-if="chips.length && !selectedUuid" class="flex flex-wrap gap-2 px-3 py-2 border-b" aria-label="Active filters"><button v-for="chip in chips" :key="chip.key" @click="updateQuery({ [chip.key]: undefined })" class="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 text-xs px-3 py-1" :aria-label="`Remove ${chip.label}`">{{ chip.label }}<X class="w-3 h-3" /></button><button v-if="route.query.q && folder !== 'all'" @click="updateQuery({ folder: 'all' })" class="text-xs text-blue-600 underline">Search All Mail</button><button @click="clearFilters" class="text-xs text-gray-500 underline">Clear all</button></div>
       <div v-if="mailbox.error" role="alert" class="px-4 py-3 text-sm bg-red-50 text-red-700 flex gap-3"><span class="flex-1">{{ mailbox.error }}</span><button @click="selectedUuid ? mailbox.fetchEmail(selectedUuid) : load(true)" class="underline">Retry</button></div>
       <div v-if="mailbox.notice" role="status" class="px-4 py-2 text-sm bg-blue-50 text-blue-800 flex gap-3"><span class="flex-1">{{ mailbox.notice }}</span><button @click="mailbox.notice = ''" aria-label="Dismiss message"><X class="w-4 h-4" /></button></div>
+      <div v-if="mailbox.newMailPill && !selectedUuid" class="flex justify-center py-2 border-b"><button type="button" class="rounded-full bg-blue-600 text-white text-sm px-4 py-1 shadow" @click="showNewMail">New messages · Show</button></div>
       <div v-if="mailbox.isLoading" class="h-0.5 bg-blue-100 overflow-hidden"><div class="w-1/3 h-full bg-blue-500 animate-pulse" /></div>
       <div class="flex-1 flex min-h-0 overflow-hidden">
         <div :class="['overflow-y-auto min-w-0', selectedUuid ? 'hidden lg:block w-80 shrink-0 border-r' : 'flex-1']">

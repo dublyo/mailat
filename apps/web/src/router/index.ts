@@ -8,6 +8,10 @@ const router = createRouter({
     { path: '/forms', name: 'forms', component: () => import('@/views/SignupForms.vue'), meta: { requiresAuth: true } },
     { path: '/subscribe/confirm', name: 'signup-confirm', component: () => import('@/views/PublicSignup.vue'), meta: { publicSignup: true } },
     { path: '/subscribe/:uuid', name: 'public-signup', component: () => import('@/views/PublicSignup.vue'), meta: { publicSignup: true } },
+    // Public pages open from email links. They work signed in or out, and are
+    // never redirected; the session is still restored so the page knows who is here.
+    { path: '/invite', name: 'accept-invite', component: () => import('@/views/AcceptInvite.vue'), meta: { public: true } },
+    { path: '/forwards/verify', name: 'verify-forward', component: () => import('@/views/VerifyForward.vue'), meta: { public: true } },
     {
       path: '/',
       redirect: '/inbox'
@@ -128,6 +132,8 @@ router.beforeEach(async (to, _from, next) => {
   if (!authStore.isInitialized) {
     await authStore.checkAuth()
   }
+
+  if (to.meta.public) { next(); return }
 
   const requiresAuth = to.matched.some(record => record.meta.requiresAuth)
   const isGuestRoute = to.matched.some(record => record.meta.guest)
