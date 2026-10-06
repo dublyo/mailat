@@ -497,7 +497,7 @@
             "type": "integer"
           },
           "clickCount": {
-            "description": "unique clicks",
+            "description": "Unique recipients who clicked; a click also counts as an open.",
             "format": "int64",
             "type": "integer"
           },
@@ -566,7 +566,7 @@
             "type": "string"
           },
           "openCount": {
-            "description": "unique opens",
+            "description": "Unique recipients who opened; rates use sentCount as the denominator.",
             "format": "int64",
             "type": "integer"
           },
@@ -615,6 +615,14 @@
           },
           "status": {
             "description": "draft, scheduled, sending, paused, sent, cancelled",
+            "enum": [
+              "draft",
+              "scheduled",
+              "sending",
+              "paused",
+              "sent",
+              "cancelled"
+            ],
             "type": "string"
           },
           "statusReason": {
@@ -623,7 +631,7 @@
                 "type": "string"
               }
             ],
-            "description": "why it is paused, throttled or was reset",
+            "description": "Why the campaign is paused, throttled, reset or finished early: user_paused, sender_unavailable, provider_paused, provider_rejected, monthly_quota_exceeded, bounce_rate_high, complaint_rate_high, invalid_segment, no_postal_address, list_unavailable, ses_daily_quota, ses_throttled, no_eligible_recipients or legacy_requires_review.",
             "nullable": true
           },
           "subject": {
@@ -844,6 +852,13 @@
                 "type": "string"
               }
             ],
+            "description": "From SES feedback; only moves up delivered \u003c bounced \u003c complained.",
+            "enum": [
+              "delivered",
+              "bounced",
+              "complained",
+              null
+            ],
             "nullable": true
           },
           "email": {
@@ -876,9 +891,28 @@
                 "type": "string"
               }
             ],
+            "enum": [
+              "inactive",
+              "not_member",
+              "suppressed",
+              "contact_deleted",
+              "email_changed",
+              null
+            ],
             "nullable": true
           },
           "status": {
+            "description": "unknown means the outcome is uncertain; it is never retried.",
+            "enum": [
+              "pending",
+              "claimed",
+              "sending",
+              "sent",
+              "failed",
+              "unknown",
+              "skipped",
+              "cancelled"
+            ],
             "type": "string"
           },
           "unsubscribedAt": {
@@ -911,6 +945,8 @@
       "model.CampaignSettings": {
         "properties": {
           "postalAddress": {
+            "description": "Physical mailing address added to every campaign footer; required before sending. Newlines are kept.",
+            "maxLength": 500,
             "type": "string"
           }
         },
@@ -965,12 +1001,19 @@
       "model.CampaignTestRequest": {
         "properties": {
           "emails": {
+            "description": "Each address gets its own [Test] message without tracking. Suppressed addresses are rejected.",
             "items": {
+              "format": "email",
               "type": "string"
             },
+            "maxItems": 5,
+            "minItems": 1,
             "type": "array"
           }
         },
+        "required": [
+          "emails"
+        ],
         "type": "object"
       },
       "model.CampaignTestResponse": {
@@ -1307,6 +1350,7 @@
       "model.CreateCampaignRequest": {
         "properties": {
           "fromEmail": {
+            "description": "Exact address of a can_send identity the campaign creator owns on an active, SES-verified domain.",
             "format": "email",
             "type": "string"
           },
@@ -1348,6 +1392,7 @@
                 "type": "boolean"
               }
             ],
+            "default": true,
             "description": "default true",
             "nullable": true
           },
@@ -1357,6 +1402,7 @@
                 "type": "boolean"
               }
             ],
+            "default": true,
             "description": "default true",
             "nullable": true
           }
@@ -3094,12 +3140,14 @@
       "model.ScheduleCampaignRequest": {
         "properties": {
           "scheduledAt": {
-            "description": "RFC3339 timestamp; the offset sets the time zone",
+            "description": "RFC 3339 time between one minute and 365 days from now; its offset sets the time zone.",
+            "format": "date-time",
             "type": "string"
           },
           "timezone": {
             "default": "UTC",
-            "description": "ignored",
+            "deprecated": true,
+            "description": "Ignored; use the offset in scheduledAt.",
             "type": "string"
           }
         },
@@ -3509,6 +3557,8 @@
                 "type": "string"
               }
             ],
+            "description": "Exact address of a can_send identity the campaign creator owns on an active, SES-verified domain.",
+            "format": "email",
             "nullable": true
           },
           "fromName": {
@@ -3583,6 +3633,7 @@
                 "type": "boolean"
               }
             ],
+            "default": true,
             "nullable": true
           },
           "trackOpens": {
@@ -3591,6 +3642,7 @@
                 "type": "boolean"
               }
             ],
+            "default": true,
             "nullable": true
           }
         },

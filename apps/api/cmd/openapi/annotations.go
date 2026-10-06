@@ -352,6 +352,27 @@ func semanticConstraints(name string, s object) {
 		}
 	case "model.BatchSendRequest":
 		set("emails", object{"minItems": 1, "maxItems": 100})
+	case "model.Campaign":
+		set("status", object{"enum": []string{"draft", "scheduled", "sending", "paused", "sent", "cancelled"}})
+		set("statusReason", object{"nullable": true, "description": "Why the campaign is paused, throttled, reset or finished early: user_paused, sender_unavailable, provider_paused, provider_rejected, monthly_quota_exceeded, bounce_rate_high, complaint_rate_high, invalid_segment, no_postal_address, list_unavailable, ses_daily_quota, ses_throttled, no_eligible_recipients or legacy_requires_review."})
+		set("openCount", object{"description": "Unique recipients who opened; rates use sentCount as the denominator."})
+		set("clickCount", object{"description": "Unique recipients who clicked; a click also counts as an open."})
+	case "model.CreateCampaignRequest", "model.UpdateCampaignRequest":
+		set("trackOpens", object{"default": true})
+		set("trackClicks", object{"default": true})
+		set("fromEmail", object{"format": "email", "description": "Exact address of a can_send identity the campaign creator owns on an active, SES-verified domain."})
+	case "model.ScheduleCampaignRequest":
+		set("scheduledAt", object{"format": "date-time", "description": "RFC 3339 time between one minute and 365 days from now; its offset sets the time zone."})
+		set("timezone", object{"deprecated": true, "description": "Ignored; use the offset in scheduledAt."})
+	case "model.CampaignTestRequest":
+		s["required"] = []string{"emails"}
+		set("emails", object{"minItems": 1, "maxItems": 5, "items": object{"type": "string", "format": "email"}, "description": "Each address gets its own [Test] message without tracking. Suppressed addresses are rejected."})
+	case "model.CampaignSettings":
+		set("postalAddress", object{"maxLength": 500, "description": "Physical mailing address added to every campaign footer; required before sending. Newlines are kept."})
+	case "model.CampaignRecipient":
+		set("status", object{"enum": []string{"pending", "claimed", "sending", "sent", "failed", "unknown", "skipped", "cancelled"}, "description": "unknown means the outcome is uncertain; it is never retried."})
+		set("skipReason", object{"nullable": true, "enum": []any{"inactive", "not_member", "suppressed", "contact_deleted", "email_changed", nil}})
+		set("deliveryStatus", object{"nullable": true, "enum": []any{"delivered", "bounced", "complained", nil}, "description": "From SES feedback; only moves up delivered < bounced < complained."})
 	case "model.CreateApiKeyRequest":
 		s["required"] = []string{"name", "permissions"}
 		permissions := make([]string, 0, len(middleware.APIKeyPermissions))

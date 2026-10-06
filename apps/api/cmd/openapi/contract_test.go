@@ -154,3 +154,70 @@ func TestDMARCReportsFolderContract(t *testing.T) {
 		t.Fatal("list query omitted DMARC reports")
 	}
 }
+
+func TestCampaignContract(t *testing.T) {
+	paths, schemas := publishedContract(t)
+	op := func(path, method string) map[string]interface{} {
+		t.Helper()
+		verbs, ok := paths[path].(map[string]interface{})
+		if !ok || verbs[method] == nil {
+			t.Fatalf("missing %s %s", method, path)
+		}
+		return verbs[method].(map[string]interface{})
+	}
+	dataRef := func(o map[string]interface{}) string {
+		schema := o["responses"].(map[string]interface{})["200"].(map[string]interface{})["content"].(map[string]interface{})["application/json"].(map[string]interface{})["schema"].(map[string]interface{})
+		data := schema["properties"].(map[string]interface{})["data"].(map[string]interface{})
+		if all, ok := data["allOf"].([]interface{}); ok {
+			return all[0].(map[string]interface{})["$ref"].(string)
+		}
+		return ""
+	}
+	for _, tc := range []struct{ method, path, scope, ref string }{
+		{"get", "/api/v1/campaigns/{uuid}/progress", "campaigns:read", "model.CampaignProgressResponse"},
+		{"get", "/api/v1/campaigns/{uuid}/audience", "campaigns:read", "model.CampaignAudienceResponse"},
+		{"get", "/api/v1/campaigns/{uuid}/recipients", "campaigns:read", "model.CampaignRecipientListResponse"},
+		{"get", "/api/v1/campaigns/{uuid}/stats", "campaigns:read", "model.CampaignStatsResponse"},
+		{"post", "/api/v1/campaigns/{uuid}/preview", "campaigns:read", "model.CampaignPreviewResponse"},
+		{"post", "/api/v1/campaigns/{uuid}/test", "campaigns:manage", "model.CampaignTestResponse"},
+		{"post", "/api/v1/campaigns/{uuid}/cancel", "campaigns:manage", "model.Campaign"},
+		{"get", "/api/v1/campaign-settings", "campaigns:read", "model.CampaignSettings"},
+		{"put", "/api/v1/campaign-settings", "campaigns:manage", "model.CampaignSettings"},
+	} {
+		o := op(tc.path, tc.method)
+		if o["x-api-key-scope"] != tc.scope || o["x-mailat-backend"] != "ses" {
+			t.Errorf("%s %s: scope %v backend %v", tc.method, tc.path, o["x-api-key-scope"], o["x-mailat-backend"])
+		}
+		if got := dataRef(o); got != "#/components/schemas/"+tc.ref {
+			t.Errorf("%s %s returns %q", tc.method, tc.path, got)
+		}
+	}
+	key := false
+	for _, value := range op("/api/v1/campaigns/{uuid}/test", "post")["parameters"].([]interface{}) {
+		p := value.(map[string]interface{})
+		if p["name"] == "Idempotency-Key" {
+			key = p["in"] == "header" && p["required"] == true
+		}
+	}
+	if !key {
+		t.Fatal("test send must require an Idempotency-Key header")
+	}
+	emails := schemas["model.CampaignTestRequest"].(map[string]interface{})["properties"].(map[string]interface{})["emails"].(map[string]interface{})
+	if emails["minItems"] != float64(1) || emails["maxItems"] != float64(5) {
+		t.Fatal("test send recipient bounds missing")
+	}
+	campaign := schemas["model.Campaign"].(map[string]interface{})["properties"].(map[string]interface{})
+	for _, field := range []string{"trackOpens", "trackClicks", "statusReason", "preparedAt", "throttledUntil", "failedCount", "skippedCount", "unknownCount", "listType", "createdByUserId"} {
+		if campaign[field] == nil {
+			t.Errorf("campaign field missing: %s", field)
+		}
+	}
+	for _, legacy := range []string{"stats", "listIds", "htmlBody", "fromIdentityId"} {
+		if campaign[legacy] != nil {
+			t.Errorf("legacy campaign field still published: %s", legacy)
+		}
+	}
+	if !strings.Contains(op("/api/v1/campaigns", "post")["x-mailat-backend-note"].(string), "feedback") {
+		t.Fatal("campaign backend note must state the SES sender requirements")
+	}
+}
