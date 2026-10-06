@@ -413,6 +413,10 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 		if err = eventoutbox.Emit(ctx, tx, eventoutbox.Event{Type: "email.received", OrgID: ident.OrgID, UserID: ident.UserID, IdentityID: ident.ID, MessageUUID: emailUUID, DedupeKey: fmt.Sprintf("received:%s:%d", n.Mail.MessageId, ident.ID), Data: map[string]any{"from": email.FromEmail, "to": email.ToEmails, "subject": email.Subject, "folder": email.Folder, "inReplyTo": parsed.Header.Get("In-Reply-To"), "hasAttachments": email.HasAttachments}}); err != nil {
 			return err
 		}
+		if err = EnqueueArrivalJobs(ctx, tx, ArrivalInput{OrgID: ident.OrgID, IdentityID: ident.ID, IdentityEmail: strings.ToLower(ident.Email), Recipients: ident.Recipients,
+			Copies: []ArrivalCopy{{OwnerID: ident.UserID, EmailID: emailID, UUID: emailUUID, Folder: email.Folder}}, Header: parsed.Header, Notification: n, DMARCReport: isDMARCReport}); err != nil {
+			return fmt.Errorf("queue arrival jobs: %w", err)
+		}
 		saved[ident.ID] = email
 	}
 	if err = tx.Commit(); err != nil {

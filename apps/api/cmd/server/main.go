@@ -122,7 +122,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var recovery sync.WaitGroup
-	recovery.Add(6)
+	recovery.Add(7)
 	go func() { defer recovery.Done(); eventoutbox.Run(ctx, db) }()
 	go func() { defer recovery.Done(); service.RunDMARCReportBackfill(ctx, db, cfg) }()
 	go func() { defer recovery.Done(); worker.NewEmailHandler(db, cfg).RunPending(ctx) }()
@@ -133,6 +133,11 @@ func main() {
 		service.RunAutomationExecutor(ctx, db, cfg, service.NewAutomationMailer(db, cfg))
 	}()
 	go func() { defer recovery.Done(); service.RunAutomationMailer(ctx, db, cfg) }()
+	// Auto-replies, forwards and push run from jobs queued in the SES ingest transaction.
+	go func() {
+		defer recovery.Done()
+		service.NewArrivalRunner(db, cfg, service.NewTransactionalService(db, cfg, redis)).Run(ctx)
+	}()
 
 	// Start worker if enabled
 	var w *worker.Worker

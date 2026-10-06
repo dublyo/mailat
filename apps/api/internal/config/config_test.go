@@ -53,6 +53,8 @@ func TestValidate(t *testing.T) {
 		{"bad origin scheme", func(c *Config) { c.CORSOrigins = []string{"ftp://app.example.com"} }, "CORS_ORIGINS"},
 		{"bad origin bare host", func(c *Config) { c.CORSOrigins = []string{"app.example.com"} }, "CORS_ORIGINS"},
 		{"bad provider", func(c *Config) { c.EmailProvider = "sendgrid" }, "EMAIL_PROVIDER"},
+		{"auto-reply limit", func(c *Config) { c.AutoReplyDailyLimit = 50 }, ""},
+		{"bad auto-reply limit", func(c *Config) { c.AutoReplyDailyLimit = -1 }, "AUTO_REPLY_DAILY_LIMIT"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -77,6 +77,9 @@ type Config struct {
 	CampaignMaxSendRate     float64
 	CampaignSendConcurrency int
 
+	// Arrival features: replies one auto-reply rule may send per day (0 means 200).
+	AutoReplyDailyLimit int
+
 	// OAuth2 Providers (Phase 5.3)
 	GoogleClientID        string
 	GoogleClientSecret    string
@@ -107,6 +110,10 @@ func Load() (*Config, error) {
 	disableAppLimits, _ := strconv.ParseBool(getEnv("DISABLE_APP_LIMITS", "true"))
 	campaignMaxSendRate, _ := strconv.ParseFloat(getEnv("CAMPAIGN_MAX_SEND_RATE", "0"), 64)
 	campaignSendConcurrency, _ := strconv.Atoi(getEnv("CAMPAIGN_SEND_CONCURRENCY", "4"))
+	autoReplyDailyLimit, autoReplyErr := strconv.Atoi(getEnv("AUTO_REPLY_DAILY_LIMIT", "200"))
+	if autoReplyErr != nil {
+		autoReplyDailyLimit = -1
+	}
 
 	// Organization limits
 	defaultMaxDomains, _ := strconv.Atoi(getEnv("DEFAULT_MAX_DOMAINS", "0"))
@@ -170,6 +177,7 @@ func Load() (*Config, error) {
 
 		CampaignMaxSendRate:     max(campaignMaxSendRate, 0),
 		CampaignSendConcurrency: min(max(campaignSendConcurrency, 1), 16),
+		AutoReplyDailyLimit:     autoReplyDailyLimit,
 
 		// OAuth2 Providers
 		GoogleClientID:        getEnv("GOOGLE_CLIENT_ID", ""),
@@ -242,6 +250,9 @@ func (c *Config) Validate() error {
 		if !validOrigin(origin) {
 			add("CORS_ORIGINS entry %d must look like https://host[:port]", i+1)
 		}
+	}
+	if c.AutoReplyDailyLimit < 0 || c.AutoReplyDailyLimit > 10000 {
+		add("AUTO_REPLY_DAILY_LIMIT must be a whole number from 1 to 10000")
 	}
 	if c.EmailProvider != "ses" && c.EmailProvider != "smtp" {
 		add("EMAIL_PROVIDER must be ses or smtp")
