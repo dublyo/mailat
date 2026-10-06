@@ -1,8 +1,13 @@
 package controller
 
 import (
+	"context"
 	"encoding/base64"
+	"net/http"
+	"strings"
+	"time"
 
+	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
 
 	"github.com/dublyo/mailat/api/internal/middleware"
@@ -15,6 +20,10 @@ var transparentGIF = func() []byte {
 	return data
 }()
 
+// trackingTimeout bounds the synchronous event write; it is detached from the
+// request so a reader closing the connection does not abort the write.
+const trackingTimeout = 3 * time.Second
+
 type TrackingController struct {
 	trackingService *service.TrackingService
 }
@@ -23,23 +32,20 @@ func NewTrackingController(trackingService *service.TrackingService) *TrackingCo
 	return &TrackingController{trackingService: trackingService}
 }
 
-// TrackOpen handles email open tracking requests
+func trackingContext(r *ghttp.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.Context()), trackingTimeout)
+}
+
+// TrackOpen records a campaign open and always returns the 1x1 GIF.
 // GET /api/v1/tracking/open/:token.gif
 func (c *TrackingController) TrackOpen(r *ghttp.Request) {
-	token := r.Get("token").String()
-	// Remove .gif extension if present
-	if len(token) > 4 && token[len(token)-4:] == ".gif" {
-		token = token[:len(token)-4]
+	token := strings.TrimSuffix(r.Get("token").String(), ".gif")
+	ctx, cancel := trackingContext(r)
+	if err := c.trackingService.ProcessOpenEvent(ctx, token, middleware.ClientIP(r), r.Header.Get("User-Agent")); err != nil {
+		g.Log().Warningf(ctx, "tracking open: %v", err)
 	}
+	cancel()
 
-	// Get client info
-	ipAddress := middleware.ClientIP(r)
-	userAgent := r.Header.Get("User-Agent")
-
-	// Process the open event (fire and forget)
-	go c.trackingService.ProcessOpenEvent(r.Context(), token, ipAddress, userAgent)
-
-	// Return transparent 1x1 GIF
 	r.Response.Header().Set("Content-Type", "image/gif")
 	r.Response.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
 	r.Response.Header().Set("Pragma", "no-cache")
@@ -47,23 +53,19 @@ func (c *TrackingController) TrackOpen(r *ghttp.Request) {
 	r.Response.Write(transparentGIF)
 }
 
-// TrackClick handles link click tracking requests
+// TrackClick records a campaign click and redirects (302) to the signed
+// http(s) target, or to the web app when the token is invalid.
 // GET /api/v1/tracking/click/:token
 func (c *TrackingController) TrackClick(r *ghttp.Request) {
-	token := r.Get("token").String()
-
-	// Get client info
-	ipAddress := middleware.ClientIP(r)
-	userAgent := r.Header.Get("User-Agent")
-
-	// Process the click event and get the target URL
-	targetURL, err := c.trackingService.ProcessClickEvent(r.Context(), token, ipAddress, userAgent)
-	if err != nil || targetURL == "" {
-		// Fallback to a generic page if decoding fails
-		r.Response.RedirectTo("/")
-		return
+	ctx, cancel := trackingContext(r)
+	target, err := c.trackingService.ProcessClickEvent(ctx, r.Get("token").String(), middleware.ClientIP(r), r.Header.Get("User-Agent"))
+	if err != nil {
+		g.Log().Warningf(ctx, "tracking click: %v", err)
 	}
-
-	// Redirect to the original URL
-	r.Response.RedirectTo(targetURL)
+	cancel()
+	if target == "" {
+		target = c.trackingService.HomeURL()
+	}
+	r.Response.Header().Set("Cache-Control", "no-store")
+	r.Response.RedirectTo(target, http.StatusFound)
 }
