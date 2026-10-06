@@ -15,13 +15,15 @@ import (
 	"github.com/dublyo/mailat/api/internal/service"
 )
 
+// Swagger UI assets are pinned to an exact version with SRI hashes, computed via
+// curl <asset> | openssl dgst -sha384 -binary | base64. Bump all three together.
 const swaggerUIHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>mailat.co API Documentation</title>
-  <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5.33.1/swagger-ui.css" integrity="sha384-Ov4/wv3j2bmct8cDc5X4ngJZohVPzEmc6uDPH8WeljUxO5vtoykvMEfbu9Vh6RaW" crossorigin="anonymous">
   <style>
     html { box-sizing: border-box; overflow: -moz-scrollbars-vertical; overflow-y: scroll; }
     *, *:before, *:after { box-sizing: inherit; }
@@ -33,8 +35,8 @@ const swaggerUIHTML = `<!DOCTYPE html>
 </head>
 <body>
   <div id="swagger-ui"></div>
-  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+  <script src="https://unpkg.com/swagger-ui-dist@5.33.1/swagger-ui-bundle.js" integrity="sha384-ZPehFMQommnnuaZ4rpxgkgTT2DKFVp4hZC/7pLit+9Lek9T1YGSo23eHFbvNkXkw" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/swagger-ui-dist@5.33.1/swagger-ui-standalone-preset.js" integrity="sha384-My2aDM4r2Mbm3ybHcubKm9O9U8FEjvF/O5nGvE9YK5dzqOTbWEKa79RPJ1krdMaF" crossorigin="anonymous"></script>
   <script>
     window.onload = function() {
       window.ui = SwaggerUIBundle({
@@ -148,8 +150,9 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 	sesWebhookCtrl := controller.NewSESWebhookController(receivingService)
 	receivedInboxCtrl := controller.NewReceivedInboxController(inboxService, receivingService)
 
-	// CORS middleware
-	s.Use(ghttp.MiddlewareCORS)
+	// CORS: wildcard only for public token/form routes; authenticated routes
+	// echo WEB_URL and CORS_ORIGINS only.
+	s.Use(middleware.CORS)
 
 	// Swagger/OpenAPI documentation
 	s.Group("/docs", func(group *ghttp.RouterGroup) {

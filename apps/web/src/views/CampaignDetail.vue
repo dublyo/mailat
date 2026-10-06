@@ -68,13 +68,21 @@ const stats = ref<CampaignStats | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
 const refreshing = ref(false)
-const sseProgress = ref<{ sent: number; total: number; percent: number } | null>(null)
 
-// SSE connection for real-time progress
-let eventSource: EventSource | null = null
+// While a campaign is sending, poll with the normal bearer header. The old event
+// stream put the JWT in the URL and pointed at an endpoint that never existed.
+const POLL_INTERVAL_MS = 5000
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 // Computed
 const uuid = computed(() => route.params.uuid as string)
+
+const sendProgress = computed(() => {
+  const total = stats.value?.total ?? 0
+  if (!total) return null
+  const sent = Math.min(stats.value?.sent ?? 0, total)
+  return { sent, total, percent: Math.round((sent / total) * 100) }
+})
 
 const statusConfig = computed(() => {
   const configs: Record<string, { bg: string; text: string; icon: any; label: string }> = {
@@ -417,42 +425,25 @@ const formatNumber = (num: number) => {
   return num.toString()
 }
 
-// Setup SSE for real-time progress when campaign is sending
-const setupSSE = () => {
-  if (campaign.value?.status !== 'sending') return
-
-  const token = localStorage.getItem('token')
-  if (!token) return
-
-  eventSource = new EventSource(`/api/v1/campaigns/${uuid.value}/progress?token=${token}`)
-
-  eventSource.onmessage = (event) => {
-    const data = JSON.parse(event.data)
-    if (data.type === 'progress') {
-      sseProgress.value = {
-        sent: data.sent,
-        total: data.total,
-        percent: Math.round((data.sent / data.total) * 100)
-      }
-      if (stats.value) {
-        stats.value.sent = data.sent
-      }
-    } else if (data.type === 'complete') {
-      sseProgress.value = null
-      fetchCampaign()
-    }
-  }
-
-  eventSource.onerror = () => {
-    eventSource?.close()
-    eventSource = null
+// Silent refresh: no loading state, so the page doesn't flash every poll.
+const pollCampaign = async () => {
+  try {
+    const [latest] = await Promise.all([campaignApi.get(uuid.value), fetchStats()])
+    campaign.value = latest
+  } catch (e) {
+    console.error('Failed to refresh campaign:', e)
   }
 }
 
-const cleanupSSE = () => {
-  if (eventSource) {
-    eventSource.close()
-    eventSource = null
+const startPolling = () => {
+  if (pollTimer) return
+  pollTimer = setInterval(pollCampaign, POLL_INTERVAL_MS)
+}
+
+const stopPolling = () => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
   }
 }
 
@@ -462,15 +453,14 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  cleanupSSE()
+  stopPolling()
 })
 
 watch(() => campaign.value?.status, (newStatus) => {
   if (newStatus === 'sending') {
-    setupSSE()
+    startPolling()
   } else {
-    cleanupSSE()
-    sseProgress.value = null
+    stopPolling()
   }
 })
 </script>
@@ -549,21 +539,21 @@ watch(() => campaign.value?.status, (newStatus) => {
           </div>
 
           <!-- Progress bar for sending campaigns -->
-          <div v-if="campaign.status === 'sending' && sseProgress" class="mt-4">
+          <div v-if="campaign.status === 'sending' && sendProgress" class="mt-4">
             <div class="flex items-center justify-between text-sm text-gray-600 mb-1.5">
               <span class="flex items-center gap-2">
                 <Activity class="w-4 h-4 text-blue-500 animate-pulse" />
                 Sending in progress...
               </span>
               <span class="font-medium">
-                {{ sseProgress.sent.toLocaleString() }} / {{ sseProgress.total.toLocaleString() }}
-                <span class="text-blue-600">({{ sseProgress.percent }}%)</span>
+                {{ sendProgress.sent.toLocaleString() }} / {{ sendProgress.total.toLocaleString() }}
+                <span class="text-blue-600">({{ sendProgress.percent }}%)</span>
               </span>
             </div>
             <div class="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
               <div
                 class="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-500 ease-out"
-                :style="{ width: `${sseProgress.percent}%` }"
+                :style="{ width: `${sendProgress.percent}%` }"
               />
             </div>
           </div>

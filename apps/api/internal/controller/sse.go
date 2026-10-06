@@ -47,7 +47,6 @@ func (c *SSEController) Connect(r *ghttp.Request) {
 	r.Response.Header().Set("Content-Type", "text/event-stream")
 	r.Response.Header().Set("Cache-Control", "no-cache")
 	r.Response.Header().Set("Connection", "keep-alive")
-	r.Response.Header().Set("Access-Control-Allow-Origin", "*")
 	r.Response.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
 	// Create client channel

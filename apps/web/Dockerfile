@@ -18,8 +18,14 @@ RUN npm run build
 # Production stage
 FROM nginx:alpine
 
-# Copy nginx config
-COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+# nginx config: the image's entrypoint renders /etc/nginx/templates/*.template
+# into /etc/nginx/conf.d at start. Only MAILAT_* variables are substituted.
+COPY docker/templates/ /etc/nginx/templates/
+COPY docker/snippets/ /etc/nginx/snippets/
+# Extra connect-src origins for the SPA CSP, e.g. "https://api.example.com"
+# when VITE_API_URL points at a separate API domain.
+ENV MAILAT_CSP_CONNECT_SRC=""
+ENV NGINX_ENVSUBST_FILTER="^MAILAT_"
 
 # Copy built files
 COPY --from=builder /app/dist /usr/share/nginx/html
@@ -28,6 +34,7 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 RUN adduser -D -g '' appuser && \
     chown -R appuser:appuser /var/cache/nginx && \
     chown -R appuser:appuser /var/log/nginx && \
+    chown -R appuser:appuser /etc/nginx/conf.d && \
     touch /var/run/nginx.pid && \
     chown -R appuser:appuser /var/run/nginx.pid
 

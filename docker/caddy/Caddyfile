@@ -20,12 +20,13 @@
         reverse_proxy web:80
     }
 
-    # Security headers
+    # Security headers. Framing and CSP are owned by the web container's nginx,
+    # which lets only /subscribe/ be embedded; a frame header here would break it.
+    # "?" only fills a header the upstream did not set (keeps /subscribe/'s
+    # stricter no-referrer).
     header {
-        X-Frame-Options "SAMEORIGIN"
-        X-Content-Type-Options "nosniff"
-        X-XSS-Protection "1; mode=block"
-        Referrer-Policy "strict-origin-when-cross-origin"
+        ?X-Content-Type-Options "nosniff"
+        ?Referrer-Policy "strict-origin-when-cross-origin"
     }
 
     # Compression
@@ -36,11 +37,9 @@
 {$API_DOMAIN:api.localhost} {
     reverse_proxy api:8000
 
+    # CORS is answered by the API itself (WEB_URL + CORS_ORIGINS allowlist).
     header {
         X-Content-Type-Options "nosniff"
-        Access-Control-Allow-Origin "*"
-        Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-        Access-Control-Allow-Headers "Authorization, Content-Type"
     }
 
     encode gzip zstd
