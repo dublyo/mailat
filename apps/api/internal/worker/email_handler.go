@@ -171,9 +171,18 @@ func (h *EmailHandler) finishEmail(id int64, status, details, providerID string,
 		return err
 	}
 	defer tx.Rollback()
+	if err = h.finishEmailTx(ctx, tx, id, status, details, providerID, payload); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// finishEmailTx records a terminal outcome, its delivery event and the outbox
+// event inside the caller's transaction.
+func (h *EmailHandler) finishEmailTx(ctx context.Context, tx *sql.Tx, id int64, status, details, providerID string, payload *EmailSendPayload) error {
 	var org, user, identity int64
 	var messageUUID, current string
-	err = tx.QueryRowContext(ctx, `UPDATE transactional_emails SET
+	err := tx.QueryRowContext(ctx, `UPDATE transactional_emails SET
  status=CASE WHEN status IN ('delivered','bounced','complained','opened','clicked') THEN status ELSE $2 END,
  sent_at=CASE WHEN $2='sent' THEN COALESCE(sent_at,NOW()) ELSE sent_at END,
  provider_message_id=COALESCE(NULLIF($3,''),provider_message_id),email_provider=$4,updated_at=NOW()
@@ -197,10 +206,7 @@ func (h *EmailHandler) finishEmail(id int64, status, details, providerID string,
 		data["to"] = payload.To
 		data["subject"] = payload.Subject
 	}
-	if err = eventoutbox.Emit(ctx, tx, eventoutbox.Event{Type: "email." + status, OrgID: org, UserID: user, IdentityID: identity, MessageUUID: messageUUID, DedupeKey: status + ":" + messageUUID, Data: data}); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return eventoutbox.Emit(ctx, tx, eventoutbox.Event{Type: "email." + status, OrgID: org, UserID: user, IdentityID: identity, MessageUUID: messageUUID, DedupeKey: status + ":" + messageUUID, Data: data})
 }
 
 // deferEmail re-queues a throttled claim with a backoff. A throttle proves SES did
@@ -220,7 +226,9 @@ func (h *EmailHandler) deferEmail(_ context.Context, payload *EmailSendPayload, 
 	defer tx.Rollback()
 	var attempts int
 	var expired bool
-	err = tx.QueryRowContext(ctx, `SELECT send_attempts+1, created_at<NOW()-INTERVAL '24 hours' FROM transactional_emails WHERE id=$1 AND status='sending' FOR UPDATE`, payload.EmailID).Scan(&attempts, &expired)
+	// Age counts from when the message became due, so a send scheduled days
+	// ahead still gets the full retry window.
+	err = tx.QueryRowContext(ctx, `SELECT send_attempts+1, GREATEST(created_at,COALESCE(scheduled_for,created_at))<NOW()-INTERVAL '24 hours' FROM transactional_emails WHERE id=$1 AND status='sending' FOR UPDATE`, payload.EmailID).Scan(&attempts, &expired)
 	if err == sql.ErrNoRows {
 		return nil // a concurrent terminal state won
 	}
@@ -228,13 +236,15 @@ func (h *EmailHandler) deferEmail(_ context.Context, payload *EmailSendPayload, 
 		return err
 	}
 	if attempts >= maxSendAttempts || expired {
+		// One transaction: the row must never be left in 'sending', where the
+		// stale sweep would wrongly mark a never-sent message 'unknown'.
 		if _, err = tx.ExecContext(ctx, `UPDATE transactional_emails SET send_attempts=$2,last_deferral_reason=$3 WHERE id=$1`, payload.EmailID, attempts, reason); err != nil {
 			return err
 		}
-		if err = tx.Commit(); err != nil {
+		if err = h.finishEmailTx(ctx, tx, payload.EmailID, "failed", throttleGiveUp, "", payload); err != nil {
 			return err
 		}
-		return h.finishEmail(payload.EmailID, "failed", throttleGiveUp, "", payload)
+		return tx.Commit()
 	}
 	delay := backoff(attempts, quota, rand.Float64)
 	if _, err = tx.ExecContext(ctx, `UPDATE transactional_emails SET status='queued',next_attempt_at=NOW()+make_interval(secs=>$2),send_attempts=$3,last_deferral_reason=$4,updated_at=NOW() WHERE id=$1 AND status='sending'`, payload.EmailID, delay.Seconds(), attempts, reason); err != nil {

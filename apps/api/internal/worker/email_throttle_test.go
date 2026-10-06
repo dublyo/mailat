@@ -164,6 +164,48 @@ func TestWorkerDefersThrottledSendsWithoutDuplicates(t *testing.T) {
 		}
 	})
 
+	t.Run("scheduled send measures age from scheduled_for", func(t *testing.T) {
+		// Created three days ago, scheduled two days after creation: due for a day only.
+		id := queue("scheduled")
+		if _, err := db.Exec(`UPDATE transactional_emails SET created_at=NOW()-INTERVAL '3 days',scheduled_for=NOW()-INTERVAL '1 day'+INTERVAL '1 minute' WHERE id=$1`, id); err != nil {
+			t.Fatal(err)
+		}
+		handler := &EmailHandler{db: db, cfg: &config.Config{}, emailProvider: &scriptedProvider{errs: []error{&types.TooManyRequestsException{}}}}
+		if err := handler.RecoverPending(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var status string
+		var attempts int
+		if err := db.QueryRow(`SELECT status,send_attempts FROM transactional_emails WHERE id=$1`, id).Scan(&status, &attempts); err != nil {
+			t.Fatal(err)
+		}
+		if status != "queued" || attempts != 1 {
+			t.Fatalf("status=%s attempts=%d, want a deferral", status, attempts)
+		}
+	})
+
+	t.Run("give-up is atomic and never left sending", func(t *testing.T) {
+		id := queue("atomic")
+		if _, err := db.Exec(`UPDATE transactional_emails SET send_attempts=9 WHERE id=$1`, id); err != nil {
+			t.Fatal(err)
+		}
+		handler := &EmailHandler{db: db, cfg: &config.Config{}, emailProvider: &scriptedProvider{errs: []error{&types.TooManyRequestsException{}}}}
+		if err := handler.RecoverPending(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var status, reason string
+		var attempts, failedEvents, outbox int
+		if err := db.QueryRow(`SELECT status,send_attempts,last_deferral_reason,
+			(SELECT count(*) FROM transactional_delivery_events WHERE email_id=$1 AND event_type='failed'),
+			(SELECT count(*) FROM webhook_events WHERE event_type='email.failed' AND org_id=$2 AND dedupe_key='failed:'||transactional_emails.uuid::text)
+			FROM transactional_emails WHERE id=$1`, id, org).Scan(&status, &attempts, &reason, &failedEvents, &outbox); err != nil {
+			t.Fatal(err)
+		}
+		if status != "failed" || attempts != 10 || reason == "" || failedEvents != 1 || outbox != 1 {
+			t.Fatalf("status=%s attempts=%d reason=%q failedEvents=%d outbox=%d", status, attempts, reason, failedEvents, outbox)
+		}
+	})
+
 	t.Run("timeout stays unknown", func(t *testing.T) {
 		id := queue("timeout")
 		fake := &scriptedProvider{errs: []error{context.DeadlineExceeded}}
