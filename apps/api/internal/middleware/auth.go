@@ -12,6 +12,7 @@ import (
 	"github.com/dublyo/mailat/api/pkg/response"
 	"github.com/gogf/gf/v2/net/ghttp"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"strings"
 	"time"
@@ -79,7 +80,8 @@ func validateJWT(r *ghttp.Request, raw string, query bool) {
 		return
 	}
 	user := &model.JWTClaims{}
-	err = database.DB.QueryRowContext(r.Context(), `SELECT u.id,u.org_id,u.email,u.role FROM user_sessions s JOIN users u ON u.id=s.user_id AND u.org_id=s.org_id WHERE s.token_hash=$1 AND s.active AND s.expires_at>now() AND u.status='active' AND u.id=$2 AND u.org_id=$3`, hash, claims.UserID, claims.OrgID).Scan(&user.UserID, &user.OrgID, &user.Email, &user.Role)
+	var sessionExpires time.Time
+	err = database.DB.QueryRowContext(r.Context(), `SELECT u.id,u.org_id,u.email,u.role,s.expires_at FROM user_sessions s JOIN users u ON u.id=s.user_id AND u.org_id=s.org_id WHERE s.token_hash=$1 AND s.active AND s.expires_at>now() AND u.status='active' AND u.id=$2 AND u.org_id=$3`, hash, claims.UserID, claims.OrgID).Scan(&user.UserID, &user.OrgID, &user.Email, &user.Role, &sessionExpires)
 	if err != nil {
 		if err != sql.ErrNoRows {
 			response.InternalError(r, "Unable to validate session")
@@ -88,8 +90,27 @@ func validateJWT(r *ghttp.Request, raw string, query bool) {
 		}
 		return
 	}
+	expires := claims.ExpiresAt.Time
+	if query {
+		// A ticket only opens the stream. It is redeemed once, and the open
+		// stream then lives as long as its parent session.
+		if _, err = uuid.Parse(claims.ID); err != nil {
+			response.Unauthorized(r, "Invalid or expired token")
+			return
+		}
+		res, err := database.DB.ExecContext(r.Context(), `INSERT INTO stream_ticket_redemptions(jti,user_id,expires_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, claims.ID, user.UserID, claims.ExpiresAt.Time)
+		if err != nil {
+			response.InternalError(r, "Unable to validate session")
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			response.Unauthorized(r, "Stream ticket already used")
+			return
+		}
+		expires = sessionExpires
+	}
 	ctx := context.WithValue(r.Context(), ClaimsContextKey, user)
-	ctx = context.WithValue(ctx, credentialContextKey, credential{SessionHash: hash, ExpiresAt: claims.ExpiresAt.Time})
+	ctx = context.WithValue(ctx, credentialContextKey, credential{SessionHash: hash, ExpiresAt: expires})
 	r.SetCtx(ctx)
 	r.Middleware.Next()
 }

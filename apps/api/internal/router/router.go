@@ -141,8 +141,10 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 	orgCtrl := controller.NewOrgController(orgMemberService, rateLimiter)
 
 	// Email Receiving controllers
-	sseCtrl := controller.NewSSEController()
-	receivingService.SetNotifier(sseCtrl.NotifyNewEmail)
+	// Live updates: the mailbox_changes trigger NOTIFYs every replica's listener.
+	mailboxNotifier := service.NewMailboxNotifier(cfg.DatabaseURL)
+	sseCtrl := controller.NewSSEController(mailboxNotifier, inboxService, cfg.SSEMaxConnections)
+	go mailboxNotifier.Run(ctx)
 	go receivingService.RunStorageCleanup(ctx)
 	go inboxService.RunChangeRetention(ctx)
 	sesWebhookCtrl := controller.NewSESWebhookController(receivingService)

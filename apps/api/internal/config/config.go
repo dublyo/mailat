@@ -85,6 +85,8 @@ type Config struct {
 	ForwardDailyLimit int
 	// Hours an organization invite link stays valid (0 means 168).
 	InviteTTLHours int
+	// Open live-update streams one API replica accepts (0 means 5000).
+	SSEMaxConnections int
 
 	// OAuth2 Providers (Phase 5.3)
 	GoogleClientID        string
@@ -131,6 +133,11 @@ func Load() (*Config, error) {
 	inviteTTLHours, inviteTTLErr := strconv.Atoi(getEnv("INVITE_TTL_HOURS", "168"))
 	if inviteTTLErr != nil {
 		inviteTTLHours = -1
+	}
+
+	sseMaxConnections, sseMaxErr := strconv.Atoi(getEnv("SSE_MAX_CONNECTIONS", "5000"))
+	if sseMaxErr != nil {
+		sseMaxConnections = -1
 	}
 
 	// Organization limits
@@ -199,6 +206,7 @@ func Load() (*Config, error) {
 		ForwardMaxBytes:         forwardMaxBytes,
 		ForwardDailyLimit:       forwardDailyLimit,
 		InviteTTLHours:          inviteTTLHours,
+		SSEMaxConnections:       sseMaxConnections,
 
 		// OAuth2 Providers
 		GoogleClientID:        getEnv("GOOGLE_CLIENT_ID", ""),
@@ -284,6 +292,9 @@ func (c *Config) Validate() error {
 	}
 	if c.InviteTTLHours < 0 || c.InviteTTLHours > 720 {
 		add("INVITE_TTL_HOURS must be a whole number from 1 to 720")
+	}
+	if c.SSEMaxConnections < 0 || c.SSEMaxConnections > 100000 {
+		add("SSE_MAX_CONNECTIONS must be a whole number from 1 to 100000")
 	}
 	if c.EmailProvider != "ses" && c.EmailProvider != "smtp" {
 		add("EMAIL_PROVIDER must be ses or smtp")

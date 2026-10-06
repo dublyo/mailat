@@ -637,7 +637,7 @@ func customize(op object, verb, path string) {
 		op["responses"].(object)["200"] = object{"description": "Private attachment bytes", "content": object{"application/octet-stream": object{"schema": object{"type": "string", "format": "binary"}}}}
 	}
 	if path == "/sse/connect" {
-		op["description"] = "Browser clients obtain a 60-second stream ticket from POST /auth/stream-token. Headless clients use Bearer API keys with email:read. Stream tickets cannot call other endpoints."
+		op["description"] = "Browser clients obtain a 60-second, single-use stream ticket from POST /auth/stream-token for every (re)connect; a reused ticket returns 401. The open stream lives as long as the session (or API key) and closes when it is revoked. Headless clients use Bearer API keys with email:read. Stream tickets cannot call other endpoints. Events (JSON {type,data}): connected{clientId,cursor}; new_email{cursor,uuid,identityId,summary}, email_update{cursor,uuid,summary} and email_deleted{cursor,uuids}, each with SSE id = cursor; counts_update{counts}; resync{cursor,reason} (expired or ahead cursor, or more than 500 pending changes: reload and adopt the cursor); heartbeat. 503 when the server's connection limit is reached; each user keeps at most 10 streams (the oldest is closed)."
 		op["responses"].(object)["200"] = object{"description": "Event stream", "content": object{"text/event-stream": object{"schema": object{"type": "string"}}}}
 	}
 	if path == "/rules" || strings.HasPrefix(path, "/rules/") {

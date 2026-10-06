@@ -69031,13 +69031,22 @@
     },
     "/api/v1/sse/connect": {
       "get": {
-        "description": "Browser clients obtain a 60-second stream ticket from POST /auth/stream-token. Headless clients use Bearer API keys with email:read. Stream tickets cannot call other endpoints.",
+        "description": "Browser clients obtain a 60-second, single-use stream ticket from POST /auth/stream-token for every (re)connect; a reused ticket returns 401. The open stream lives as long as the session (or API key) and closes when it is revoked. Headless clients use Bearer API keys with email:read. Stream tickets cannot call other endpoints. Events (JSON {type,data}): connected{clientId,cursor}; new_email{cursor,uuid,identityId,summary}, email_update{cursor,uuid,summary} and email_deleted{cursor,uuids}, each with SSE id = cursor; counts_update{counts}; resync{cursor,reason} (expired or ahead cursor, or more than 500 pending changes: reload and adopt the cursor); heartbeat. 503 when the server's connection limit is reached; each user keeps at most 10 streams (the oldest is closed).",
         "operationId": "get_api_v1_sse_connect",
         "parameters": [
           {
             "description": "Browser-only short-lived stream ticket from POST /auth/stream-token. Never place a session JWT or API key here. Headless integrations use Authorization: Bearer with email:read instead.",
             "in": "query",
             "name": "token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Mailbox change cursor to resume from (from GET /inbox/changes or the last event id), or now (the default) to start at the current position.",
+            "in": "query",
+            "name": "cursor",
             "required": false,
             "schema": {
               "type": "string"

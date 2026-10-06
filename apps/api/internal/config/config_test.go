@@ -58,6 +58,8 @@ func TestValidate(t *testing.T) {
 		{"forward limits", func(c *Config) { c.ForwardMaxBytes, c.ForwardDailyLimit = 1<<20, 50 }, ""},
 		{"bad forward size", func(c *Config) { c.ForwardMaxBytes = 11 << 20 }, "FORWARD_MAX_BYTES"},
 		{"bad forward limit", func(c *Config) { c.ForwardDailyLimit = -1 }, "FORWARD_DAILY_LIMIT"},
+		{"sse connections", func(c *Config) { c.SSEMaxConnections = 200 }, ""},
+		{"bad sse connections", func(c *Config) { c.SSEMaxConnections = -1 }, "SSE_MAX_CONNECTIONS"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

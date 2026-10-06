@@ -1,9 +1,15 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"sort"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
@@ -11,234 +17,439 @@ import (
 
 	"github.com/dublyo/mailat/api/internal/middleware"
 	"github.com/dublyo/mailat/api/internal/model"
+	"github.com/dublyo/mailat/api/internal/service"
+	"github.com/dublyo/mailat/api/pkg/response"
 )
 
-// SSEController handles Server-Sent Events for real-time notifications
-type SSEController struct {
-	clients     map[int64]map[string]chan *SSEEvent // userID -> clientID -> channel
-	clientsLock sync.RWMutex
+// Live updates replay the durable mailbox_changes feed. A wakeup (NOTIFY from
+// any replica, or a fallback poll) only tells a stream to read the feed from its
+// cursor, so a reconnecting client resumes exactly where it stopped.
+const (
+	sseUserCap         = 10
+	sseDefaultMaxConns = 5000
+	sseBatch           = 200
+	sseResyncPending   = 500
+	sseHeartbeat       = 25 * time.Second
+	sseCredentialCheck = 60 * time.Second
+	ssePollHealthy     = 60 * time.Second
+	ssePollUnhealthy   = 5 * time.Second
+	sseCountsDebounce  = 500 * time.Millisecond
+	sseResyncExpired   = "expired"
+	sseResyncAhead     = "ahead"
+	sseResyncTooMany   = "too-many-changes"
+)
+
+// mailboxFeed is the part of InboxService the hub reads.
+type mailboxFeed interface {
+	Changes(ctx context.Context, userID int64, cursor string, limit int) (*service.MailboxChanges, error)
+	MailboxSummaries(ctx context.Context, userID int64, uuids []string) (map[string]model.ReceivedEmail, error)
+	GetReceivedEmailCounts(ctx context.Context, userID, identityID int64) (*model.InboxCountsResponse, error)
 }
 
-// SSEEvent represents an event to be sent to clients
+// mailboxWakeups delivers change hints; *service.MailboxNotifier implements it.
+type mailboxWakeups interface {
+	SetHandlers(onUser func(int64), onAll func())
+	Healthy() bool
+}
+
+// SSEEvent is the JSON body of one stream event.
 type SSEEvent struct {
-	Type       string      `json:"type"`
-	Data       interface{} `json:"data"`
-	IdentityID int64       `json:"identityId,omitempty"`
+	Type string      `json:"type"`
+	Data interface{} `json:"data"`
 }
 
-// NewSSEController creates a new SSE controller
-func NewSSEController() *SSEController {
-	return &SSEController{
-		clients: make(map[int64]map[string]chan *SSEEvent),
+type sseClient struct {
+	id      string
+	userID  int64
+	wake    chan struct{}
+	evicted chan struct{}
+	once    sync.Once
+}
+
+func (c *sseClient) evict() { c.once.Do(func() { close(c.evicted) }) }
+
+func (c *sseClient) poke() {
+	select {
+	case c.wake <- struct{}{}:
+	default:
 	}
 }
 
-// Connect handles SSE connection requests
-// GET /api/v1/sse/connect
+// SSEController is the per-replica live-update hub.
+type SSEController struct {
+	feed     mailboxFeed
+	wakeups  mailboxWakeups
+	maxConns int
+	seq      atomic.Int64
+
+	mu    sync.Mutex
+	users map[int64][]*sseClient // oldest first
+	total int
+
+	// Timings; tests shorten them.
+	heartbeat, credentialCheck, pollHealthy, pollUnhealthy, countsDebounce time.Duration
+}
+
+func NewSSEController(wakeups mailboxWakeups, feed mailboxFeed, maxConns int) *SSEController {
+	if maxConns <= 0 {
+		maxConns = sseDefaultMaxConns
+	}
+	c := &SSEController{
+		feed: feed, wakeups: wakeups, maxConns: maxConns, users: map[int64][]*sseClient{},
+		heartbeat: sseHeartbeat, credentialCheck: sseCredentialCheck,
+		pollHealthy: ssePollHealthy, pollUnhealthy: ssePollUnhealthy, countsDebounce: sseCountsDebounce,
+	}
+	if wakeups != nil {
+		wakeups.SetHandlers(c.wakeUser, c.wakeAll)
+	}
+	return c
+}
+
+// register admits a stream. A user's eleventh stream closes their oldest; a
+// full replica refuses new streams.
+func (c *SSEController) register(userID int64) (*sseClient, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.total >= c.maxConns {
+		return nil, false
+	}
+	client := &sseClient{id: fmt.Sprintf("%d-%d", userID, c.seq.Add(1)), userID: userID, wake: make(chan struct{}, 1), evicted: make(chan struct{})}
+	list := append(c.users[userID], client)
+	for len(list) > sseUserCap {
+		list[0].evict()
+		list = list[1:]
+		c.total--
+	}
+	c.users[userID] = list
+	c.total++
+	return client, true
+}
+
+func (c *SSEController) unregister(client *sseClient) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	list := c.users[client.userID]
+	for i, other := range list {
+		if other == client {
+			list = append(list[:i:i], list[i+1:]...)
+			c.total--
+			break
+		}
+	}
+	if len(list) == 0 {
+		delete(c.users, client.userID)
+	} else {
+		c.users[client.userID] = list
+	}
+}
+
+func (c *SSEController) wakeUser(userID int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, client := range c.users[userID] {
+		client.poke()
+	}
+}
+
+func (c *SSEController) wakeAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, list := range c.users {
+		for _, client := range list {
+			client.poke()
+		}
+	}
+}
+
+// GetTotalConnections returns the number of open streams on this replica.
+func (c *SSEController) GetTotalConnections() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.total
+}
+
+func (c *SSEController) pollInterval() time.Duration {
+	if c.wakeups != nil && c.wakeups.Healthy() {
+		return c.pollHealthy
+	}
+	return c.pollUnhealthy
+}
+
+// Connect streams mailbox changes.
+// GET /api/v1/sse/connect?token=<ticket>&cursor=<n|now>
 func (c *SSEController) Connect(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
-		r.Response.WriteStatus(401)
-		r.Response.Write("Unauthorized")
+		response.Unauthorized(r, "Unauthorized")
 		return
 	}
+	cursor := r.URL.Query().Get("cursor")
+	if cursor != "" && cursor != "now" {
+		if n, err := strconv.ParseInt(cursor, 10, 64); err != nil || n < 0 {
+			response.BadRequest(r, "cursor must be a non-negative integer or now")
+			return
+		}
+	}
+	client, ok := c.register(claims.UserID)
+	if !ok {
+		response.WithStatus(r, 503, 503, "Too many live connections; try again later", nil)
+		return
+	}
+	defer c.unregister(client)
 
-	// Set SSE headers
+	ctx := r.Context()
+	s := &sseStream{feed: c.feed, userID: claims.UserID, ctx: ctx, w: sseResponseWriter{r}}
+	if cursor == "" || cursor == "now" {
+		now, err := c.feed.Changes(ctx, claims.UserID, "now", 0)
+		if err != nil {
+			response.InternalError(r, "Unable to open the live update stream")
+			return
+		}
+		cursor = now.NextCursor
+	}
+	s.cursor = cursor
+
 	r.Response.Header().Set("Content-Type", "text/event-stream")
 	r.Response.Header().Set("Cache-Control", "no-cache")
 	r.Response.Header().Set("Connection", "keep-alive")
 	r.Response.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
-
-	// Create client channel
-	clientID := fmt.Sprintf("%d-%d", claims.UserID, time.Now().UnixNano())
-	eventChan := make(chan *SSEEvent, 100)
-
-	// Register client
-	c.registerClient(claims.UserID, clientID, eventChan)
-	defer c.unregisterClient(claims.UserID, clientID)
-
-	g.Log().Infof(r.Context(), "SSE client connected: user=%d, client=%s", claims.UserID, clientID)
-
-	// Send initial connection event
-	c.writeEvent(r, &SSEEvent{
-		Type: "connected",
-		Data: map[string]interface{}{
-			"clientId":  clientID,
-			"timestamp": time.Now().Format(time.RFC3339),
-		},
-	})
-
-	// Heartbeat ticker
-	heartbeat := time.NewTicker(15 * time.Second)
-	defer heartbeat.Stop()
-
-	// Keep connection open
-	for {
-		select {
-		case event := <-eventChan:
-			if !middleware.CredentialActive(r.Context()) {
-				return
-			}
-			c.writeEvent(r, event)
-		case <-heartbeat.C:
-			if !middleware.CredentialActive(r.Context()) {
-				return
-			}
-			// Send heartbeat
-			c.writeEvent(r, &SSEEvent{
-				Type: "heartbeat",
-				Data: map[string]interface{}{
-					"timestamp": time.Now().Format(time.RFC3339),
-				},
-			})
-		case <-r.Context().Done():
-			g.Log().Infof(r.Context(), "SSE client disconnected: user=%d, client=%s", claims.UserID, clientID)
-			return
-		}
-	}
-}
-
-// writeEvent writes an SSE event to the response
-func (c *SSEController) writeEvent(r *ghttp.Request, event *SSEEvent) {
-	data, err := json.Marshal(event)
-	if err != nil {
+	if s.emit("", "connected", map[string]any{"clientId": client.id, "cursor": cursor}) != nil {
 		return
 	}
-
-	// SSE format: "event: type\ndata: json\n\n"
-	r.Response.Writef("event: %s\n", event.Type)
-	r.Response.Writef("data: %s\n\n", string(data))
-	r.Response.Flush()
+	c.serve(ctx, client, s)
 }
 
-// registerClient adds a client to the registry
-func (c *SSEController) registerClient(userID int64, clientID string, eventChan chan *SSEEvent) {
-	c.clientsLock.Lock()
-	defer c.clientsLock.Unlock()
-
-	if c.clients[userID] == nil {
-		c.clients[userID] = make(map[string]chan *SSEEvent)
-	}
-	c.clients[userID][clientID] = eventChan
-}
-
-// unregisterClient removes a client from the registry
-func (c *SSEController) unregisterClient(userID int64, clientID string) {
-	c.clientsLock.Lock()
-	defer c.clientsLock.Unlock()
-
-	if userClients, ok := c.clients[userID]; ok {
-		if ch, ok := userClients[clientID]; ok {
-			close(ch)
-			delete(userClients, clientID)
+// serve runs the wake loop until the client goes away, is evicted, or its
+// credential ends. The first sync replays anything after the given cursor.
+func (c *SSEController) serve(ctx context.Context, client *sseClient, s *sseStream) {
+	heartbeat := time.NewTicker(c.heartbeat)
+	defer heartbeat.Stop()
+	credential := time.NewTicker(c.credentialCheck)
+	defer credential.Stop()
+	poll := time.NewTimer(0)
+	defer poll.Stop()
+	var counts <-chan time.Time
+	var countsTimer *time.Timer
+	defer func() {
+		if countsTimer != nil {
+			countsTimer.Stop()
 		}
-		if len(userClients) == 0 {
-			delete(c.clients, userID)
+	}()
+	syncNow := func() error {
+		changed, err := s.sync()
+		if err != nil {
+			if ctx.Err() == nil && !errors.Is(err, errSSEWrite) {
+				g.Log().Warningf(ctx, "Live update sync failed for user %d: %v", s.userID, err)
+			}
+			return err
 		}
+		if changed && counts == nil {
+			countsTimer = time.NewTimer(c.countsDebounce)
+			counts = countsTimer.C
+		}
+		return nil
 	}
-}
-
-// NotifyUser sends an event to all connected clients of a user
-func (c *SSEController) NotifyUser(userID int64, event *SSEEvent) {
-	c.clientsLock.RLock()
-	defer c.clientsLock.RUnlock()
-
-	if userClients, ok := c.clients[userID]; ok {
-		for _, ch := range userClients {
-			select {
-			case ch <- event:
-			default:
-				// Channel full, skip
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-client.evicted:
+			return
+		case <-client.wake:
+			if errors.Is(syncNow(), errSSEWrite) {
+				return
+			}
+		case <-poll.C:
+			if errors.Is(syncNow(), errSSEWrite) {
+				return
+			}
+			poll.Reset(c.pollInterval())
+		case <-counts:
+			counts = nil
+			if s.emitCounts() != nil {
+				return
+			}
+		case <-heartbeat.C:
+			if s.emit("", "heartbeat", map[string]any{"timestamp": time.Now().UTC().Format(time.RFC3339)}) != nil {
+				return
+			}
+		case <-credential.C:
+			if !middleware.CredentialActive(ctx) {
+				return
 			}
 		}
 	}
 }
 
-// NotifyNewEmail notifies a user about a new received email
-func (c *SSEController) NotifyNewEmail(userID int64, email *model.ReceivedEmail) {
-	c.NotifyUser(userID, &SSEEvent{
-		Type:       "new_email",
-		IdentityID: email.IdentityID,
-		Data: map[string]interface{}{
-			"id":             email.ID,
-			"uuid":           email.UUID,
-			"identityId":     email.IdentityID,
-			"fromEmail":      email.FromEmail,
-			"fromName":       email.FromName,
-			"subject":        email.Subject,
-			"snippet":        email.Snippet,
-			"folder":         email.Folder,
-			"receivedAt":     email.ReceivedAt.Format(time.RFC3339),
-			"hasAttachments": email.HasAttachments,
-		},
-	})
+var errSSEWrite = errors.New("live update stream closed")
+
+type sseWriter interface {
+	Write(p []byte) (int, error)
+	Flush()
 }
 
-// NotifyEmailUpdate notifies about an email status update
-func (c *SSEController) NotifyEmailUpdate(userID int64, emailUUID string, updates map[string]interface{}) {
-	c.NotifyUser(userID, &SSEEvent{
-		Type: "email_update",
-		Data: map[string]interface{}{
-			"uuid":    emailUUID,
-			"updates": updates,
-		},
-	})
-}
+type sseResponseWriter struct{ r *ghttp.Request }
 
-// NotifyEmailDeleted notifies about email deletion
-func (c *SSEController) NotifyEmailDeleted(userID int64, emailUUIDs []string) {
-	c.NotifyUser(userID, &SSEEvent{
-		Type: "email_deleted",
-		Data: map[string]interface{}{
-			"uuids": emailUUIDs,
-		},
-	})
-}
-
-// NotifyCountsUpdate notifies about inbox counts update
-func (c *SSEController) NotifyCountsUpdate(userID int64, identityID int64, counts *model.InboxCountsResponse) {
-	c.NotifyUser(userID, &SSEEvent{
-		Type:       "counts_update",
-		IdentityID: identityID,
-		Data:       counts,
-	})
-}
-
-// GetConnectedCount returns the number of connected clients for a user
-func (c *SSEController) GetConnectedCount(userID int64) int {
-	c.clientsLock.RLock()
-	defer c.clientsLock.RUnlock()
-
-	if userClients, ok := c.clients[userID]; ok {
-		return len(userClients)
+func (w sseResponseWriter) Write(p []byte) (int, error) {
+	if err := w.r.Context().Err(); err != nil {
+		return 0, err
 	}
-	return 0
+	w.r.Response.Write(p)
+	return len(p), nil
 }
+func (w sseResponseWriter) Flush() { w.r.Response.Flush() }
 
-// GetTotalConnections returns the total number of connected clients
-func (c *SSEController) GetTotalConnections() int {
-	c.clientsLock.RLock()
-	defer c.clientsLock.RUnlock()
-
-	total := 0
-	for _, userClients := range c.clients {
-		total += len(userClients)
+// writeSSE writes one event in wire format; id is omitted when empty.
+func writeSSE(w io.Writer, id, event string, data any) error {
+	body, err := json.Marshal(SSEEvent{Type: event, Data: data})
+	if err != nil {
+		return err
 	}
-	return total
+	frame := ""
+	if id != "" {
+		frame = "id: " + id + "\n"
+	}
+	frame += "event: " + event + "\ndata: " + string(body) + "\n\n"
+	_, err = io.WriteString(w, frame)
+	return err
 }
 
-// Broadcast sends an event to all connected clients
-func (c *SSEController) Broadcast(event *SSEEvent) {
-	c.clientsLock.RLock()
-	defer c.clientsLock.RUnlock()
+// sseStream is one client's position in its mailbox feed.
+type sseStream struct {
+	feed   mailboxFeed
+	userID int64
+	ctx    context.Context
+	w      sseWriter
+	cursor string
+}
 
-	for _, userClients := range c.clients {
-		for _, ch := range userClients {
-			select {
-			case ch <- event:
-			default:
-				// Channel full, skip
+func (s *sseStream) emit(id, event string, data any) error {
+	if err := writeSSE(s.w, id, event, data); err != nil {
+		return fmt.Errorf("%w: %v", errSSEWrite, err)
+	}
+	s.w.Flush()
+	return nil
+}
+
+func (s *sseStream) emitCounts() error {
+	counts, err := s.feed.GetReceivedEmailCounts(s.ctx, s.userID, 0)
+	if err != nil {
+		return nil // the next change retries
+	}
+	return s.emit("", "counts_update", map[string]any{"counts": counts})
+}
+
+// resync moves the client to the current cursor; it then reloads everything.
+func (s *sseStream) resync(reason string) error {
+	now, err := s.feed.Changes(s.ctx, s.userID, "now", 0)
+	if err != nil {
+		return err
+	}
+	s.cursor = now.NextCursor
+	return s.emit("", "resync", map[string]any{"cursor": s.cursor, "reason": reason})
+}
+
+// sync emits every change after the stream's cursor and reports whether any
+// was sent.
+func (s *sseStream) sync() (bool, error) {
+	changed := false
+	for {
+		res, err := s.feed.Changes(s.ctx, s.userID, s.cursor, sseBatch)
+		switch {
+		case errors.Is(err, service.ErrMailboxCursorExpired):
+			return changed, s.resync(sseResyncExpired)
+		case errors.Is(err, service.ErrMailboxCursorAhead):
+			return changed, s.resync(sseResyncAhead)
+		case err != nil:
+			return changed, err
+		}
+		if res.HasMore {
+			now, err := s.feed.Changes(s.ctx, s.userID, "now", 0)
+			if err != nil {
+				return changed, err
+			}
+			if cursorGap(s.cursor, now.NextCursor) > sseResyncPending {
+				return changed, s.resync(sseResyncTooMany)
 			}
 		}
+		if len(res.Changes) == 0 {
+			return changed, nil
+		}
+		if err = s.emitBatch(res.Changes); err != nil {
+			return changed, err
+		}
+		changed = true
+		s.cursor = res.NextCursor
+		if !res.HasMore {
+			return changed, nil
+		}
 	}
+}
+
+func cursorGap(from, to string) int64 {
+	a, _ := strconv.ParseInt(from, 10, 64)
+	b, _ := strconv.ParseInt(to, 10, 64)
+	return b - a
+}
+
+// coalescedChange is a message's net change within one batch.
+type coalescedChange struct {
+	last    service.MailboxChange
+	created bool
+	cursor  int64
+}
+
+// coalesceChanges keeps one entry per message, ordered by its last change, so
+// the final event of a batch carries the batch's cursor. A message created in
+// the batch is still new to the client even if it was updated afterwards.
+func coalesceChanges(changes []service.MailboxChange) []coalescedChange {
+	byUUID := map[string]*coalescedChange{}
+	for _, ch := range changes {
+		n, _ := strconv.ParseInt(ch.Cursor, 10, 64)
+		entry := byUUID[ch.MessageUUID]
+		if entry == nil {
+			entry = &coalescedChange{}
+			byUUID[ch.MessageUUID] = entry
+		}
+		entry.last, entry.cursor = ch, n
+		if ch.Operation == "created" {
+			entry.created = true
+		}
+	}
+	out := make([]coalescedChange, 0, len(byUUID))
+	for _, entry := range byUUID {
+		out = append(out, *entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].cursor < out[j].cursor })
+	return out
+}
+
+func (s *sseStream) emitBatch(changes []service.MailboxChange) error {
+	merged := coalesceChanges(changes)
+	var live []string
+	for _, ch := range merged {
+		if ch.last.Operation != "deleted" {
+			live = append(live, ch.last.MessageUUID)
+		}
+	}
+	summaries, err := s.feed.MailboxSummaries(s.ctx, s.userID, live)
+	if err != nil {
+		return err
+	}
+	for _, ch := range merged {
+		id, uuid := ch.last.Cursor, ch.last.MessageUUID
+		summary, ok := summaries[uuid]
+		switch {
+		case ch.last.Operation == "deleted" || !ok:
+			err = s.emit(id, "email_deleted", map[string]any{"cursor": id, "uuids": []string{uuid}})
+		case ch.created:
+			err = s.emit(id, "new_email", map[string]any{"cursor": id, "uuid": uuid, "identityId": ch.last.IdentityID, "summary": summary})
+		default:
+			err = s.emit(id, "email_update", map[string]any{"cursor": id, "uuid": uuid, "summary": summary})
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

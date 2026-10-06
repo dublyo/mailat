@@ -868,19 +868,7 @@ func (s *InboxService) ListReceivedEmails(ctx context.Context, userID int64, req
 		sortOrder = "ASC"
 	}
 
-	query := fmt.Sprintf(`
-		SELECT re.id, re.uuid, re.org_id, re.domain_id, re.identity_id, re.message_id,
-			   re.in_reply_to, re.thread_id, re.from_email, re.from_name,
-			   re.to_emails, re.cc_emails, re.subject, re.snippet,
-			   re.size_bytes, re.has_attachments, re.folder,
-			   re.is_read, re.is_starred, re.is_archived, re.is_trashed, re.is_spam,
-			   re.labels, re.spam_verdict, re.spf_verdict, re.dkim_verdict, re.dmarc_verdict,
-			   re.received_at, re.read_at, re.created_at, re.updated_at,
-			   i.email, i.display_name, i.color, re.envelope_recipients, re.direction, re.send_status, re.send_error, re.draft_version
-		%s
-		ORDER BY %s %s, re.id DESC
-		LIMIT %d OFFSET %d
-	`, baseQuery, sortBy, sortOrder, pageSize, offset)
+	query := fmt.Sprintf(`SELECT %s %s ORDER BY %s %s, re.id DESC LIMIT %d OFFSET %d`, receivedListColumns, baseQuery, sortBy, sortOrder, pageSize, offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -890,48 +878,10 @@ func (s *InboxService) ListReceivedEmails(ctx context.Context, userID int64, req
 
 	emails := []model.ReceivedEmail{}
 	for rows.Next() {
-		var email model.ReceivedEmail
-		var inReplyTo, threadID, fromName, snippet sql.NullString
-		var spamVerdict, spfVerdict, dkimVerdict, dmarcVerdict sql.NullString
-		var readAt sql.NullTime
-		var toEmails, ccEmails, labels []string
-		var identityEmail, identityDisplayName sql.NullString
-		var identityColor, sendError sql.NullString
-
-		err := rows.Scan(
-			&email.ID, &email.UUID, &email.OrgID, &email.DomainID, &email.IdentityID,
-			&email.MessageID, &inReplyTo, &threadID, &email.FromEmail, &fromName,
-			pq.Array(&toEmails), pq.Array(&ccEmails), &email.Subject, &snippet,
-			&email.SizeBytes, &email.HasAttachments, &email.Folder,
-			&email.IsRead, &email.IsStarred, &email.IsArchived, &email.IsTrashed, &email.IsSpam,
-			pq.Array(&labels), &spamVerdict, &spfVerdict, &dkimVerdict, &dmarcVerdict,
-			&email.ReceivedAt, &readAt, &email.CreatedAt, &email.UpdatedAt,
-			&identityEmail, &identityDisplayName, &identityColor, pq.Array(&email.EnvelopeRecipients), &email.Direction, &email.SendStatus, &sendError, &email.DraftVersion,
-		)
+		email, err := scanReceivedListRow(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scan inbox row: %w", err)
+			return nil, err
 		}
-
-		email.InReplyTo = inReplyTo.String
-		email.ThreadID = threadID.String
-		email.FromName = fromName.String
-		email.Snippet = snippet.String
-		email.ToEmails = toEmails
-		email.CcEmails = ccEmails
-		email.Labels = labels
-		email.SpamVerdict = spamVerdict.String
-		email.SPFVerdict = spfVerdict.String
-		email.DKIMVerdict = dkimVerdict.String
-		email.DMARCVerdict = dmarcVerdict.String
-		if readAt.Valid {
-			email.ReadAt = &readAt.Time
-		}
-		// Set identity info for unified inbox display
-		email.IdentityEmail = identityEmail.String
-		email.IdentityDisplayName = identityDisplayName.String
-		email.IdentityColor = identityColor.String
-		email.SendError = sendError.String
-
 		emails = append(emails, email)
 	}
 
@@ -1257,6 +1207,85 @@ func (s *InboxService) GetReceivedEmailCounts(ctx context.Context, userID, ident
 		result.Labels[label] = count
 	}
 	return result, rows.Err()
+}
+
+// receivedListColumns is the mailbox list projection; scanReceivedListRow reads it.
+const receivedListColumns = `re.id, re.uuid, re.org_id, re.domain_id, re.identity_id, re.message_id,
+	re.in_reply_to, re.thread_id, re.from_email, re.from_name,
+	re.to_emails, re.cc_emails, re.subject, re.snippet,
+	re.size_bytes, re.has_attachments, re.folder,
+	re.is_read, re.is_starred, re.is_archived, re.is_trashed, re.is_spam,
+	re.labels, re.spam_verdict, re.spf_verdict, re.dkim_verdict, re.dmarc_verdict,
+	re.received_at, re.read_at, re.created_at, re.updated_at,
+	i.email, i.display_name, i.color, re.envelope_recipients, re.direction, re.send_status, re.send_error, re.draft_version`
+
+func scanReceivedListRow(row rowScanner) (model.ReceivedEmail, error) {
+	var email model.ReceivedEmail
+	var inReplyTo, threadID, fromName, snippet sql.NullString
+	var spamVerdict, spfVerdict, dkimVerdict, dmarcVerdict sql.NullString
+	var readAt sql.NullTime
+	var toEmails, ccEmails, labels []string
+	var identityEmail, identityDisplayName sql.NullString
+	var identityColor, sendError sql.NullString
+
+	err := row.Scan(
+		&email.ID, &email.UUID, &email.OrgID, &email.DomainID, &email.IdentityID,
+		&email.MessageID, &inReplyTo, &threadID, &email.FromEmail, &fromName,
+		pq.Array(&toEmails), pq.Array(&ccEmails), &email.Subject, &snippet,
+		&email.SizeBytes, &email.HasAttachments, &email.Folder,
+		&email.IsRead, &email.IsStarred, &email.IsArchived, &email.IsTrashed, &email.IsSpam,
+		pq.Array(&labels), &spamVerdict, &spfVerdict, &dkimVerdict, &dmarcVerdict,
+		&email.ReceivedAt, &readAt, &email.CreatedAt, &email.UpdatedAt,
+		&identityEmail, &identityDisplayName, &identityColor, pq.Array(&email.EnvelopeRecipients), &email.Direction, &email.SendStatus, &sendError, &email.DraftVersion,
+	)
+	if err != nil {
+		return email, fmt.Errorf("scan inbox row: %w", err)
+	}
+
+	email.InReplyTo = inReplyTo.String
+	email.ThreadID = threadID.String
+	email.FromName = fromName.String
+	email.Snippet = snippet.String
+	email.ToEmails = toEmails
+	email.CcEmails = ccEmails
+	email.Labels = labels
+	email.SpamVerdict = spamVerdict.String
+	email.SPFVerdict = spfVerdict.String
+	email.DKIMVerdict = dkimVerdict.String
+	email.DMARCVerdict = dmarcVerdict.String
+	if readAt.Valid {
+		email.ReadAt = &readAt.Time
+	}
+	// Set identity info for unified inbox display
+	email.IdentityEmail = identityEmail.String
+	email.IdentityDisplayName = identityDisplayName.String
+	email.IdentityColor = identityColor.String
+	email.SendError = sendError.String
+
+	return email, nil
+}
+
+// MailboxSummaries returns the list projection of the given messages that the
+// user still owns, keyed by UUID. A missing key means the copy is gone.
+func (s *InboxService) MailboxSummaries(ctx context.Context, userID int64, uuids []string) (map[string]model.ReceivedEmail, error) {
+	out := make(map[string]model.ReceivedEmail, len(uuids))
+	if len(uuids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+receivedListColumns+` FROM received_emails re JOIN identities i ON i.id=re.identity_id
+		WHERE re.mailbox_owner_id=$1 AND re.uuid=ANY($2::uuid[])`, userID, pq.Array(uuids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		email, err := scanReceivedListRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[email.UUID] = email
+	}
+	return out, rows.Err()
 }
 
 func receivedListQuery(userID int64, req *model.InboxListRequest) (string, []interface{}, error) {

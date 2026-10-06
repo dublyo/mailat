@@ -26,7 +26,6 @@ type ReceivingService struct {
 	db                    *sql.DB
 	receivingProvider     *provider.ReceivingProvider
 	storage               incomingStorage
-	notify                func(int64, *model.ReceivedEmail)
 	webhookTriggerService *WebhookTriggerService
 }
 
@@ -41,7 +40,6 @@ func (s *ReceivingService) DB() *sql.DB { return s.db }
 func (s *ReceivingService) SetWebhookTriggerService(svc *WebhookTriggerService) {
 	s.webhookTriggerService = svc
 }
-func (s *ReceivingService) SetNotifier(fn func(int64, *model.ReceivedEmail)) { s.notify = fn }
 
 var ErrWebhookAuthorization = errors.New("invalid webhook authorization")
 
@@ -380,11 +378,6 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 	if spam {
 		folder = "spam"
 	}
-	type delivery struct {
-		owner int64
-		email *model.ReceivedEmail
-	}
-	var saved []delivery
 	for _, ident := range ordered {
 		res, err := tx.ExecContext(ctx, `INSERT INTO received_ingestions(org_id,topic_arn,ses_message_id,identity_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, auth.OrgID, auth.TopicARN, n.Mail.MessageId, ident.ID)
 		if err != nil {
@@ -444,22 +437,14 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 				return err
 			}
 			copies = append(copies, ArrivalCopy{OwnerID: owner, EmailID: emailID, UUID: emailUUID, Folder: email.Folder})
-			saved = append(saved, delivery{owner, email})
 		}
 		if err = EnqueueArrivalJobs(ctx, tx, ArrivalInput{OrgID: ident.OrgID, IdentityID: ident.ID, IdentityKind: ident.Kind, IdentityEmail: strings.ToLower(ident.Email), Recipients: ident.Recipients,
 			Copies: copies, Header: parsed.Header, Notification: n, DMARCReport: isDMARCReport}); err != nil {
 			return fmt.Errorf("queue arrival jobs: %w", err)
 		}
 	}
-	if err = tx.Commit(); err != nil {
-		return err
-	}
-	if s.notify != nil {
-		for _, d := range saved {
-			s.notify(d.owner, d.email)
-		}
-	}
-	return nil
+	// Live clients are woken by the mailbox_changes trigger's NOTIFY at commit.
+	return tx.Commit()
 }
 
 // mailboxOwners returns who gets a copy of mail for ident. A shared identity

@@ -208,7 +208,7 @@ func annotateBackend(op object, controller, path string) {
 // adjacent to them rather than maintaining a separate endpoint catalog.
 func customizeContract(op object, verb, path string) {
 	if path == "/sse/connect" {
-		op["parameters"] = []object{{"name": "token", "in": "query", "required": false, "schema": object{"type": "string"}, "description": "Browser-only short-lived stream ticket from POST /auth/stream-token. Never place a session JWT or API key here. Headless integrations use Authorization: Bearer with email:read instead."}}
+		op["parameters"] = []object{{"name": "token", "in": "query", "required": false, "schema": object{"type": "string"}, "description": "Browser-only short-lived stream ticket from POST /auth/stream-token. Never place a session JWT or API key here. Headless integrations use Authorization: Bearer with email:read instead."}, {"name": "cursor", "in": "query", "required": false, "schema": object{"type": "string"}, "description": "Mailbox change cursor to resume from (from GET /inbox/changes or the last event id), or now (the default) to start at the current position."}}
 	}
 	if params, ok := op["parameters"].([]object); ok {
 		for _, parameter := range params {

@@ -22,6 +22,8 @@ var (
 	ErrMailboxNotFound      = errors.New("message or resource not found")
 	ErrMailboxConflict      = errors.New("resource is currently sending or conflicts with an existing resource")
 	ErrMailboxCursorExpired = errors.New("cursor has expired; resynchronize the mailbox")
+	// ErrMailboxCursorAhead is also an ErrInvalidMailboxInput (for example after a database restore).
+	ErrMailboxCursorAhead = fmt.Errorf("%w: cursor is ahead of this mailbox", ErrInvalidMailboxInput)
 )
 
 func (s *InboxService) ListLabels(ctx context.Context, userID int64) ([]model.EmailLabel, error) {
@@ -492,7 +494,7 @@ func (s *InboxService) Changes(ctx context.Context, userID int64, cursor string,
 		return nil, ErrMailboxCursorExpired
 	}
 	if after > current {
-		return nil, fmt.Errorf("%w: cursor is ahead of this mailbox", ErrInvalidMailboxInput)
+		return nil, ErrMailboxCursorAhead
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT cursor,message_uuid,identity_id,domain_id,operation,changed_at FROM mailbox_changes WHERE user_id=$1 AND cursor>$2 ORDER BY cursor LIMIT $3`, userID, after, limit+1)
 	if err != nil {
@@ -568,6 +570,7 @@ func (s *InboxService) RunChangeRetention(ctx context.Context) {
 		case <-ticker.C:
 			cleanup, cancel := context.WithTimeout(ctx, time.Minute)
 			_ = s.PruneMailboxChanges(cleanup, time.Now().Add(-90*24*time.Hour))
+			_, _ = s.db.ExecContext(cleanup, `DELETE FROM stream_ticket_redemptions WHERE expires_at<now()`)
 			cancel()
 		}
 	}

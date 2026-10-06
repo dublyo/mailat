@@ -38,8 +38,6 @@ func TestDMARCReceivingRoutesPerUserBeforeEvents(t *testing.T) {
 	}
 	storage := &fakeIncomingStorage{raw: dmarcTestRaw("one.test")}
 	s, a := dmarcReceiving(t, db, storage)
-	notices := map[int64]string{}
-	s.SetNotifier(func(_ int64, e *model.ReceivedEmail) { notices[e.IdentityID] = e.Folder })
 	n := dmarcNotification("route-report", "a@one.test", "b@one.test", "reports@two.test")
 	if err = s.ProcessIncomingEmail(ctx, a, n); err != nil {
 		t.Fatal(err)
@@ -56,8 +54,10 @@ func TestDMARCReceivingRoutesPerUserBeforeEvents(t *testing.T) {
 		if identity == 3 && (!read || !star) {
 			t.Fatal("filter actions lost")
 		}
-		if notices[identity] != want {
-			t.Fatalf("notification used stale folder: %v", notices)
+		// Live clients read the final row through mailbox_changes, never a pre-filter snapshot.
+		var changes int
+		if err = db.QueryRow(`SELECT COUNT(*) FROM mailbox_changes WHERE identity_id=$1 AND operation='created'`, identity).Scan(&changes); err != nil || changes != 1 {
+			t.Fatalf("identity %d has %d created changes: %v", identity, changes, err)
 		}
 		var eventFolder string
 		if err = db.QueryRow(`SELECT payload->'data'->>'folder' FROM webhook_events WHERE payload->'data'->>'messageUuid'=(SELECT uuid::text FROM received_emails WHERE identity_id=$1)`, identity).Scan(&eventFolder); err != nil || eventFolder != want {
