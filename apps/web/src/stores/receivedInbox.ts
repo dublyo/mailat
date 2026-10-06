@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { api, receivedInboxApi, inboxSSE, type ReceivedEmail, type InboxCounts, type InboxListResponse, type InboxListOptions } from '@/lib/api'
+import { api, receivedInboxApi, inboxSSE, type ReceivedEmail, type InboxCounts, type InboxListResponse, type InboxListOptions, type MailboxEvent } from '@/lib/api'
+import { applyMailboxEvent } from '@/lib/mailboxSync'
 
 export const useReceivedInboxStore = defineStore('receivedInbox', () => {
   const emails = ref<ReceivedEmail[]>([])
@@ -20,6 +21,9 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
   const selectedEmailUuids = ref<string[]>([])
   const sseConnected = ref(false)
   const notice = ref('')
+  // Position in the durable mailbox change feed; live events resume from here.
+  const cursor = ref('')
+  const newMailPill = ref(false)
   let filters: InboxListOptions = {}
   let ownerToken: string | null = null
   let listSequence = 0
@@ -35,6 +39,7 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
   let syncGeneration = 0
   let refreshing = false
   let refreshPending = false
+  let cursorRequest: Promise<void> | null = null
   // Cache is memory-only, short lived, and cleared on account changes and mutations.
   const listCache = new Map<string, { at: number; data: InboxListResponse }>()
   const detailCache = new Map<string, ReceivedEmail>()
@@ -96,9 +101,14 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
     isLoading.value = true
     error.value = null
     const token = ownerToken
+    const signal = listController.signal
     activeListPromise = (async () => {
       try {
-        const result = await receivedInboxApi.list(identityId, requestOptions, listController!.signal)
+        // Read the feed position before the list snapshot: later changes then
+        // replay over it instead of being lost between the two.
+        if (!cursor.value) await primeCursor()
+        if (sequence !== listSequence || token !== api.getToken()) return
+        const result = await receivedInboxApi.list(identityId, requestOptions, signal)
         if (sequence !== listSequence || token !== api.getToken()) return
         listCache.set(key, { at: Date.now(), data: result })
         if (listCache.size > 20) listCache.delete(listCache.keys().next().value!)
@@ -107,6 +117,7 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
         if (sequence === listSequence) error.value = e instanceof Error ? e.message : 'Could not load mail. Try again.'
       } finally {
         if (sequence === listSequence) {
+          if (page.value <= 1 && !searchQuery.value) newMailPill.value = false
           isLoading.value = false
           activeListPromise = null
           activeListKey = ''
@@ -114,6 +125,18 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
       }
     })()
     return activeListPromise
+  }
+
+  function primeCursor() {
+    ensureOwner()
+    if (cursorRequest) return cursorRequest
+    const token = ownerToken
+    const request: Promise<void> = receivedInboxApi.changes('now', 1).then(result => {
+      if (token === api.getToken() && !cursor.value) cursor.value = result.nextCursor
+    }).catch(() => { /* Without a cursor the stream starts at "now" and refreshes on connect. */ })
+      .finally(() => { if (cursorRequest === request) cursorRequest = null })
+    cursorRequest = request
+    return request
   }
 
   async function fetchEmail(uuid: string) {
@@ -233,11 +256,53 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
     if (refreshPending) refreshSoon()
   }
   function resumeMailbox() { if (canRefresh()) refreshSoon(0) }
+  // Reconnecting with the cursor replays whatever was missed, so no list reload
+  // is needed unless the feed position is unknown.
   function resumeConnection() {
     if (!connected) return
     disconnectSSE()
     connectSSE()
-    resumeMailbox()
+    if (!cursor.value) resumeMailbox()
+  }
+  // A tab that slept for a while may hold a dead stream; reconnecting from the
+  // cursor catches up without reloading the list.
+  let hiddenAt = 0
+  function resumeVisible() {
+    if (typeof document !== 'undefined' && document.hidden) { hiddenAt = Date.now(); return }
+    const slept = hiddenAt > 0 && Date.now() - hiddenAt > 60000
+    hiddenAt = 0
+    if (slept || !sseConnected.value) resumeConnection()
+  }
+  function currentView() {
+    return { ...filters, folder: currentFolder.value, identityId: currentIdentityId.value, page: page.value, pageSize: pageSize.value }
+  }
+  function adopt(next: string | undefined) {
+    // Cursors only move forward; a late duplicate must not rewind the stream.
+    if (next && (!cursor.value || Number(next) > Number(cursor.value))) cursor.value = next
+  }
+  function applyEvent(event: MailboxEvent) {
+    adopt(event.cursor)
+    const uuids = event.type === 'email_deleted' ? event.uuids : [event.uuid]
+    for (const uuid of uuids) detailCache.delete(uuid)
+    listCache.clear()
+    countCache.clear()
+    const before = emails.value
+    const result = applyMailboxEvent({ emails: before }, event, currentView())
+    if (result.emails !== before) {
+      emails.value = result.emails
+      total.value = Math.max(0, total.value + result.totalDelta)
+      totalPages.value = Math.ceil(total.value / pageSize.value)
+      selectedEmailUuids.value = selectedEmailUuids.value.filter(id => emails.value.some(e => e.uuid === id))
+    }
+    if (result.newMailPill) newMailPill.value = true
+    if (result.needsRefresh) refreshSoon()
+    const open = currentEmail.value
+    if (!open || !uuids.includes(open.uuid)) return
+    if (event.type === 'email_deleted') closeEmail()
+    else {
+      const { isRead, isStarred, isArchived, isTrashed, isSpam, folder, labels } = event.summary
+      currentEmail.value = { ...open, isRead, isStarred, isArchived, isTrashed, isSpam, folder, labels }
+    }
   }
   function connectSSE() {
     ensureOwner()
@@ -245,31 +310,41 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
     connected = true
     const generation = ++syncGeneration
     const active = () => connected && generation === syncGeneration && ownerToken === api.getToken()
-    const changed = () => { if (active()) refreshSoon() }
+    let resumed = false
     inboxSSE.connect({
-      // SSE has no replay log. Catch up after both first connect and reconnect,
-      // including mail committed while a deployment interrupted the stream.
-      onConnected: () => { if (active()) { sseConnected.value = true; refreshSoon() } },
-      // Refresh the final folder and all counts, including DMARC Reports.
-      // This path intentionally creates no Inbox arrival toast for filed mail.
-      onNewEmail: changed,
-      onEmailUpdate: changed,
-      onEmailDeleted: changed,
-      onCountsUpdate: changed,
+      onConnected: data => {
+        if (!active()) return
+        sseConnected.value = true
+        // A stream opened without a cursor starts at "now": reload once to
+        // cover anything committed after the list was fetched.
+        if (!resumed) { adopt(data.cursor); refreshSoon() }
+      },
+      onNewEmail: event => { if (active()) applyEvent(event) },
+      onEmailUpdate: event => { if (active()) applyEvent(event) },
+      onEmailDeleted: event => { if (active()) applyEvent(event) },
+      onCountsUpdate: ({ counts: next }) => {
+        if (!active()) return
+        countCache.set(0, { at: Date.now(), data: next })
+        if (currentIdentityId.value === 0) counts.value = next
+        else void fetchCounts(currentIdentityId.value, true)
+      },
+      onResync: data => {
+        if (!active()) return
+        cursor.value = data.cursor
+        newMailPill.value = false
+        refreshSoon(0)
+      },
       onError: () => { if (active()) sseConnected.value = false },
-    })
+    }, { cursor: () => { resumed = !!cursor.value; return cursor.value || undefined } })
     let pollTicks = 0
+    // The feed is durable, so a healthy stream reconciles only every 5 minutes;
+    // without a stream the list is polled every 15 seconds.
     pollTimer = setInterval(() => {
       pollTicks++
-      if (canRefresh() && (!sseConnected.value || pollTicks % 4 === 0)) refreshSoon(0)
+      if (canRefresh() && (!sseConnected.value || pollTicks % 20 === 0)) refreshSoon(0)
     }, 15000)
-    // A healthy connection is not proof that no event was missed. Reconcile
-    // periodically, and catch up immediately when a sleeping/mobile tab returns.
-    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', resumeMailbox)
-    if (typeof window !== 'undefined') {
-      window.addEventListener('focus', resumeMailbox)
-      window.addEventListener('online', resumeConnection)
-    }
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', resumeVisible)
+    if (typeof window !== 'undefined') window.addEventListener('online', resumeConnection)
   }
   function disconnectSSE() {
     ++syncGeneration
@@ -282,11 +357,8 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
     pollTimer = undefined
     refreshing = false
     refreshPending = false
-    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', resumeMailbox)
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('focus', resumeMailbox)
-      window.removeEventListener('online', resumeConnection)
-    }
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', resumeVisible)
+    if (typeof window !== 'undefined') window.removeEventListener('online', resumeConnection)
   }
   function reset() {
     ++listSequence
@@ -311,6 +383,9 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
     error.value = null
     notice.value = ''
     isLoading.value = false
+    cursor.value = ''
+    cursorRequest = null
+    newMailPill.value = false
   }
-  return { emails, currentEmail, counts, isLoading, detailLoading, isMutating, error, page, pageSize, total, totalPages, currentFolder, currentIdentityId, searchQuery, selectedEmailUuids, sseConnected, notice, unreadCount, hasMore, allSelected, someSelected, fetchEmails, fetchEmail, closeEmail, fetchCounts, markAsRead, starEmails, moveEmails, trashEmails, toggleSelect, selectAll, clearSelection, connectSSE, disconnectSSE, invalidate, reset }
+  return { emails, currentEmail, counts, isLoading, detailLoading, isMutating, error, page, pageSize, total, totalPages, currentFolder, currentIdentityId, searchQuery, selectedEmailUuids, sseConnected, notice, cursor, newMailPill, unreadCount, hasMore, allSelected, someSelected, fetchEmails, fetchEmail, closeEmail, fetchCounts, markAsRead, starEmails, moveEmails, trashEmails, toggleSelect, selectAll, clearSelection, connectSSE, disconnectSSE, primeCursor, invalidate, reset }
 })

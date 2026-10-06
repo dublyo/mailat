@@ -123,10 +123,13 @@ test('SSE errors close native retry sources and only one controlled reconnect su
     emit(name) { this.listeners.get(name)?.({ data: JSON.stringify({ data: {} }) }) }
   }
   api.setToken('session-token')
-  const stream = new InboxSSE(); let connections = 0, messages = 0
-  t.after(() => { stream.disconnect(); globalThis.EventSource = original })
-  await stream.connect({ onConnected: () => connections++, onNewEmail: () => messages++ })
-  assert.match(sources[0].url, /token=stream-ticket/)
+  const stream = new InboxSSE(); let connections = 0, messages = 0, tickets = 0, cursor = '7'
+  const post = api.post.bind(api)
+  api.post = (...args) => { tickets++; return post(...args) }
+  t.after(() => { stream.disconnect(); globalThis.EventSource = original; api.post = post })
+  await stream.connect({ onConnected: () => connections++, onNewEmail: () => messages++ }, { cursor: () => cursor })
+  assert.match(sources[0].url, /token=stream-ticket&cursor=7$/)
+  cursor = '9'
   assert.ok(!sources[0].url.includes("session-token"))
   sources[0].emit('connected')
   sources[0].onerror(new Event('error'))
@@ -136,6 +139,8 @@ test('SSE errors close native retry sources and only one controlled reconnect su
   t.mock.timers.tick(1000)
   for (let i = 0; i < 6; i++) await Promise.resolve()
   assert.equal(sources.length, 2)
+  assert.equal(tickets, 2, 'every reconnect redeems a fresh single-use ticket')
+  assert.match(sources[1].url, /cursor=9$/, 'a reconnect resumes from the latest applied cursor')
   sources[1].emit('connected')
   assert.equal(connections, 2)
   sources[1].onerror(new Event('error'))

@@ -76,6 +76,19 @@ export const useAuthStore = defineStore('auth', () => {
     api.setToken(null)
   }
 
+  // Adopts a session issued outside the login form (invite acceptance). Any
+  // other account signed in here is signed out first.
+  function setSession(nextToken: string, nextUser: User) {
+    const previous = api.getToken()
+    if (previous && previous !== nextToken) logout()
+    challengeToken.value = null
+    authError.value = null
+    token.value = nextToken
+    user.value = nextUser
+    api.setToken(nextToken)
+    isInitialized.value = true
+  }
+
   async function checkAuth() {
     const storedToken = localStorage.getItem('token')
     if (!storedToken) {
@@ -114,6 +127,7 @@ export const useAuthStore = defineStore('auth', () => {
     verifyChallenge,
     register,
     logout,
+    setSession,
     checkAuth,
     authError
   }

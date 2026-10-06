@@ -100,9 +100,13 @@ export interface User {
   name: string
   avatar?: string
   orgId: number
-  role: string
+  role: UserRole
   createdAt: string
 }
+
+export type UserRole = 'owner' | 'admin' | 'member'
+
+export const isOrgAdmin = (user: Pick<User, 'role'> | null | undefined) => user?.role === 'owner' || user?.role === 'admin'
 
 export interface Email {
   id: string
@@ -239,6 +243,13 @@ export interface Identity {
   canSend?: boolean
   canReceive?: boolean
   signature?: string
+  kind?: 'personal' | 'shared'
+  /** A shared mailbox identity the caller is a member of; permissions are the caller's. */
+  shared?: boolean
+  canRead?: boolean
+  canManage?: boolean
+  sharedMailboxUuid?: string
+  sharedMailboxName?: string
   createdAt: string
   updatedAt?: string
 }
@@ -1381,6 +1392,21 @@ export interface InboxCounts {
   labels?: Record<string, number>
 }
 
+export interface MailboxChange {
+  cursor: string
+  messageUuid: string
+  identityId: number
+  domainId: number
+  operation: 'created' | 'updated' | 'deleted'
+  changedAt: string
+}
+
+export interface MailboxChanges {
+  changes: MailboxChange[]
+  nextCursor: string
+  hasMore: boolean
+}
+
 export interface EmailLabel {
   id: number
   uuid: string
@@ -1487,6 +1513,10 @@ export const receivedInboxApi = {
       requiredDns?: Array<{ recordType: string; hostname: string; value: string }>
     }>('/api/v1/inbox/setup', { domainId }),
 
+  // Durable change feed; 'now' returns the current cursor without changes.
+  changes: (cursor: string, limit = 100) =>
+    api.get<MailboxChanges>(`/api/v1/inbox/changes?cursor=${encodeURIComponent(cursor)}&limit=${limit}`),
+
   // Set identity as catch-all
   setCatchAll: (identityUuid: string, isCatchAll: boolean) =>
     api.post(`/api/v1/identities/${identityUuid}/catch-all`, { isCatchAll }),
@@ -1563,7 +1593,228 @@ export const trustedSendersApi = {
   delete: (uuid: string) => api.delete(`/api/v1/inbox/trusted-senders/${uuid}`),
 }
 
+// ============ Members, invites and org identities ============
+
+export interface OrgMember {
+  uuid: string
+  email: string
+  name: string
+  role: UserRole
+  status: 'active' | 'disabled'
+  lastLoginAt: string | null
+  createdAt: string
+}
+
+export type InviteStatus = 'pending' | 'expired' | 'accepted' | 'revoked'
+
+export interface OrgInvite {
+  uuid: string
+  email: string
+  role: 'admin' | 'member'
+  status: InviteStatus
+  expiresAt: string
+  invitedBy: string
+  sendCount: number
+  createdAt: string
+}
+
+export interface OrgIdentity {
+  uuid: string
+  email: string
+  kind: 'personal' | 'shared'
+  ownerUuid: string
+  ownerEmail: string
+  canSend: boolean
+  canReceive: boolean
+  isCatchAll: boolean
+}
+
+export interface InviteLookup {
+  orgName: string
+  email: string
+  role: 'admin' | 'member'
+  inviterName: string
+  expiresAt: string
+}
+
+export const orgApi = {
+  members: () => api.get<OrgMember[]>('/api/v1/org/members'),
+  changeRole: (uuid: string, role: 'admin' | 'member') => api.put<OrgMember>(`/api/v1/org/members/${encodeURIComponent(uuid)}`, { role }),
+  // Without a transfer target the member's personal identities are disabled.
+  removeMember: (uuid: string, transferIdentitiesTo?: string) =>
+    api.delete<{ removed: boolean; identitiesTransferred: number; identitiesDisabled: number }>(`/api/v1/org/members/${encodeURIComponent(uuid)}`, transferIdentitiesTo ? { transferIdentitiesTo } : {}),
+  invites: () => api.get<OrgInvite[]>('/api/v1/org/invites'),
+  invite: (data: { email: string; role: 'admin' | 'member'; senderIdentityUuid?: string }) => api.post<OrgInvite>('/api/v1/org/invites', data),
+  resendInvite: (uuid: string) => api.post<OrgInvite>(`/api/v1/org/invites/${encodeURIComponent(uuid)}/resend`),
+  revokeInvite: (uuid: string) => api.delete(`/api/v1/org/invites/${encodeURIComponent(uuid)}`),
+  identities: () => api.get<OrgIdentity[]>('/api/v1/org/identities'),
+  transferIdentity: (uuid: string, userUuid: string) => api.put<OrgIdentity>(`/api/v1/org/identities/${encodeURIComponent(uuid)}/owner`, { userUuid }),
+}
+
+// Public: the token comes from the /invite#token= link.
+export const invitesApi = {
+  lookup: (token: string) => api.post<InviteLookup>('/api/v1/auth/invites/lookup', { token }),
+  accept: (data: { token: string; name: string; password: string }) => api.post<{ token: string; user: User }>('/api/v1/auth/invites/accept', data),
+}
+
+// ============ Forwards and auto-replies ============
+
+export type ForwardStatus = 'pending' | 'active' | 'paused' | 'suspended'
+
+export interface EmailForward {
+  uuid: string
+  identityUuid: string
+  identityEmail: string
+  forwardTo: string
+  keepCopy: boolean
+  status: ForwardStatus
+  active: boolean
+  verified: boolean
+  verifiedAt?: string
+  verifyExpiresAt?: string
+  lastError?: string | null
+  forwardCount: number
+  lastForwardedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export const forwardsApi = {
+  list: () => api.get<EmailForward[]>('/api/v1/forwards'),
+  create: (data: { identityUuid: string; forwardTo: string; keepCopy: boolean }) => api.post<EmailForward>('/api/v1/forwards', data),
+  // Resuming works only for a verified, paused forward.
+  update: (uuid: string, data: { active?: boolean; keepCopy?: boolean }) => api.put<EmailForward>(`/api/v1/forwards/${encodeURIComponent(uuid)}`, data),
+  resendVerification: (uuid: string) => api.post(`/api/v1/forwards/${encodeURIComponent(uuid)}/resend-verification`),
+  delete: (uuid: string) => api.delete(`/api/v1/forwards/${encodeURIComponent(uuid)}`),
+  // Public: opened from the verification email's /forwards/verify#id=&token= link.
+  verify: (uuid: string, token: string) => api.post<{ verified: boolean }>('/api/v1/forwards/verify', { uuid, token }),
+}
+
+export interface AutoReply {
+  id: number
+  uuid: string
+  name: string
+  startDate: string
+  endDate?: string
+  subject: string
+  htmlContent: string
+  textContent?: string
+  replyOnce: boolean
+  replyIntervalDays: number
+  excludePatterns?: string[]
+  /** Empty means all of the caller's personal identities. */
+  identityIds?: number[]
+  active: boolean
+  replyCount: number
+  lastRepliedAt?: string
+  lastError?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AutoReplyInput {
+  name: string
+  startDate: string
+  endDate?: string
+  subject: string
+  htmlContent: string
+  textContent?: string
+  replyOnce: boolean
+  replyIntervalDays: number
+  excludePatterns: string[]
+  identityIds: number[]
+  active: boolean
+}
+
+export const autoRepliesApi = {
+  list: () => api.get<AutoReply[]>('/api/v1/auto-replies'),
+  create: (data: AutoReplyInput) => api.post<AutoReply>('/api/v1/auto-replies', data),
+  update: (id: number, data: Partial<AutoReplyInput>) => api.put<AutoReply>(`/api/v1/auto-replies/${id}`, data),
+  delete: (id: number) => api.delete(`/api/v1/auto-replies/${id}`),
+}
+
+// ============ Shared mailboxes ============
+
+export interface SharedMailbox {
+  id: number
+  uuid: string
+  name: string
+  email: string
+  description?: string
+  identityUuid?: string
+  /** False for legacy rows created before shared delivery existed; they deliver nothing. */
+  active: boolean
+  memberCount: number
+  canRead: boolean
+  canSend: boolean
+  canManage: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SharedMailboxMember {
+  userUuid: string
+  email: string
+  name: string
+  canRead: boolean
+  canSend: boolean
+  canManage: boolean
+  createdAt: string
+}
+
+export type SharedMemberPermissions = { canRead: boolean; canSend: boolean; canManage: boolean }
+
+export const sharedMailboxApi = {
+  list: () => api.get<SharedMailbox[]>('/api/v1/shared-mailboxes'),
+  create: (data: { name: string; email: string; description?: string }) => api.post<SharedMailbox>('/api/v1/shared-mailboxes', data),
+  delete: (id: number) => api.delete(`/api/v1/shared-mailboxes/${id}`),
+  members: (id: number) => api.get<SharedMailboxMember[]>(`/api/v1/shared-mailboxes/${id}/members`),
+  addMember: (id: number, data: SharedMemberPermissions & { userUuid: string }) => api.post<SharedMailboxMember>(`/api/v1/shared-mailboxes/${id}/members`, data),
+  updateMember: (id: number, userUuid: string, data: SharedMemberPermissions) =>
+    api.put<SharedMailboxMember>(`/api/v1/shared-mailboxes/${id}/members/${encodeURIComponent(userUuid)}`, data),
+  removeMember: (id: number, userUuid: string) => api.delete(`/api/v1/shared-mailboxes/${id}/members/${encodeURIComponent(userUuid)}`),
+}
+
+// ============ Web push ============
+
+export interface PushSubscriptionInfo {
+  id: number
+  uuid: string
+  endpoint: string
+  deviceName?: string
+  notifyNewEmail: boolean
+  active: boolean
+  lastUsedAt?: string
+  createdAt: string
+}
+
+export const pushApi = {
+  vapidKey: () => api.get<{ enabled: boolean; publicKey: string }>('/api/v1/push/vapid-key'),
+  subscribe: (data: { endpoint: string; p256dhKey: string; authKey: string; deviceName?: string }) => api.post<PushSubscriptionInfo>('/api/v1/push/subscribe', data),
+  unsubscribe: (endpoint: string) => api.post('/api/v1/push/unsubscribe', { endpoint }),
+  list: () => api.get<PushSubscriptionInfo[] | null>('/api/v1/push/subscriptions'),
+  setNewEmail: (uuid: string, notifyNewEmail: boolean) => api.put(`/api/v1/push/subscriptions/${encodeURIComponent(uuid)}/preferences`, { notifyNewEmail }),
+}
+
 // ============ SSE (Server-Sent Events) ============
+
+// Change events carry the feed cursor after that change; a client that stores
+// it resumes exactly there on reconnect.
+export interface MailboxCreatedEvent { type: 'new_email'; cursor: string; uuid: string; identityId: number; summary: ReceivedEmail }
+export interface MailboxUpdatedEvent { type: 'email_update'; cursor: string; uuid: string; summary: ReceivedEmail }
+export interface MailboxDeletedEvent { type: 'email_deleted'; cursor: string; uuids: string[] }
+export type MailboxEvent = MailboxCreatedEvent | MailboxUpdatedEvent | MailboxDeletedEvent
+
+export interface InboxSSEHandlers {
+  onConnected?: (data: { clientId: string; cursor: string }) => void
+  onNewEmail?: (data: MailboxCreatedEvent) => void
+  onEmailUpdate?: (data: MailboxUpdatedEvent) => void
+  onEmailDeleted?: (data: MailboxDeletedEvent) => void
+  onCountsUpdate?: (data: { counts: InboxCounts }) => void
+  /** The cursor is unusable (expired, ahead of the server or too far behind): reload everything. */
+  onResync?: (data: { cursor: string; reason: string }) => void
+  onError?: (error: Event) => void
+}
 
 export class InboxSSE {
   private eventSource: EventSource | null = null
@@ -1572,14 +1823,9 @@ export class InboxSSE {
   private maxReconnectDelay = 30000
   private connectionGeneration = 0
 
-  async connect(handlers: {
-    onNewEmail?: (data: ReceivedEmail) => void
-    onEmailUpdate?: (data: { uuid: string; updates: Record<string, unknown> }) => void
-    onEmailDeleted?: (data: { uuids: string[] }) => void
-    onCountsUpdate?: (data: InboxCounts & { identityId: number }) => void
-    onConnected?: (data: { clientId: string }) => void
-    onError?: (error: Event) => void
-  }) {
+  // cursor is read on every (re)connect so a reconnect resumes from the latest
+  // event the caller applied. Every connect redeems a fresh single-use ticket.
+  async connect(handlers: InboxSSEHandlers, options: { cursor?: () => string | undefined } = {}) {
     this.disconnect()
     const token = api.getToken()
     if (!token) {
@@ -1594,70 +1840,52 @@ export class InboxSSE {
     } catch {
       if (generation === this.connectionGeneration && api.getToken() === token) {
         handlers.onError?.(new Event('error'))
-        this.scheduleReconnect(handlers)
+        this.scheduleReconnect(handlers, options)
       }
       return
     }
     // A late ticket from a logged-out account must never reopen its stream.
     if (generation !== this.connectionGeneration || api.getToken() !== token) return
     const baseUrl = import.meta.env.VITE_API_URL || ''
-    const url = `${baseUrl}/api/v1/sse/connect?token=${encodeURIComponent(ticket.token)}`
+    const cursor = options.cursor?.()
+    const url = `${baseUrl}/api/v1/sse/connect?token=${encodeURIComponent(ticket.token)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
 
     const source = new EventSource(url)
     this.eventSource = source
     const active = () => this.eventSource === source && api.getToken() === token
-
-    source.addEventListener('connected', (event) => {
-      if (!active()) return
-      this.reconnectDelay = 1000
-      const data = JSON.parse(event.data)
-      handlers.onConnected?.(data.data)
-    })
-
-    source.addEventListener('new_email', (event) => {
-      if (!active()) return
-      const data = JSON.parse(event.data)
-      handlers.onNewEmail?.(data.data)
-    })
-
-    source.addEventListener('email_update', (event) => {
-      if (!active()) return
-      const data = JSON.parse(event.data)
-      handlers.onEmailUpdate?.(data.data)
-    })
-
-    source.addEventListener('email_deleted', (event) => {
-      if (!active()) return
-      const data = JSON.parse(event.data)
-      handlers.onEmailDeleted?.(data.data)
-    })
-
-    source.addEventListener('counts_update', (event) => {
-      if (!active()) return
-      const data = JSON.parse(event.data)
-      handlers.onCountsUpdate?.({ ...data.data, identityId: data.identityId })
-    })
+    const on = <T>(name: string, handler: ((data: T) => void) | undefined, extra?: Partial<T>) => {
+      source.addEventListener(name, (event) => {
+        if (!active()) return
+        if (name === 'connected') this.reconnectDelay = 1000
+        handler?.({ ...JSON.parse((event as MessageEvent).data).data, ...extra })
+      })
+    }
+    on('connected', handlers.onConnected)
+    on<MailboxCreatedEvent>('new_email', handlers.onNewEmail, { type: 'new_email' })
+    on<MailboxUpdatedEvent>('email_update', handlers.onEmailUpdate, { type: 'email_update' })
+    on<MailboxDeletedEvent>('email_deleted', handlers.onEmailDeleted, { type: 'email_deleted' })
+    on('counts_update', handlers.onCountsUpdate)
+    on('resync', handlers.onResync)
 
     source.onerror = (error) => {
       if (!active()) return
       // Own the retry loop: leaving this source open also enables the browser's
-      // native retry, which can race our timer and close a recovered connection.
+      // native retry, which would reuse the spent ticket.
       source.close()
       this.eventSource = null
       handlers.onError?.(error)
-      this.scheduleReconnect(handlers)
+      this.scheduleReconnect(handlers, options)
     }
   }
 
-  private scheduleReconnect(handlers: Parameters<typeof this.connect>[0]) {
+  private scheduleReconnect(handlers: InboxSSEHandlers, options: { cursor?: () => string | undefined }) {
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout)
     }
 
     this.reconnectTimeout = window.setTimeout(() => {
-      console.log(`Reconnecting to SSE in ${this.reconnectDelay}ms...`)
       this.disconnect()
-      this.connect(handlers)
+      this.connect(handlers, options)
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay)
     }, this.reconnectDelay)
   }
