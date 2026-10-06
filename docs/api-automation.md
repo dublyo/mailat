@@ -33,8 +33,8 @@ every route has been exercised against its external provider. In particular,
 `/inbox`, `/inbox/emails`, `/inbox/threads` and the older inbox mutation/search
 routes use JMAP; SES integrations should use `/inbox/received`, `/inbox/changes`
 and `/inbox/filters`. Auto-replies and verified forwards run when mail
-arrives through SES; stored shared-mailbox configuration does not yet deliver to
-members. Sieve scripts are no longer supported (existing rows are kept but never
+arrives through SES, and shared mailboxes deliver an independent copy to each
+member who can read them (members see only shared mailboxes they belong to). Sieve scripts are no longer supported (existing rows are kept but never
 run); inbox filters are the only rule engine. Use the domain sending-setup and explicit inbox receiving-setup routes for
 SES configuration (the legacy `/settings/aws/*` provisioning endpoints were
 removed).

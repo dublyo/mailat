@@ -388,12 +388,22 @@ func (s *IdentityService) GetIdentity(ctx context.Context, userID int64, identit
 
 // ListIdentities returns all identities for a user
 func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*model.Identity, error) {
+	// Personal identities the user owns, then shared identities the user is a
+	// member of; for those, canSend is the member's permission and the identity's.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, uuid, user_id, domain_id, email, COALESCE(display_name, ''), is_default, is_catch_all, color,
-		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive, kind
+		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive, kind,
+		       true, false, '', ''
 		FROM identities
 		WHERE user_id = $1 AND kind = 'personal'
-		ORDER BY is_default DESC, email ASC
+		UNION ALL
+		SELECT i.id, i.uuid, i.user_id, i.domain_id, i.email, COALESCE(i.display_name, ''), false, false, i.color,
+		       i.stalwart_account_id, i.quota_bytes, i.used_bytes, i.created_at, i.updated_at, i.can_send AND m.can_send, i.can_receive, i.kind,
+		       m.can_read, m.can_manage, sm.uuid::text, sm.name
+		FROM shared_mailbox_members m JOIN shared_mailboxes sm ON sm.id = m.shared_mailbox_id
+		JOIN identities i ON i.id = sm.identity_id AND i.kind = 'shared'
+		WHERE m.user_id = $1
+		ORDER BY 17, 7 DESC, 5
 	`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query identities: %w", err)
@@ -408,7 +418,8 @@ func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*
 		if err := rows.Scan(&identity.ID, &identity.UUID, &identity.UserID, &identity.DomainID,
 			&identity.Email, &identity.DisplayName, &identity.IsDefault, &identity.IsCatchAll, &colorNull,
 			&stalwartAcctID, &identity.QuotaBytes, &identity.UsedBytes,
-			&identity.CreatedAt, &identity.UpdatedAt, &identity.CanSend, &identity.CanReceive, &identity.Kind); err != nil {
+			&identity.CreatedAt, &identity.UpdatedAt, &identity.CanSend, &identity.CanReceive, &identity.Kind,
+			&identity.CanRead, &identity.CanManage, &identity.SharedMailboxUuid, &identity.SharedMailboxName); err != nil {
 			return nil, fmt.Errorf("failed to scan identity: %w", err)
 		}
 		if stalwartAcctID.Valid {
@@ -416,6 +427,10 @@ func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*
 		}
 		if colorNull.Valid {
 			identity.Color = colorNull.String
+		}
+		if identity.Kind == "shared" {
+			// The steward is not exposed to members.
+			identity.Shared, identity.UserID = true, 0
 		}
 		identity.Status = "active" // Virtual field
 		identities = append(identities, &identity)

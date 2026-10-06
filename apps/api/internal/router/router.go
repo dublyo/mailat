@@ -472,6 +472,7 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.GET("/shared-mailboxes", phase5Ctrl.ListSharedMailboxes)
 			protectedGroup.GET("/shared-mailboxes/:id", phase5Ctrl.GetSharedMailbox)
 			protectedGroup.POST("/shared-mailboxes/:id/members", phase5Ctrl.AddSharedMailboxMember)
+			protectedGroup.PUT("/shared-mailboxes/:id/members/:userId", phase5Ctrl.UpdateSharedMailboxMember)
 			protectedGroup.GET("/shared-mailboxes/:id/members", phase5Ctrl.ListSharedMailboxMembers)
 			protectedGroup.DELETE("/shared-mailboxes/:id/members/:userId", phase5Ctrl.RemoveSharedMailboxMember)
 

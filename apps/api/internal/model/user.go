@@ -99,18 +99,24 @@ type DomainDNSRecord struct {
 
 // Identity represents an email identity/mailbox
 type Identity struct {
-	ID                int64     `json:"id"`
-	UUID              string    `json:"uuid"`
-	UserID            int64     `json:"userId"`
-	DomainID          int64     `json:"domainId"`
-	Email             string    `json:"email"`
-	DisplayName       string    `json:"displayName"`
-	IsDefault         bool      `json:"isDefault"`
-	IsCatchAll        bool      `json:"isCatchAll"`
-	Color             string    `json:"color"` // Hex color for UI display
-	CanSend           bool      `json:"canSend"`
-	CanReceive        bool      `json:"canReceive"`
-	Kind              string    `json:"kind"` // personal or shared
+	ID          int64  `json:"id"`
+	UUID        string `json:"uuid"`
+	UserID      int64  `json:"userId"`
+	DomainID    int64  `json:"domainId"`
+	Email       string `json:"email"`
+	DisplayName string `json:"displayName"`
+	IsDefault   bool   `json:"isDefault"`
+	IsCatchAll  bool   `json:"isCatchAll"`
+	Color       string `json:"color"` // Hex color for UI display
+	CanSend     bool   `json:"canSend"`
+	CanReceive  bool   `json:"canReceive"`
+	Kind        string `json:"kind"` // personal or shared
+	// Shared identities appear only to members, with the caller's permissions.
+	Shared            bool      `json:"shared"`
+	CanRead           bool      `json:"canRead,omitempty"`
+	CanManage         bool      `json:"canManage,omitempty"`
+	SharedMailboxUuid string    `json:"sharedMailboxUuid,omitempty"`
+	SharedMailboxName string    `json:"sharedMailboxName,omitempty"`
 	StalwartAcctID    string    `json:"stalwartAcctId,omitempty"`
 	PasswordHash      string    `json:"-"`
 	EncryptedPassword string    `json:"-"` // AES-encrypted password for JMAP auth

@@ -84,6 +84,8 @@ var (
 	ErrForwardResendLimited = errors.New("verification email resend limit reached")
 	// ErrForwardVerifyFailed is every verification failure, so callers learn nothing.
 	ErrForwardVerifyFailed = errors.New("invalid or expired verification link")
+	// Shared mailbox members never lose their copies to a forward.
+	errSharedForwardKeepCopy = &ForwardValidationError{Message: "Forwards from a shared mailbox must keep a copy"}
 )
 
 const forwardColumns = `f.uuid::text, i.uuid::text, lower(i.email), f.forward_to, f.keep_copy, f.status, COALESCE(f.active,false), COALESCE(f.verified,false),
@@ -166,17 +168,21 @@ func (s *AutoReplyService) CreateEmailForward(ctx context.Context, userID, orgID
 		return nil, err
 	}
 	defer tx.Rollback()
-	// Locking the identity serializes the per-identity forward count.
-	var identityID, ownerID int64
-	var canSend, domainActive, sesVerified bool
-	err = tx.QueryRowContext(ctx, `SELECT i.id,i.user_id,COALESCE(i.can_send,false),d.status='active',COALESCE(d.ses_verified,false)
-		FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.uuid=$1 AND i.kind='personal' AND d.org_id=$2 FOR UPDATE OF i`, input.IdentityUUID, orgID).
-		Scan(&identityID, &ownerID, &canSend, &domainActive, &sesVerified)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && ownerID != userID) {
+	// Locking the identity serializes the per-identity forward count. A shared
+	// identity needs can_manage and always keeps its members' copies.
+	var identityID int64
+	var allowed, shared, canSend, domainActive, sesVerified bool
+	err = tx.QueryRowContext(ctx, `SELECT i.id,`+identityAccessSQL("i", "$3", identityCanManage)+`,i.kind='shared',COALESCE(i.can_send,false),d.status='active',COALESCE(d.ses_verified,false)
+		FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.uuid=$1 AND d.org_id=$2 FOR UPDATE OF i`, input.IdentityUUID, orgID, userID).
+		Scan(&identityID, &allowed, &shared, &canSend, &domainActive, &sesVerified)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !allowed) {
 		return nil, &ForwardValidationError{Message: "identity not found"}
 	}
 	if err != nil {
 		return nil, err
+	}
+	if shared && !input.KeepCopy {
+		return nil, errSharedForwardKeepCopy
 	}
 	if !canSend || !domainActive || (s.cfg.EmailProvider == "ses" && !sesVerified) {
 		return nil, &ForwardValidationError{Message: "This identity cannot send mail, so it cannot forward"}
@@ -407,6 +413,15 @@ func (s *AutoReplyService) UpdateEmailForward(ctx context.Context, userID int64,
 	if input.KeepCopy != nil {
 		keepCopy = *input.KeepCopy
 	}
+	if !keepCopy {
+		var shared bool
+		if err = tx.QueryRowContext(ctx, `SELECT i.kind='shared' FROM email_forwards f JOIN identities i ON i.id=f.identity_id WHERE f.uuid=$1`, forwardUUID).Scan(&shared); err != nil {
+			return nil, err
+		}
+		if shared {
+			return nil, errSharedForwardKeepCopy
+		}
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE email_forwards SET status=$2,active=($2='active'),keep_copy=$3,updated_at=now() WHERE uuid=$1`, forwardUUID, status, keepCopy); err != nil {
 		return nil, err
 	}
@@ -577,9 +592,9 @@ func (r *ArrivalRunner) runForward(ctx context.Context, tx *sql.Tx, job *arrival
 	}
 	var identityEmail string
 	var owned, canSend bool
-	err = tx.QueryRowContext(ctx, `SELECT lower(i.email),i.user_id=$2,
+	err = tx.QueryRowContext(ctx, `SELECT lower(i.email),`+identityAccessSQL("i", "$2", identityCanManage)+`,
 			COALESCE(i.can_send,false) AND d.status='active' AND (COALESCE(d.ses_verified,false) OR $4<>'ses')
-		FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.id=$1 AND i.kind='personal' AND d.org_id=$3`,
+		FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.id=$1 AND d.org_id=$3`,
 		job.IdentityID, ownerID, job.OrgID, r.tx.cfg.EmailProvider).Scan(&identityEmail, &owned, &canSend)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && !owned) {
 		return arrivalSkipped("identity-not-owned"), nil

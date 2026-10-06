@@ -56,30 +56,58 @@ func normalizeSenderAlias(alias, domain string) (string, error) {
 	return strings.ToLower(a.Address), nil
 }
 
-// Domain ownership is checked independently of SES account-wide identity verification.
+// errMemberAlias rejects a member's From address other than the identity
+// address or a +tag form of it.
+var errMemberAlias = &provider.MailValidationError{Message: "From must be the identity address or a +tag form of it"}
+
+// memberAliasAllowed reports whether alias is identity itself or local+tag@domain.
+func memberAliasAllowed(identity, alias string) bool {
+	identity, alias = strings.ToLower(identity), strings.ToLower(alias)
+	if alias == identity {
+		return true
+	}
+	at := strings.LastIndexByte(identity, '@')
+	if at < 1 {
+		return false
+	}
+	local, domain := identity[:at], identity[at:]
+	tag, ok := strings.CutPrefix(alias, local+"+")
+	return ok && strings.HasSuffix(tag, domain) && len(tag) > len(domain) && !strings.Contains(strings.TrimSuffix(tag, domain), "@")
+}
+
+// Domain ownership is checked independently of SES account-wide identity
+// verification. The sender is a personal identity the user owns, or a shared
+// identity the user may send as. Owners and admins may use any free address on
+// the identity's domain; members only the identity address or a +tag of it.
 func (s *ComposeService) authorizeMailboxSender(ctx context.Context, userID, identityID int64, alias string) (*mailboxSender, error) {
 	sender := &mailboxSender{userID: userID}
+	var role string
 	err := s.db.QueryRowContext(ctx, `SELECT i.id,d.id,u.org_id,i.email,COALESCE(i.display_name,''),d.name,
-	 COALESCE(NULLIF(d.attachment_s3_bucket,''),NULLIF(d.receiving_s3_bucket,''),rc.s3_bucket,'')
-	 FROM identities i JOIN users u ON u.id=i.user_id JOIN domains d ON d.id=i.domain_id
+	 COALESCE(NULLIF(d.attachment_s3_bucket,''),NULLIF(d.receiving_s3_bucket,''),rc.s3_bucket,''),COALESCE(u.role,'')
+	 FROM identities i JOIN users u ON u.id=$2 JOIN domains d ON d.id=i.domain_id
 	 LEFT JOIN receiving_configs rc ON rc.org_id=u.org_id
-	 WHERE i.id=$1 AND i.user_id=$2 AND i.kind='personal' AND i.can_send=true AND d.org_id=u.org_id
-	 AND d.status='active' AND d.ses_verified=true`, identityID, userID).Scan(&sender.identityID, &sender.domainID, &sender.orgID, &sender.email, &sender.name, &sender.domain, &sender.bucket)
+	 WHERE i.id=$1 AND `+identityAccessSQL("i", "$2", identityCanSend)+` AND i.can_send=true AND d.org_id=u.org_id
+	 AND d.status='active' AND d.ses_verified=true`, identityID, userID).Scan(&sender.identityID, &sender.domainID, &sender.orgID, &sender.email, &sender.name, &sender.domain, &sender.bucket, &role)
 	if err == sql.ErrNoRows {
 		return nil, &provider.MailValidationError{Message: "select an authorized sending identity on a verified SES domain"}
 	}
 	if err != nil {
 		return nil, err
 	}
+	identityEmail := sender.email
 	if alias == "" {
-		alias = sender.email
+		alias = identityEmail
 	}
 	sender.email, err = normalizeSenderAlias(alias, sender.domain)
 	if err != nil {
 		return nil, err
 	}
+	if role != "owner" && role != "admin" && !memberAliasAllowed(identityEmail, sender.email) {
+		return nil, errMemberAlias
+	}
+	// Any other identity's address is foreign unless it is the user's own personal identity.
 	var otherOwner bool
-	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE LOWER(email)=$1 AND NOT (kind='personal' AND user_id=$2))`, sender.email, userID).Scan(&otherOwner)
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE LOWER(email)=$1 AND id<>$3 AND NOT (kind='personal' AND user_id=$2))`, sender.email, userID, identityID).Scan(&otherOwner)
 	if err != nil {
 		return nil, err
 	}

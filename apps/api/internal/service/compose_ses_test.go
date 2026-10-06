@@ -54,7 +54,7 @@ func mailboxFixture(t *testing.T, db *sql.DB, domainName string) (org, user, ide
 	if err := db.QueryRow(`INSERT INTO organizations(name,slug,updated_at) VALUES($1,$1,now()) RETURNING id`, domainName).Scan(&org); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`INSERT INTO users(org_id,email,password_hash,updated_at) VALUES($1,$2,'unused',now()) RETURNING id`, org, "owner@"+domainName).Scan(&user); err != nil {
+	if err := db.QueryRow(`INSERT INTO users(org_id,email,password_hash,role,updated_at) VALUES($1,$2,'unused','owner',now()) RETURNING id`, org, "owner@"+domainName).Scan(&user); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`INSERT INTO domains(org_id,name,verification_token,status,ses_verified,receiving_s3_bucket,updated_at) VALUES($1,$2,'test','active',true,'private-test',now()) RETURNING id`, org, domainName).Scan(&domain); err != nil {

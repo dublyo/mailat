@@ -46,6 +46,7 @@ type ArrivalCopy struct {
 // ArrivalInput is one identity's share of an arriving message.
 type ArrivalInput struct {
 	OrgID, IdentityID int64
+	IdentityKind      string // personal (one copy) or shared (one copy per reader)
 	IdentityEmail     string
 	Recipients        []string
 	Copies            []ArrivalCopy
@@ -93,13 +94,21 @@ func EnqueueArrivalJobs(ctx context.Context, tx *sql.Tx, in ArrivalInput) error 
 	sender := strings.ToLower(extractEmail(in.Header["From"]))
 	subject := clipUTF8(decodeMIMEHeader(in.Header.Get("Subject")), 1000)
 
-	// Personal identity: the single copy belongs to the identity owner.
-	owner := in.Copies[0]
-	ruleID, err := activeRuleForIdentity(ctx, tx, in.IdentityID, owner.OwnerID)
+	// copyOf picks the given user's copy; jobs of other users use the first copy.
+	copyOf := func(user int64) ArrivalCopy {
+		for _, c := range in.Copies {
+			if c.OwnerID == user {
+				return c
+			}
+		}
+		return in.Copies[0]
+	}
+	ruleID, ruleUser, err := activeRuleForIdentity(ctx, tx, in.IdentityID)
 	if err != nil {
 		return err
 	}
 	if ruleID != 0 {
+		owner := copyOf(ruleUser)
 		var isIdentity bool
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE lower(email)=$1)`, sender).Scan(&isIdentity); err != nil {
 			return err
@@ -115,7 +124,7 @@ func EnqueueArrivalJobs(ctx context.Context, tx *sql.Tx, in ArrivalInput) error 
 		})
 		if ok {
 			payload := arrivalAutoReply{Sender: sender, Subject: subject, MessageID: clipUTF8(strings.TrimSpace(in.Header.Get("Message-Id")), 500), References: clipUTF8(strings.Join(strings.Fields(in.Header.Get("References")), " "), 4000)}
-			if err = insertArrivalJob(ctx, tx, in.OrgID, in.IdentityID, owner.OwnerID, ruleID, owner.EmailID, "auto_reply", sesID, fmt.Sprintf("ar:%d:%s", in.IdentityID, sesID), payload); err != nil {
+			if err = insertArrivalJob(ctx, tx, in.OrgID, in.IdentityID, ruleUser, ruleID, owner.EmailID, "auto_reply", sesID, fmt.Sprintf("ar:%d:%s", in.IdentityID, sesID), payload); err != nil {
 				return err
 			}
 		}
@@ -144,7 +153,7 @@ func EnqueueArrivalJobs(ctx context.Context, tx *sql.Tx, in ArrivalInput) error 
 		forwardPayload.LoopTokens = forwardPayload.LoopTokens[:maxForwardHops]
 	}
 	for _, f := range forwards {
-		if err = insertArrivalJob(ctx, tx, in.OrgID, in.IdentityID, f.user, f.id, owner.EmailID, "forward", sesID, fmt.Sprintf("fw:%d:%s", f.id, sesID), forwardPayload); err != nil {
+		if err = insertArrivalJob(ctx, tx, in.OrgID, in.IdentityID, f.user, f.id, copyOf(f.user).EmailID, "forward", sesID, fmt.Sprintf("fw:%d:%s", f.id, sesID), forwardPayload); err != nil {
 			return err
 		}
 	}
@@ -411,19 +420,19 @@ func (r *ArrivalRunner) autoReplyDailyLimit() int {
 	return 200
 }
 
-// activeRuleForIdentity returns the oldest active auto-reply of the identity
-// owner that covers the identity, or 0. A rule with no identity_ids covers all
-// of the owner's personal identities.
-func activeRuleForIdentity(ctx context.Context, q queryer, identityID, ownerID int64) (int64, error) {
-	var id int64
-	err := q.QueryRowContext(ctx, `SELECT a.id FROM auto_replies a JOIN identities i ON i.id=$1 AND `+identityAccessSQL("i", "a.user_id", identityCanManage)+`
-		WHERE a.user_id=$2 AND a.active AND a.start_date<=now() AND (a.end_date IS NULL OR a.end_date>=now())
+// activeRuleForIdentity returns the oldest active auto-reply covering the
+// identity and its owner, or 0. Rules belong to the personal identity's owner
+// or to a can_manage member of a shared one; a rule with no identity_ids covers
+// all of its owner's personal identities, never a shared identity.
+func activeRuleForIdentity(ctx context.Context, q queryer, identityID int64) (id, userID int64, err error) {
+	err = q.QueryRowContext(ctx, `SELECT a.id,a.user_id FROM auto_replies a JOIN identities i ON i.id=$1 AND `+identityAccessSQL("i", "a.user_id", identityCanManage)+`
+		WHERE a.active AND a.start_date<=now() AND (a.end_date IS NULL OR a.end_date>=now())
 			AND ((cardinality(COALESCE(a.identity_ids,'{}'))=0 AND i.kind='personal') OR $1=ANY(a.identity_ids))
-		ORDER BY a.created_at, a.id LIMIT 1`, identityID, ownerID).Scan(&id)
+		ORDER BY a.created_at, a.id LIMIT 1`, identityID).Scan(&id, &userID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
+		return 0, 0, nil
 	}
-	return id, err
+	return id, userID, err
 }
 
 // runAutoReply re-checks the rule, claims the sender for the reply interval,

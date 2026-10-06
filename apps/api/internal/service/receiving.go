@@ -73,8 +73,10 @@ func (s *ReceivingService) AuthorizeNotification(ctx context.Context, topic, sec
 
 type recipientIdentity struct {
 	ID, DomainID, OrgID, UserID int64
-	Email, Domain               string
+	Kind, Email, Domain         string
 	Recipients                  []string
+	// Owners receive a copy: the identity owner, or a shared mailbox's readers.
+	Owners []int64
 }
 
 // SetupDomainReceiving sets up email receiving for a domain
@@ -236,11 +238,14 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 		}
 		domain := address[at+1:]
 		var ident recipientIdentity
-		err = s.db.QueryRowContext(ctx, `SELECT i.id,i.domain_id,d.org_id,i.user_id,i.email,d.name
-   FROM identities i JOIN domains d ON d.id=i.domain_id
-   WHERE d.org_id=$1 AND d.name=$2 AND d.status='active' AND d.receiving_enabled=true AND i.can_receive=true AND i.kind='personal'
+		// A shared identity's user_id is only its steward, whose status never
+		// stops delivery; shared identities are never catch-alls (CHECK).
+		err = s.db.QueryRowContext(ctx, `SELECT i.id,i.domain_id,d.org_id,i.user_id,i.kind,i.email,d.name
+   FROM identities i JOIN domains d ON d.id=i.domain_id JOIN users u ON u.id=i.user_id
+   WHERE d.org_id=$1 AND d.name=$2 AND d.status='active' AND d.receiving_enabled=true AND i.can_receive=true
+   AND (i.kind='shared' OR (i.kind='personal' AND u.status='active'))
    AND (lower(i.email)=$3 OR i.is_catch_all=true)
-   ORDER BY (lower(i.email)=$3) DESC,i.id LIMIT 1`, auth.OrgID, domain, address).Scan(&ident.ID, &ident.DomainID, &ident.OrgID, &ident.UserID, &ident.Email, &ident.Domain)
+   ORDER BY (lower(i.email)=$3) DESC,i.id LIMIT 1`, auth.OrgID, domain, address).Scan(&ident.ID, &ident.DomainID, &ident.OrgID, &ident.UserID, &ident.Kind, &ident.Email, &ident.Domain)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -335,11 +340,19 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 		return err
 	}
 	defer tx.Rollback()
-	// Lock all recipient owners in a stable order before inserting mail/cursors.
-	users := []int64{}
+	ordered := make([]*recipientIdentity, 0, len(identities))
 	for _, ident := range identities {
-		users = append(users, ident.UserID)
+		ordered = append(ordered, ident)
 	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+	users := []int64{}
+	for _, ident := range ordered {
+		if ident.Owners, err = mailboxOwners(ctx, tx, ident); err != nil {
+			return err
+		}
+		users = append(users, ident.Owners...)
+	}
+	// Lock the union of all copy owners in a stable order before inserting mail/cursors.
 	sort.Slice(users, func(i, j int) bool { return users[i] < users[j] })
 	for i, user := range users {
 		if i == 0 || user != users[i-1] {
@@ -367,18 +380,12 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 	if spam {
 		folder = "spam"
 	}
-	saved := map[int64]*model.ReceivedEmail{}
-	for _, ident := range identities {
-		deliveryFolder := folder
-		if isDMARCReport && folder == "inbox" {
-			enabled, err := autoOrganizeDMARC(ctx, tx, ident.UserID)
-			if err != nil {
-				return err
-			}
-			if enabled {
-				deliveryFolder = DMARCReportsFolder
-			}
-		}
+	type delivery struct {
+		owner int64
+		email *model.ReceivedEmail
+	}
+	var saved []delivery
+	for _, ident := range ordered {
 		res, err := tx.ExecContext(ctx, `INSERT INTO received_ingestions(org_id,topic_arn,ses_message_id,identity_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, auth.OrgID, auth.TopicARN, n.Mail.MessageId, ident.ID)
 		if err != nil {
 			return err
@@ -390,50 +397,96 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 		if count == 0 {
 			continue
 		}
-		var emailID int64
-		var emailUUID string
-		err = tx.QueryRowContext(ctx, `INSERT INTO received_emails(org_id,domain_id,identity_id,message_id,thread_id,from_email,from_name,to_emails,cc_emails,subject,snippet,raw_s3_bucket,raw_s3_key,folder,is_spam,spam_verdict,virus_verdict,spf_verdict,dkim_verdict,dmarc_verdict,ses_message_id,received_at,text_body,html_body,size_bytes,has_attachments,in_reply_to,"references",reply_to,envelope_recipients,updated_at)
-   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,NOW())
-   ON CONFLICT(identity_id,mailbox_owner_id,ses_message_id) DO NOTHING RETURNING id,uuid`, ident.OrgID, ident.DomainID, ident.ID, clipUTF8(messageID, 500), thread, from, name, pq.Array(addressList(parsed.Header, "To")), pq.Array(addressList(parsed.Header, "Cc")), subject, clipUTF8(parsed.Text, 200), auth.Bucket, key, deliveryFolder, spam, n.Receipt.SpamVerdict.Status, n.Receipt.VirusVerdict.Status, n.Receipt.SPFVerdict.Status, n.Receipt.DKIMVerdict.Status, n.Receipt.DMARCVerdict.Status, n.Mail.MessageId, parseTimestamp(n.Receipt.Timestamp), parsed.Text, parsed.HTML, len(raw), len(parsed.Attachments) > 0, clipUTF8(parsed.Header.Get("In-Reply-To"), 500), pq.Array(refs), replyTo, pq.Array(ident.Recipients)).Scan(&emailID, &emailUUID)
-		if err == sql.ErrNoRows {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("insert mailbox delivery: %w", err)
-		}
-		for _, att := range parsed.Attachments {
-			if _, err = tx.ExecContext(ctx, `INSERT INTO email_attachments(received_email_id,filename,content_type,size_bytes,s3_key,s3_bucket,content_id,is_inline,checksum) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, emailID, att.Filename, att.ContentType, att.SizeBytes, att.S3Key, att.S3Bucket, att.ContentID, att.IsInline, att.Checksum); err != nil {
+		var copies []ArrivalCopy
+		for _, owner := range ident.Owners {
+			deliveryFolder := folder
+			if isDMARCReport && folder == "inbox" {
+				enabled, err := autoOrganizeDMARC(ctx, tx, owner)
+				if err != nil {
+					return err
+				}
+				if enabled {
+					deliveryFolder = DMARCReportsFolder
+				}
+			}
+			var emailID int64
+			var emailUUID string
+			err = tx.QueryRowContext(ctx, `INSERT INTO received_emails(org_id,domain_id,identity_id,mailbox_owner_id,message_id,thread_id,from_email,from_name,to_emails,cc_emails,subject,snippet,raw_s3_bucket,raw_s3_key,folder,is_spam,spam_verdict,virus_verdict,spf_verdict,dkim_verdict,dmarc_verdict,ses_message_id,received_at,text_body,html_body,size_bytes,has_attachments,in_reply_to,"references",reply_to,envelope_recipients,updated_at)
+   VALUES($1,$2,$3,$31,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,NOW())
+   ON CONFLICT(identity_id,mailbox_owner_id,ses_message_id) DO NOTHING RETURNING id,uuid`, ident.OrgID, ident.DomainID, ident.ID, clipUTF8(messageID, 500), thread, from, name, pq.Array(addressList(parsed.Header, "To")), pq.Array(addressList(parsed.Header, "Cc")), subject, clipUTF8(parsed.Text, 200), auth.Bucket, key, deliveryFolder, spam, n.Receipt.SpamVerdict.Status, n.Receipt.VirusVerdict.Status, n.Receipt.SPFVerdict.Status, n.Receipt.DKIMVerdict.Status, n.Receipt.DMARCVerdict.Status, n.Mail.MessageId, parseTimestamp(n.Receipt.Timestamp), parsed.Text, parsed.HTML, len(raw), len(parsed.Attachments) > 0, clipUTF8(parsed.Header.Get("In-Reply-To"), 500), pq.Array(refs), replyTo, pq.Array(ident.Recipients), owner).Scan(&emailID, &emailUUID)
+			if err == sql.ErrNoRows {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("insert mailbox delivery: %w", err)
+			}
+			for _, att := range parsed.Attachments {
+				if _, err = tx.ExecContext(ctx, `INSERT INTO email_attachments(received_email_id,filename,content_type,size_bytes,s3_key,s3_bucket,content_id,is_inline,checksum) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, emailID, att.Filename, att.ContentType, att.SizeBytes, att.S3Key, att.S3Bucket, att.ContentID, att.IsInline, att.Checksum); err != nil {
+					return err
+				}
+			}
+			email := &model.ReceivedEmail{ID: emailID, UUID: emailUUID, OrgID: ident.OrgID, IdentityID: ident.ID, DomainID: ident.DomainID, FromEmail: from, Subject: subject, TextBody: parsed.Text, HasAttachments: len(parsed.Attachments) > 0, ToEmails: addressList(parsed.Header, "To"), CcEmails: addressList(parsed.Header, "Cc"), EnvelopeRecipients: ident.Recipients, Folder: deliveryFolder, IsSpam: spam, ReceivedAt: parseTimestamp(n.Receipt.Timestamp)}
+			if err = s.applyReceivedFilters(ctx, tx, owner, email); err != nil {
 				return err
 			}
+			// Forwarding with keepCopy=false archives the local copy; it is never
+			// deleted. Shared identities always keep their copies.
+			if ident.Kind == "personal" {
+				if email.Folder, err = keepCopyArchive(ctx, tx, ident.ID, emailID, email.Folder); err != nil {
+					return err
+				}
+			}
+			dedupe := fmt.Sprintf("received:%s:%d", n.Mail.MessageId, ident.ID)
+			if ident.Kind == "shared" {
+				dedupe = fmt.Sprintf("%s:%d", dedupe, owner)
+			}
+			if err = eventoutbox.Emit(ctx, tx, eventoutbox.Event{Type: "email.received", OrgID: ident.OrgID, UserID: owner, IdentityID: ident.ID, MessageUUID: emailUUID, DedupeKey: dedupe, Data: map[string]any{"from": email.FromEmail, "to": email.ToEmails, "subject": email.Subject, "folder": email.Folder, "inReplyTo": parsed.Header.Get("In-Reply-To"), "hasAttachments": email.HasAttachments}}); err != nil {
+				return err
+			}
+			copies = append(copies, ArrivalCopy{OwnerID: owner, EmailID: emailID, UUID: emailUUID, Folder: email.Folder})
+			saved = append(saved, delivery{owner, email})
 		}
-		email := &model.ReceivedEmail{ID: emailID, UUID: emailUUID, OrgID: ident.OrgID, IdentityID: ident.ID, DomainID: ident.DomainID, FromEmail: from, Subject: subject, TextBody: parsed.Text, HasAttachments: len(parsed.Attachments) > 0, ToEmails: addressList(parsed.Header, "To"), CcEmails: addressList(parsed.Header, "Cc"), EnvelopeRecipients: ident.Recipients, Folder: deliveryFolder, IsSpam: spam, ReceivedAt: parseTimestamp(n.Receipt.Timestamp)}
-		if err = s.applyReceivedFilters(ctx, tx, ident.UserID, email); err != nil {
-			return err
-		}
-		// Forwarding with keepCopy=false archives the local copy; it is never deleted.
-		if email.Folder, err = keepCopyArchive(ctx, tx, ident.ID, emailID, email.Folder); err != nil {
-			return err
-		}
-		if err = eventoutbox.Emit(ctx, tx, eventoutbox.Event{Type: "email.received", OrgID: ident.OrgID, UserID: ident.UserID, IdentityID: ident.ID, MessageUUID: emailUUID, DedupeKey: fmt.Sprintf("received:%s:%d", n.Mail.MessageId, ident.ID), Data: map[string]any{"from": email.FromEmail, "to": email.ToEmails, "subject": email.Subject, "folder": email.Folder, "inReplyTo": parsed.Header.Get("In-Reply-To"), "hasAttachments": email.HasAttachments}}); err != nil {
-			return err
-		}
-		if err = EnqueueArrivalJobs(ctx, tx, ArrivalInput{OrgID: ident.OrgID, IdentityID: ident.ID, IdentityEmail: strings.ToLower(ident.Email), Recipients: ident.Recipients,
-			Copies: []ArrivalCopy{{OwnerID: ident.UserID, EmailID: emailID, UUID: emailUUID, Folder: email.Folder}}, Header: parsed.Header, Notification: n, DMARCReport: isDMARCReport}); err != nil {
+		if err = EnqueueArrivalJobs(ctx, tx, ArrivalInput{OrgID: ident.OrgID, IdentityID: ident.ID, IdentityKind: ident.Kind, IdentityEmail: strings.ToLower(ident.Email), Recipients: ident.Recipients,
+			Copies: copies, Header: parsed.Header, Notification: n, DMARCReport: isDMARCReport}); err != nil {
 			return fmt.Errorf("queue arrival jobs: %w", err)
 		}
-		saved[ident.ID] = email
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
 	if s.notify != nil {
-		for _, ident := range identities {
-			if email := saved[ident.ID]; email != nil {
-				s.notify(ident.UserID, email)
-			}
+		for _, d := range saved {
+			s.notify(d.owner, d.email)
 		}
 	}
 	return nil
+}
+
+// mailboxOwners returns who gets a copy of mail for ident. A shared identity
+// delivers to its active readers; FOR SHARE makes a concurrent member removal
+// wait until this ingest commits, so the removal also deletes the new copy.
+// Zero readers means the message is acknowledged without a copy.
+func mailboxOwners(ctx context.Context, tx *sql.Tx, ident *recipientIdentity) ([]int64, error) {
+	if ident.Kind != "shared" {
+		return []int64{ident.UserID}, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT m.user_id FROM shared_mailbox_members m JOIN shared_mailboxes sm ON sm.id=m.shared_mailbox_id
+   JOIN users u ON u.id=m.user_id
+   WHERE sm.identity_id=$1 AND m.can_read AND u.status='active'
+   ORDER BY m.user_id FOR SHARE OF m`, ident.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var owners []int64
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		owners = append(owners, id)
+	}
+	return owners, rows.Err()
 }
 func containsString(values []string, target string) bool {
 	for _, v := range values {

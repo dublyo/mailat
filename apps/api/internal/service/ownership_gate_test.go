@@ -29,6 +29,8 @@ var ownershipGateAllowlist = map[string]string{
 	"org_members.go: SELECT i.id,i.user_id,i.kind FROM identities i":                                      "admin transfer reads the kind and rejects shared identities in Go",
 	"org_members.go: FROM identities i JOIN users u ON u.id=i.user_id WHERE i.id=$1":                      "admin identity view shows the steward as owner",
 	"org_members.go: FROM identities i JOIN domains d ON d.id=i.domain_id JOIN users u ON u.id=i.user_id": "admin org identity listing shows the steward as owner",
+	"shared_mailbox.go: INSERT INTO identities(uuid,user_id":                                              "creates a shared identity; user_id is only its steward",
+	"shared_mailbox.go: SELECT count(*) FROM identities i JOIN users u":                                   "org-wide identity count includes shared identities",
 	"receiving_events.go: COALESCE(t.system_user_id,i.user_id)":                                           "transactional API sends use personal identities only; system sends carry their acting user",
 }
 

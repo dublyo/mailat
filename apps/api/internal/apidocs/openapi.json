@@ -2481,6 +2481,12 @@
       },
       "model.Identity": {
         "properties": {
+          "canManage": {
+            "type": "boolean"
+          },
+          "canRead": {
+            "type": "boolean"
+          },
           "canReceive": {
             "type": "boolean"
           },
@@ -2522,6 +2528,15 @@
           "quotaBytes": {
             "format": "int64",
             "type": "integer"
+          },
+          "shared": {
+            "type": "boolean"
+          },
+          "sharedMailboxName": {
+            "type": "string"
+          },
+          "sharedMailboxUuid": {
+            "type": "string"
           },
           "stalwartAcctId": {
             "type": "string"
@@ -4586,9 +4601,8 @@
           "canSend": {
             "type": "boolean"
           },
-          "userId": {
-            "format": "int64",
-            "type": "integer"
+          "userUuid": {
+            "type": "string"
           }
         },
         "type": "object"
@@ -6367,7 +6381,16 @@
       },
       "service.SharedMailbox": {
         "properties": {
-          "autoReplyEnabled": {
+          "active": {
+            "type": "boolean"
+          },
+          "canManage": {
+            "type": "boolean"
+          },
+          "canRead": {
+            "type": "boolean"
+          },
+          "canSend": {
             "type": "boolean"
           },
           "createdAt": {
@@ -6384,16 +6407,15 @@
             "format": "int64",
             "type": "integer"
           },
+          "identityUuid": {
+            "type": "string"
+          },
           "memberCount": {
             "format": "int64",
             "type": "integer"
           },
           "name": {
             "type": "string"
-          },
-          "orgId": {
-            "format": "int64",
-            "type": "integer"
           },
           "updatedAt": {
             "format": "date-time",
@@ -6420,22 +6442,13 @@
             "format": "date-time",
             "type": "string"
           },
-          "id": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "sharedMailboxId": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "userEmail": {
+          "email": {
             "type": "string"
           },
-          "userId": {
-            "format": "int64",
-            "type": "integer"
+          "name": {
+            "type": "string"
           },
-          "userName": {
+          "userUuid": {
             "type": "string"
           }
         },
@@ -7006,6 +7019,20 @@
               }
             ],
             "nullable": true
+          }
+        },
+        "type": "object"
+      },
+      "service.UpdateMemberInput": {
+        "properties": {
+          "canManage": {
+            "type": "boolean"
+          },
+          "canRead": {
+            "type": "boolean"
+          },
+          "canSend": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -65412,7 +65439,7 @@
     },
     "/api/v1/shared-mailboxes": {
       "get": {
-        "description": "ListSharedMailboxes lists all shared mailboxes\nGET /api/v1/shared-mailboxes",
+        "description": "ListSharedMailboxes lists every org mailbox for admins and the caller's\nmemberships for everyone else.\nGET /api/v1/shared-mailboxes",
         "operationId": "get_api_v1_shared_mailboxes",
         "responses": {
           "200": {
@@ -65653,11 +65680,11 @@
           "shared-mailboxes"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a shared mailbox does not enable delivery to its members. Use /inbox/filters and external webhook workflows for supported SES organization automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
       },
       "post": {
-        "description": "CreateSharedMailbox creates a new shared mailbox\nPOST /api/v1/shared-mailboxes",
+        "description": "CreateSharedMailbox creates a shared identity and mailbox; the creator\nbecomes a member with every permission.\nPOST /api/v1/shared-mailboxes",
         "operationId": "post_api_v1_shared_mailboxes",
         "requestBody": {
           "content": {
@@ -65905,14 +65932,14 @@
           "shared-mailboxes"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a shared mailbox does not enable delivery to its members. Use /inbox/filters and external webhook workflows for supported SES organization automation.",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
         "x-mailat-required-role": "owner or admin"
       }
     },
     "/api/v1/shared-mailboxes/{id}": {
       "delete": {
-        "description": "DeleteSharedMailbox deletes a shared mailbox\nDELETE /api/v1/shared-mailboxes/:id",
+        "description": "DeleteSharedMailbox deletes the mailbox, its identity and all member copies.\nDELETE /api/v1/shared-mailboxes/:id",
         "operationId": "delete_api_v1_shared_mailboxes_id",
         "parameters": [
           {
@@ -66152,12 +66179,12 @@
           "shared-mailboxes"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a shared mailbox does not enable delivery to its members. Use /inbox/filters and external webhook workflows for supported SES organization automation.",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
         "x-mailat-required-role": "owner or admin"
       },
       "get": {
-        "description": "GetSharedMailbox gets a shared mailbox\nGET /api/v1/shared-mailboxes/:id",
+        "description": "GetSharedMailbox returns a mailbox to an admin or a member.\nGET /api/v1/shared-mailboxes/:id",
         "operationId": "get_api_v1_shared_mailboxes_id",
         "parameters": [
           {
@@ -66405,13 +66432,13 @@
           "shared-mailboxes"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a shared mailbox does not enable delivery to its members. Use /inbox/filters and external webhook workflows for supported SES organization automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
       }
     },
     "/api/v1/shared-mailboxes/{id}/members": {
       "get": {
-        "description": "ListSharedMailboxMembers lists members of a shared mailbox\nGET /api/v1/shared-mailboxes/:id/members",
+        "description": "ListSharedMailboxMembers lists members to an admin or a member.\nGET /api/v1/shared-mailboxes/:id/members",
         "operationId": "get_api_v1_shared_mailboxes_id_members",
         "parameters": [
           {
@@ -66662,11 +66689,11 @@
           "shared-mailboxes"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a shared mailbox does not enable delivery to its members. Use /inbox/filters and external webhook workflows for supported SES organization automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
       },
       "post": {
-        "description": "AddSharedMailboxMember adds a member to a shared mailbox\nPOST /api/v1/shared-mailboxes/:id/members",
+        "description": "AddSharedMailboxMember adds an active org user. Admin or can_manage.\nPOST /api/v1/shared-mailboxes/:id/members",
         "operationId": "post_api_v1_shared_mailboxes_id_members",
         "parameters": [
           {
@@ -66924,13 +66951,13 @@
           "shared-mailboxes"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a shared mailbox does not enable delivery to its members. Use /inbox/filters and external webhook workflows for supported SES organization automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
       }
     },
     "/api/v1/shared-mailboxes/{id}/members/{userId}": {
       "delete": {
-        "description": "RemoveSharedMailboxMember removes a member from a shared mailbox\nDELETE /api/v1/shared-mailboxes/:id/members/:userId",
+        "description": "RemoveSharedMailboxMember removes a member (by user UUID) and their copies.\nAdmin or can_manage.\nDELETE /api/v1/shared-mailboxes/:id/members/:userId",
         "operationId": "delete_api_v1_shared_mailboxes_id_members_userId",
         "parameters": [
           {
@@ -67178,8 +67205,278 @@
           "shared-mailboxes"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a shared mailbox does not enable delivery to its members. Use /inbox/filters and external webhook workflows for supported SES organization automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
+      },
+      "put": {
+        "description": "UpdateSharedMailboxMember changes a member's permissions. Admin or can_manage.\nPUT /api/v1/shared-mailboxes/:id/members/:userId",
+        "operationId": "put_api_v1_shared_mailboxes_id_members_userId",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "userId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/service.UpdateMemberInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.SharedMailboxMember"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "UpdateSharedMailboxMember",
+        "tags": [
+          "shared-mailboxes"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
       }
     },
     "/api/v1/signup-forms": {

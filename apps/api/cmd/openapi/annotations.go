@@ -198,7 +198,7 @@ func annotateBackend(op object, controller, path string) {
 	} else if strings.HasPrefix(path, "/org/") {
 		note = "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail."
 	} else if strings.HasPrefix(path, "/shared-mailboxes") {
-		note = "Legacy stored configuration; not wired to SES ingestion. Storing a shared mailbox does not enable delivery to its members. Use /inbox/filters and external webhook workflows for supported SES organization automation."
+		backend, note = "ses", "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
 	}
 	op["x-mailat-backend"], op["x-mailat-backend-note"] = backend, note
 }

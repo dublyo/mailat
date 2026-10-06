@@ -36,6 +36,10 @@ func (s *ComposeService) mailboxReplyContext(ctx context.Context, userID int64, 
 	}
 	// This check also prevents replying as an explicitly reserved address of another user.
 	sender, err := s.authorizeMailboxSender(ctx, userID, original.IdentityID, alias)
+	if err == errMemberAlias {
+		// A member replying to catch-all mail answers from the identity address.
+		sender, err = s.authorizeMailboxSender(ctx, userID, original.IdentityID, ownAddress)
+	}
 	if err != nil {
 		return nil, err
 	}

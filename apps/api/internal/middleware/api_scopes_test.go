@@ -15,6 +15,7 @@ func TestAPIKeyScopeMatrixFailsClosed(t *testing.T) {
 		{"GET", "/api/v1/automations", "automations:read"}, {"GET", "/api/v1/automations/a", "automations:read"}, {"GET", "/api/v1/automations/a/stats", "automations:read"}, {"GET", "/api/v1/automations/a/enrollments", "automations:read"}, {"GET", "/api/v1/automations/a/enrollments/e", "automations:read"},
 		{"POST", "/api/v1/automations/a/enroll", "automations:enroll"}, {"POST", "/api/v1/automations/a/enrollments/e/cancel", "automations:enroll"}, {"POST", "/api/v1/automations/a/enrollments/e/retry", "automations:enroll"},
 		{"POST", "/api/v1/automations", ""}, {"PUT", "/api/v1/automations/a", ""}, {"DELETE", "/api/v1/automations/a", ""}, {"POST", "/api/v1/automations/a/validate", ""}, {"POST", "/api/v1/automations/a/activate", ""}, {"POST", "/api/v1/automations/a/pause", ""}, {"POST", "/api/v1/automations/a/archive", ""}, {"GET", "/api/v1/automations/a/enroll", ""},
+		{"PUT", "/api/v1/shared-mailboxes/1/members/u", ""}, {"POST", "/api/v1/shared-mailboxes/1/members", ""},
 		{"POST", "/api/v1/campaigns/c/unknown", ""}, {"PUT", "/api/v1/campaigns/c/send", ""}, {"DELETE", "/api/v1/campaign-settings", ""}, {"GET", "/api/v1/campaigns/c/test", ""},
 	}
 	for _, tt := range tests {

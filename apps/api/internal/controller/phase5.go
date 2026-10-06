@@ -191,160 +191,145 @@ func (c *Phase5Controller) DeleteWebAuthnCredential(r *ghttp.Request) {
 // SHARED MAILBOX ENDPOINTS
 // ====================
 
-// CreateSharedMailbox creates a new shared mailbox
-// POST /api/v1/shared-mailboxes
-func (c *Phase5Controller) CreateSharedMailbox(r *ghttp.Request) {
+func sharedActor(r *ghttp.Request) (service.OrgActor, bool) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
+		return service.OrgActor{}, false
+	}
+	return service.OrgActor{UserID: claims.UserID, OrgID: claims.OrgID, Role: claims.Role, IP: middleware.ClientIP(r)}, true
+}
+
+// CreateSharedMailbox creates a shared identity and mailbox; the creator
+// becomes a member with every permission.
+// POST /api/v1/shared-mailboxes
+func (c *Phase5Controller) CreateSharedMailbox(r *ghttp.Request) {
+	a, ok := orgActor(r)
+	if !ok {
 		return
 	}
-
-	if claims.Role != "admin" && claims.Role != "owner" {
-		response.Forbidden(r, "Only admins can create shared mailboxes")
-		return
-	}
-
 	var input service.CreateSharedMailboxInput
-	if err := r.Parse(&input); err != nil {
-		response.BadRequest(r, err.Error())
+	if !decodeBody(r, &input) {
 		return
 	}
-
-	mailbox, err := c.sharedMailboxService.Create(r.Context(), claims.OrgID, &input)
+	mailbox, err := c.sharedMailboxService.Create(r.Context(), a, &input)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		writeOrgError(r, err)
 		return
 	}
-
 	response.Created(r, mailbox)
 }
 
-// ListSharedMailboxes lists all shared mailboxes
+// ListSharedMailboxes lists every org mailbox for admins and the caller's
+// memberships for everyone else.
 // GET /api/v1/shared-mailboxes
 func (c *Phase5Controller) ListSharedMailboxes(r *ghttp.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		response.Unauthorized(r, "Not authenticated")
+	a, ok := sharedActor(r)
+	if !ok {
 		return
 	}
-
-	mailboxes, err := c.sharedMailboxService.List(r.Context(), claims.OrgID)
+	mailboxes, err := c.sharedMailboxService.List(r.Context(), a)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		writeOrgError(r, err)
 		return
 	}
-
 	response.Success(r, mailboxes)
 }
 
-// GetSharedMailbox gets a shared mailbox
+// GetSharedMailbox returns a mailbox to an admin or a member.
 // GET /api/v1/shared-mailboxes/:id
 func (c *Phase5Controller) GetSharedMailbox(r *ghttp.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		response.Unauthorized(r, "Not authenticated")
+	a, ok := sharedActor(r)
+	if !ok {
 		return
 	}
-
-	id := r.Get("id").Int()
-	mailbox, err := c.sharedMailboxService.Get(r.Context(), claims.OrgID, id)
+	mailbox, err := c.sharedMailboxService.Get(r.Context(), a, r.Get("id").Int())
 	if err != nil {
-		response.NotFound(r, err.Error())
+		writeOrgError(r, err)
 		return
 	}
-
 	response.Success(r, mailbox)
 }
 
-// DeleteSharedMailbox deletes a shared mailbox
+// DeleteSharedMailbox deletes the mailbox, its identity and all member copies.
 // DELETE /api/v1/shared-mailboxes/:id
 func (c *Phase5Controller) DeleteSharedMailbox(r *ghttp.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		response.Unauthorized(r, "Not authenticated")
+	a, ok := orgActor(r)
+	if !ok {
 		return
 	}
-
-	if claims.Role != "admin" && claims.Role != "owner" {
-		response.Forbidden(r, "Only admins can delete shared mailboxes")
+	if err := c.sharedMailboxService.Delete(r.Context(), a, r.Get("id").Int()); err != nil {
+		writeOrgError(r, err)
 		return
 	}
-
-	id := r.Get("id").Int()
-	err := c.sharedMailboxService.Delete(r.Context(), claims.OrgID, id)
-	if err != nil {
-		response.BadRequest(r, err.Error())
-		return
-	}
-
 	response.SuccessWithMessage(r, "Shared mailbox deleted", nil)
 }
 
-// AddSharedMailboxMember adds a member to a shared mailbox
+// AddSharedMailboxMember adds an active org user. Admin or can_manage.
 // POST /api/v1/shared-mailboxes/:id/members
 func (c *Phase5Controller) AddSharedMailboxMember(r *ghttp.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		response.Unauthorized(r, "Not authenticated")
+	a, ok := sharedActor(r)
+	if !ok {
 		return
 	}
-
-	id := r.Get("id").Int()
-
 	var input service.AddMemberInput
-	if err := r.Parse(&input); err != nil {
-		response.BadRequest(r, err.Error())
+	if !decodeBody(r, &input) {
 		return
 	}
-
-	member, err := c.sharedMailboxService.AddMember(r.Context(), claims.OrgID, id, &input)
+	member, err := c.sharedMailboxService.AddMember(r.Context(), a, r.Get("id").Int(), &input)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		writeOrgError(r, err)
 		return
 	}
-
 	response.Created(r, member)
 }
 
-// ListSharedMailboxMembers lists members of a shared mailbox
+// UpdateSharedMailboxMember changes a member's permissions. Admin or can_manage.
+// PUT /api/v1/shared-mailboxes/:id/members/:userId
+func (c *Phase5Controller) UpdateSharedMailboxMember(r *ghttp.Request) {
+	a, ok := sharedActor(r)
+	if !ok {
+		return
+	}
+	var input service.UpdateMemberInput
+	if !decodeBody(r, &input) {
+		return
+	}
+	member, err := c.sharedMailboxService.UpdateMember(r.Context(), a, r.Get("id").Int(), r.Get("userId").String(), &input)
+	if err != nil {
+		writeOrgError(r, err)
+		return
+	}
+	response.Success(r, member)
+}
+
+// ListSharedMailboxMembers lists members to an admin or a member.
 // GET /api/v1/shared-mailboxes/:id/members
 func (c *Phase5Controller) ListSharedMailboxMembers(r *ghttp.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		response.Unauthorized(r, "Not authenticated")
+	a, ok := sharedActor(r)
+	if !ok {
 		return
 	}
-
-	id := r.Get("id").Int()
-
-	members, err := c.sharedMailboxService.ListMembers(r.Context(), claims.OrgID, id)
+	members, err := c.sharedMailboxService.ListMembers(r.Context(), a, r.Get("id").Int())
 	if err != nil {
-		response.InternalError(r, err.Error())
+		writeOrgError(r, err)
 		return
 	}
-
 	response.Success(r, members)
 }
 
-// RemoveSharedMailboxMember removes a member from a shared mailbox
+// RemoveSharedMailboxMember removes a member (by user UUID) and their copies.
+// Admin or can_manage.
 // DELETE /api/v1/shared-mailboxes/:id/members/:userId
 func (c *Phase5Controller) RemoveSharedMailboxMember(r *ghttp.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		response.Unauthorized(r, "Not authenticated")
+	a, ok := sharedActor(r)
+	if !ok {
 		return
 	}
-
-	id := r.Get("id").Int()
-	userID := r.Get("userId").Int()
-
-	err := c.sharedMailboxService.RemoveMember(r.Context(), claims.OrgID, id, userID)
-	if err != nil {
-		response.BadRequest(r, err.Error())
+	if err := c.sharedMailboxService.RemoveMember(r.Context(), a, r.Get("id").Int(), r.Get("userId").String()); err != nil {
+		writeOrgError(r, err)
 		return
 	}
-
 	response.SuccessWithMessage(r, "Member removed", nil)
 }
 
