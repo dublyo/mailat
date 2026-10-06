@@ -13,11 +13,14 @@ SES mode does not require Stalwart, an IMAP password, or a Stalwart database. Th
 1. Copy [`.env.production.example`](../.env.production.example) to a protected `.env` beside [the production Compose file](../docker-compose.prod.yml), or enter equivalent variables in the deployment environment. Every credential in the example is a placeholder.
 2. Supply reachable PostgreSQL and Redis endpoints. Use TLS as required by your providers; these services are not created by this Compose file.
 3. Set `DOMAIN`, `APP_DOMAIN`, `API_URL`, and `WEB_URL` to the public host/origin. Recommended example: `DOMAIN=mail.example.com`, `APP_DOMAIN=mail.example.com`, and both URLs `https://mail.example.com`. `API_URL` is an origin without `/api/v1`; it must be publicly reachable by SNS. `APP_DOMAIN` is a hostname without a scheme.
-4. Set separate random `JWT_SECRET` and `ENCRYPTION_KEY` values, for example generated individually with `openssl rand -hex 32`. Keep the encryption key stable and back it up securely with the database: changing it makes existing encrypted data unreadable.
-5. Set `EMAIL_PROVIDER=ses`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`. This implementation uses these explicit credentials; it does not automatically use an instance role or session token. SES initialization errors must not silently switch delivery to SMTP.
-6. Keep `WORKER_ENABLED=true` unless another compatible worker consumes the same Redis queues. Disabling it in a single-container installation leaves transactional/background jobs unprocessed. Compose sends are submitted directly after their database claim.
-7. Keep `AUTO_MIGRATE=true` for the included ordered, checksum-verified SQL migrations. The migration account needs DDL privileges. When false, arrange a compatible schema migration before starting this API.
-8. Pin `VERSION` to a tested image tag or digest through your deployment tooling. The service image names remain `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web`.
+4. Set separate random `JWT_SECRET` and `ENCRYPTION_KEY` values, for example generated individually with `openssl rand -hex 32`. The API refuses to start when either is missing, shorter than 32 bytes, still a placeholder, or equal to the other; the error names the variable, never its value. Keep the encryption key stable and back it up securely with the database: changing it makes existing encrypted data unreadable. Changing `JWT_SECRET` signs everyone out and invalidates unsubscribe and preference links already sent.
+   `JWT_EXPIRES_IN` sets the session lifetime: a day count such as `7d` or `30d`, or a Go duration such as `168h`, between `1h` and `90d`. Anything else stops startup.
+5. Set `EMAIL_PROVIDER=ses` (the default when unset; the only other accepted value is `smtp`), `AWS_REGION`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`. This implementation uses these explicit credentials; it does not automatically use an instance role or session token. SES initialization errors must not silently switch delivery to SMTP.
+6. Set `TRUSTED_PROXY_CIDRS` to the networks of every reverse proxy in front of the API. `X-Forwarded-For` is honoured only from these addresses, and the result feeds rate limits, consent records, and audit logs. The API's own default is loopback only; `docker-compose.prod.yml` already defaults to loopback plus the private ranges `172.16.0.0/12`, `10.0.0.0/8`, and `192.168.0.0/16`. If your proxy is missing from the list, every request appears to come from the proxy and shares one per-IP rate limit.
+7. Browser CORS is an allowlist: `WEB_URL` plus any origins in `CORS_ORIGINS` (comma-separated `https://host[:port]`). Same-origin deployments, where Caddy serves the app and `/api` on one host, need nothing extra. Add an origin only for a separately hosted front end that calls authenticated routes. Public routes such as signup-form submission stay open to any origin, and server-side SDK calls are unaffected.
+8. Keep `WORKER_ENABLED=true` unless another compatible worker consumes the same Redis queues. Disabling it in a single-container installation leaves transactional/background jobs unprocessed. Compose sends are submitted directly after their database claim.
+9. Keep `AUTO_MIGRATE=true` for the included ordered, checksum-verified SQL migrations. The migration account needs DDL privileges. When false, arrange a compatible schema migration before starting this API.
+10. Pin `VERSION` to a tested image tag or digest through your deployment tooling. The service image names remain `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web`.
 
 For a Docker Compose installation, validate configuration without printing secrets, then start the reviewed configuration:
 
@@ -31,6 +34,8 @@ Default services are Caddy, web, and API. Caddy receives `DOMAIN` and routes `/a
 ```sh
 docker compose --env-file .env -f docker-compose.prod.yml --profile stalwart up -d
 ```
+
+The web container's own liveness check is `/nginx-health`; `/health` is the in-app Health dashboard, so update any container healthcheck that still probes `/health`. The web container sends a Content-Security-Policy on app pages (not on `/api/` or `/docs/`). If the app calls an API on a different origin (`VITE_API_URL` set at build time), list that origin in the web container's `MAILAT_CSP_CONNECT_SRC`, or the browser blocks those requests.
 
 Portainer deployments must supply the environment variables and make repository bind-mounted files, including the Caddyfile, available to their Docker environment. Existing installations with their own ingress can retain that ingress and equivalent same-origin routing. Do not start a second proxy on ports already in use. This guide does not confirm that any particular Portainer stack has been updated.
 
@@ -132,8 +137,23 @@ The transactional endpoint `POST /emails` uses its existing string-array address
 
 Back up PostgreSQL, private S3 data, deployment configuration, and encryption keys before upgrading. Schema upgrades use `mailat_schema_migrations`, checksums, and an advisory lock; they preserve existing mailbox data and replace global inbound Message-ID uniqueness with per-identity deduplication. Do not edit migration files after they have been applied.
 
+Migration `012_hardening` lowercases contact emails where that cannot collide. Contacts that differ only by case within one organization are left as separate rows for manual merging; matching, suppression, and erasure treat them as one address. List them with:
+
+```sql
+SELECT org_id, lower(email) AS email, count(*) AS rows, array_agg(uuid) AS contact_uuids
+FROM contacts
+GROUP BY org_id, lower(email)
+HAVING count(*) > 1;
+```
+
 **Do not blindly downgrade the API or rerun an older schema initializer against this database.** Older initialization can recreate a global Message-ID unique index, which conflicts with multiple legitimate mailbox copies. A container image rollback is not a database rollback. Verify schema compatibility or restore a coordinated pre-upgrade backup; restoring it also loses changes made after that backup. Disabling `AUTO_MIGRATE` does not make an incompatible old binary safe.
 
 Permanent mailbox deletion preserves objects still referenced by another mailbox, attachment, or staged upload. Draft replacement/deletion and failed upload/save paths can leave unreferenced S3 objects. Complete orphan cleanup and staged-upload expiry are not automated; use a reviewed reference-aware cleanup process. Do not apply blanket age-based deletion to objects still used by messages. Existing buckets may retain older lifecycle rules; audit those rules before relying on long-lived attachment links. Deleting a domain or disabling receiving does not automatically delete its bucket.
+
+### GDPR contact erasure
+
+`DELETE /api/v1/contacts/:uuid/gdpr` removes the address from the organization's marketing data in one transaction: every case variant of the contact, list memberships, consent history, automation enrollments and logs, campaign email content, webhook event payloads and undelivered webhook deliveries, signup requests, and plaintext suppressions. It leaves a hashed `erased:` suppression so the address cannot be re-imported, re-subscribed, or mailed by campaigns.
+
+It does not cover: the transactional `suppression_list` (SES bounce and complaint deliverability data, kept in plaintext), the organization users' own mailboxes (`received_emails`, `transactional_emails`), raw MIME and attachment objects in S3, or backups. A webhook delivery already being sent when the erasure runs may still go out once. Handle those stores separately when a request requires it.
 
 Use `/api/v1/health` and `/api/v1/ready` as basic process/dependency checks; neither proves delivery or correct SNS/DNS configuration. Review [the validation record](mailat-validation.md) for local evidence and remaining runtime checks. Before treating a production installation as verified, complete controlled tests for real domain verification/MX, receiving and catch-all routing, owned attachment upload/download, provider acceptance, delivery/bounce events, and worker processing. Do not infer those results from fake-provider unit/integration tests.
