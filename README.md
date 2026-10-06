@@ -382,6 +382,8 @@ For Docker-based self-hosting, see `docker-compose.prod.yml` and `.env.productio
 
 The [SES self-hosting guide](docs/self-hosting-ses.md) documents the current configuration, authentication, plural draft routes, attachment storage, and send/retry behavior.
 
+[Campaigns](docs/campaigns.md) explains campaign sending requirements (SES identity, bounce/complaint feedback, postal address), statuses, pacing and tracking.
+
 ---
 
 ## Project Structure

@@ -18,6 +18,7 @@ docs/*
 !docs/api-automation-validation.md
 !docs/dmarc-reports.md
 !docs/signup-forms.md
+!docs/campaigns.md
 *.private.md
 readme2.md
 

@@ -53,6 +53,8 @@ services:
       dockerfile: Dockerfile
     container_name: mailat-api
     restart: unless-stopped
+    # Lets in-flight campaign sends (30 s SES timeout) finish on shutdown.
+    stop_grace_period: 45s
     environment:
       - PORT=8000
       - DATABASE_URL=${DATABASE_URL}
@@ -86,6 +88,8 @@ services:
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - SES_CONFIGURATION_SET=${SES_CONFIGURATION_SET:-}
+      - CAMPAIGN_MAX_SEND_RATE=${CAMPAIGN_MAX_SEND_RATE:-0}
+      - CAMPAIGN_SEND_CONCURRENCY=${CAMPAIGN_SEND_CONCURRENCY:-4}
       - EMAIL_PROVIDER=${EMAIL_PROVIDER:-ses}
     networks:
       - mailat-network
