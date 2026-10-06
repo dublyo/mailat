@@ -4,6 +4,7 @@ package testutil
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/url"
 	"os"
 	"testing"
@@ -36,7 +37,20 @@ func EmptyDatabase(t *testing.T) *sql.DB {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if _, err := base.ExecContext(ctx, `DROP SCHEMA `+pq.QuoteIdentifier(schema)+` CASCADE`); err != nil {
+		// Background loops started by the code under test (cleanup tickers,
+		// runners) can still hold row locks briefly, so retry deadlocks.
+		var err error
+		for attempt := 0; attempt < 5; attempt++ {
+			if _, err = base.ExecContext(ctx, `DROP SCHEMA `+pq.QuoteIdentifier(schema)+` CASCADE`); err == nil {
+				break
+			}
+			var pqErr *pq.Error
+			if !errors.As(err, &pqErr) || (pqErr.Code != "40P01" && pqErr.Code != "55P03") {
+				break
+			}
+			time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+		}
+		if err != nil {
 			t.Error("remove test schema:", err)
 		}
 		base.Close()
