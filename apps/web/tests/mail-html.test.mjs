@@ -55,3 +55,25 @@ test('quote mode turns blocked images into [image: alt] text and has no document
   assert.ok(allowed.doc.includes('src="https://tracker.example/pixel.gif"'))
   assert.equal(renderMessageDocument('<img src="https://x.example/a.png">', { mode: 'quote' }).doc, '[image]')
 })
+
+// Browsers resolve all of these to https://evil.example/p.gif.
+const evasions = ['https:\\\\evil.example/p.gif', '\\\\evil.example/p.gif', '/\\evil.example/p.gif', 'ht&#9;tps://evil.example/p.gif']
+
+test('backslash and tab URL tricks are still treated as remote', () => {
+  const { isRemoteUrl } = module.exports
+  for (const payload of evasions) {
+    const html = `<img src="${payload}" alt="t">`
+    const view = renderMessageDocument(html)
+    assert.equal(view.remoteCount, 1, payload)
+    assert.ok(!/<img[^>]* src=/.test(view.doc), `view kept src for ${payload}`)
+    const quote = renderMessageDocument(html, { mode: 'quote' })
+    assert.equal(quote.doc, '[image: t]', payload)
+  }
+  for (const local of ['data:image/png;base64,AAAA', 'blob:https://app.example/1', 'x.png', '/a/b.png', '']) assert.equal(isRemoteUrl(local), false, local)
+  for (const remote of ['https://x.example/a', '//x.example/a', 'HTTP://x.example', 'https:\\\\x.example', '/\\x.example']) assert.equal(isRemoteUrl(remote), true, remote)
+})
+
+test('evasive CSS url() references count toward the reveal banner', () => {
+  assert.equal(renderMessageDocument('<div style="background:url(https:\\\\evil.example/x.png)">x</div>').remoteCount, 1)
+  assert.equal(renderMessageDocument('<div style="background:url(data:image/png;base64,AAAA)">x</div>').remoteCount, 0)
+})

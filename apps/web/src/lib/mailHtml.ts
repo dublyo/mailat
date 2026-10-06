@@ -26,9 +26,24 @@ const PURIFY_CONFIG = {
   ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|cid|blob):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
 }
 const URL_ATTRIBUTES = new Set(['src', 'background', 'poster'])
-const REMOTE_URL = /^(?:https?:)?\/\//i
-const REMOTE_CSS_URL = /url\(\s*['"]?\s*(?:https?:)?\/\//i
+// Any CSS url() that is not inline data counts toward the reveal banner.
+const REMOTE_CSS_URL = /url\(\s*['"]?\s*(?!data:|blob:|cid:)[^\s'")]/i
+const LOCAL_ORIGIN = 'https://mailat.invalid'
 const BASE_STYLE = 'body{font:14px/1.6 system-ui;color:#1f2937;margin:12px;overflow-wrap:anywhere}img,table{max-width:100%}img{height:auto}pre{white-space:pre-wrap}a{color:#2563eb}'
+
+// Classify by how a browser resolves the value, not by its prefix: values
+// such as `https:\\evil.example`, `/\evil.example` or `ht<TAB>tps://` all
+// load remotely. Only data:, blob: and plain relative references are local.
+export function isRemoteUrl(value: string) {
+  let url: URL
+  try {
+    url = new URL(value, `${LOCAL_ORIGIN}/`)
+  } catch {
+    return false
+  }
+  if (url.protocol === 'data:' || url.protocol === 'blob:') return false
+  return url.origin !== LOCAL_ORIGIN
+}
 
 function escapeAttribute(value: string) {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -47,7 +62,7 @@ export function renderMessageDocument(html: string, options: RenderMessageOption
         if (url && mode === 'view') data.attrValue = url
         return
       }
-      if (allowRemote || !REMOTE_URL.test(value)) return
+      if (allowRemote || !isRemoteUrl(value)) return
       remoteCount++
       data.keepAttr = false
       hidden.push([node, data.attrName, value])
@@ -68,8 +83,14 @@ export function renderMessageDocument(html: string, options: RenderMessageOption
   const container = fragment.ownerDocument.createElement('div')
   container.appendChild(fragment)
   if (mode === 'quote') {
-    // Never load trackers in the app origin: blocked images become text.
-    for (const image of Array.from(container.querySelectorAll('img[data-mailat-remote-src]'))) {
+    // Never load trackers in the app origin: blocked images become text, as
+    // does any other image that would still resolve off-box.
+    const blocked = Array.from(container.querySelectorAll('img')).filter(image => {
+      if (image.hasAttribute('data-mailat-remote-src')) return true
+      const src = (image.getAttribute('src') || '').trim()
+      return !allowRemote && !/^cid:/i.test(src) && isRemoteUrl(src)
+    })
+    for (const image of blocked) {
       const alt = (image.getAttribute('alt') || '').trim()
       image.replaceWith(container.ownerDocument.createTextNode(alt ? `[image: ${alt}]` : '[image]'))
     }
