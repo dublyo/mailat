@@ -30,6 +30,10 @@ type UnsubscribeData struct {
 	OrgID     int64 `json:"o"`
 	ListID    int   `json:"l,omitempty"`
 	EmailID   int64 `json:"e,omitempty"`
+	// RecipientID is the campaign_recipients row (campaign tokens only).
+	RecipientID int64 `json:"r,omitempty"`
+	// Test tokens come from campaign test sends and change nothing.
+	Test bool `json:"t,omitempty"`
 }
 
 // ConsentRecord tracks consent changes for audit trail
@@ -66,29 +70,17 @@ func NewComplianceService(db *sql.DB, cfg *config.Config) *ComplianceService {
 	return &ComplianceService{db: db, cfg: cfg}
 }
 
-// GenerateListUnsubscribeHeader generates List-Unsubscribe headers for RFC 8058
-func (s *ComplianceService) GenerateListUnsubscribeHeader(contactID int64, orgID int64, emailID int64) (string, string) {
-	data := UnsubscribeData{
-		ContactID: contactID,
-		OrgID:     orgID,
-		EmailID:   emailID,
-	}
-	token := s.encodeUnsubscribeData(data)
+// UnsubscribeToken signs a campaign unsubscribe token. recipientID links the
+// unsubscribe to the campaign row and supplies the address to suppress when
+// the contact is gone.
+func (s *ComplianceService) UnsubscribeToken(contactID, orgID, recipientID int64) string {
+	return encodeUnsubscribeToken(s.cfg.JWTSecret, UnsubscribeData{ContactID: contactID, OrgID: orgID, RecipientID: recipientID})
+}
 
-	baseURL := s.cfg.APIUrl
-	if baseURL == "" {
-		baseURL = "http://localhost:3001"
-	}
-
-	// List-Unsubscribe header (RFC 2369)
-	unsubscribeURL := fmt.Sprintf("%s/api/v1/unsubscribe/%s", baseURL, token)
-	unsubscribeEmail := fmt.Sprintf("unsubscribe@%s", s.cfg.AppDomain)
-	listUnsubscribe := fmt.Sprintf("<%s>, <mailto:%s?subject=unsubscribe-%s>", unsubscribeURL, unsubscribeEmail, token)
-
-	// List-Unsubscribe-Post header (RFC 8058 one-click)
-	listUnsubscribePost := "List-Unsubscribe=One-Click"
-
-	return listUnsubscribe, listUnsubscribePost
+// TestUnsubscribeToken signs a token for test sends: the endpoints accept it
+// and change nothing.
+func (s *ComplianceService) TestUnsubscribeToken(orgID int64) string {
+	return encodeUnsubscribeToken(s.cfg.JWTSecret, UnsubscribeData{OrgID: orgID, Test: true})
 }
 
 // ValidUnsubscribeToken reports whether token carries a valid signature. It
@@ -104,39 +96,82 @@ func (s *ComplianceService) ProcessOneClickUnsubscribe(ctx context.Context, toke
 	if err != nil {
 		return fmt.Errorf("invalid unsubscribe token")
 	}
-	return s.unsubscribeContact(ctx, data, "email", fmt.Sprintf("%d", data.EmailID), "one-click", ipAddress, userAgent, "One-click unsubscribe from email")
+	source, sourceID := "email", fmt.Sprintf("%d", data.EmailID)
+	if data.RecipientID > 0 {
+		source, sourceID = "campaign", fmt.Sprintf("%d", data.RecipientID)
+	}
+	return s.unsubscribeContact(ctx, data, source, sourceID, "one-click", ipAddress, userAgent, "One-click unsubscribe from email")
+}
+
+// isErasedRecipientEmail matches the placeholder GDPR erasure leaves on
+// campaign_recipients rows (erased+<id>@invalid).
+func isErasedRecipientEmail(email string) bool {
+	e := strings.ToLower(email)
+	return strings.HasPrefix(e, "erased+") && strings.HasSuffix(e, "@invalid")
 }
 
 // unsubscribeContact marks the token's contact unsubscribed, suppresses the
-// address and records consent in one transaction. A missing contact (deleted
-// or erased) is treated as already unsubscribed.
+// address, records consent and links the unsubscribe to its campaign
+// recipient, all in one transaction. When the contact is gone (deleted or
+// erased) the campaign recipient's snapshot address is suppressed instead;
+// an empty or erased address is never inserted. Test tokens change nothing.
 func (s *ComplianceService) unsubscribeContact(ctx context.Context, data *UnsubscribeData, suppressionSource, sourceID, consentSource, ipAddress, userAgent, details string) error {
+	if data.Test {
+		return nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to unsubscribe: %w", err)
 	}
 	defer tx.Rollback()
 	var email string
+	contactFound := true
 	err = tx.QueryRowContext(ctx, `
 		UPDATE contacts SET status = 'unsubscribed', updated_at = NOW()
 		WHERE id = $1 AND org_id = $2
 		RETURNING email
 	`, data.ContactID, data.OrgID).Scan(&email)
 	if err == sql.ErrNoRows {
-		return nil
+		contactFound = false
+		if data.RecipientID > 0 {
+			err = tx.QueryRowContext(ctx, `SELECT email FROM campaign_recipients WHERE id = $1 AND org_id = $2`, data.RecipientID, data.OrgID).Scan(&email)
+			if err == sql.ErrNoRows {
+				err = nil
+			}
+		} else {
+			err = nil
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("failed to unsubscribe: %w", err)
 	}
-	if _, err = tx.ExecContext(ctx, `
-		INSERT INTO suppressions (org_id, email, reason, source_type, source_id, created_at)
-		VALUES ($1, $2, 'unsubscribe', $3, NULLIF($4, ''), NOW())
-		ON CONFLICT (org_id, email) DO NOTHING
-	`, data.OrgID, email, suppressionSource, sourceID); err != nil {
-		return fmt.Errorf("failed to suppress address: %w", err)
+	if strings.TrimSpace(email) != "" && !isErasedRecipientEmail(email) {
+		if _, err = tx.ExecContext(ctx, `
+			INSERT INTO suppressions (org_id, email, reason, source_type, source_id, created_at)
+			SELECT $1::int, $2::text, 'unsubscribe', $3, NULLIF($4::text, ''), NOW()
+			WHERE NOT `+suppressedSQL("$1::int", "$2::text")+`
+			ON CONFLICT (org_id, email) DO NOTHING
+		`, data.OrgID, email, suppressionSource, sourceID); err != nil {
+			return fmt.Errorf("failed to suppress address: %w", err)
+		}
 	}
-	if err = recordConsentChangeTx(ctx, tx, data.ContactID, data.OrgID, "unsubscribe", consentSource, nil, ipAddress, userAgent, details); err != nil {
-		return err
+	if contactFound {
+		if err = recordConsentChangeTx(ctx, tx, data.ContactID, data.OrgID, "unsubscribe", consentSource, nil, ipAddress, userAgent, details); err != nil {
+			return err
+		}
+	}
+	if data.RecipientID > 0 {
+		var campaignID int64
+		err = tx.QueryRowContext(ctx, `
+			UPDATE campaign_recipients SET unsubscribed_at = NOW(), updated_at = NOW()
+			WHERE id = $1 AND org_id = $2 AND unsubscribed_at IS NULL
+			RETURNING campaign_id`, data.RecipientID, data.OrgID).Scan(&campaignID)
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `UPDATE campaigns SET unsubscribe_count = unsubscribe_count + 1, updated_at = NOW() WHERE id = $1 AND org_id = $2`, campaignID, data.OrgID)
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("failed to link unsubscribe to campaign: %w", err)
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("failed to unsubscribe: %w", err)
@@ -149,6 +184,9 @@ func (s *ComplianceService) GetUnsubscribePage(ctx context.Context, token string
 	data, err := s.decodeUnsubscribeData(token)
 	if err != nil {
 		return nil, fmt.Errorf("invalid unsubscribe token")
+	}
+	if data.Test {
+		return map[string]interface{}{"email": "test@example.com", "firstName": "", "status": "active", "token": token}, nil
 	}
 
 	var contact struct {
@@ -471,7 +509,8 @@ func (s *ComplianceService) ExportContactData(ctx context.Context, orgID int64, 
 
 // DeleteContactData erases a contact (GDPR right to erasure) in one
 // transaction: every case variant of the address in the org, automation
-// enrollments, campaign email content, webhook payloads, signup history,
+// enrollments, campaign email content, campaign recipient addresses and
+// tracking IP/UA, webhook payloads, signup history,
 // consent rows and list memberships. A hash-only suppression is kept so the
 // address can never be mailed again. Transactional suppression_list rows,
 // the org users' own mailboxes and raw S3 mail are not touched.
@@ -561,6 +600,23 @@ func (s *ComplianceService) DeleteContactData(ctx context.Context, orgID int64, 
 		return err
 	}
 	if err = exec("delivery events", `UPDATE delivery_events SET data = '{}' WHERE email_id = ANY($1::bigint[])`, pq.Array(emailIDs)); err != nil {
+		return err
+	}
+
+	// Campaign recipients keep their counters but lose the address (a unique
+	// per-row placeholder, so two erased rows in one campaign never collide)
+	// and the tracking IP/UA. contact_id becomes NULL with the contact delete.
+	recipientMatch := `org_id = $1 AND (contact_id = ANY($2) OR lower(email) = $3)`
+	if err = exec("campaign events", `UPDATE campaign_events e SET ip_address = NULL, user_agent = NULL
+		WHERE e.recipient_id IN (SELECT id FROM campaign_recipients WHERE `+recipientMatch+`)`, orgID, pq.Array(ids), addr); err != nil {
+		return err
+	}
+	if err = exec("campaign recipients", `UPDATE campaign_recipients SET email = 'erased+' || id || '@invalid', error = NULL, updated_at = NOW()
+		WHERE `+recipientMatch, orgID, pq.Array(ids), addr); err != nil {
+		return err
+	}
+	if err = exec("campaign test sends", `UPDATE campaign_test_sends t SET recipients = ARRAY['[redacted]'], results = '[]', updated_at = NOW()
+		FROM campaigns c WHERE c.id = t.campaign_id AND c.org_id = $1 AND EXISTS(SELECT 1 FROM unnest(t.recipients) a WHERE lower(a) = $2)`, orgID, addr); err != nil {
 		return err
 	}
 
@@ -664,60 +720,6 @@ func (s *ComplianceService) GetConsentAuditTrail(ctx context.Context, orgID int6
 	return records, nil
 }
 
-// InjectComplianceFooter adds required compliance footer to email content
-func (s *ComplianceService) InjectComplianceFooter(htmlContent string, textContent string, orgID int64, contactID int64, emailID int64) (string, string) {
-	// Get org info for physical address
-	var orgName string
-	s.db.QueryRow("SELECT name FROM organizations WHERE id = $1", orgID).Scan(&orgName)
-
-	// Generate unsubscribe token
-	data := UnsubscribeData{
-		ContactID: contactID,
-		OrgID:     orgID,
-		EmailID:   emailID,
-	}
-	token := s.encodeUnsubscribeData(data)
-
-	baseURL := s.cfg.APIUrl
-	if baseURL == "" {
-		baseURL = "http://localhost:3001"
-	}
-	unsubscribeURL := fmt.Sprintf("%s/api/v1/unsubscribe/%s", baseURL, token)
-	preferencesURL := fmt.Sprintf("%s/api/v1/preferences/%s", baseURL, token)
-
-	// HTML footer
-	htmlFooter := fmt.Sprintf(`
-<div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #666; text-align: center;">
-	<p>%s</p>
-	<p>
-		<a href="%s" style="color: #666;">Unsubscribe</a> |
-		<a href="%s" style="color: #666;">Manage Preferences</a>
-	</p>
-</div>
-`, orgName, unsubscribeURL, preferencesURL)
-
-	// Inject before </body> or append
-	if strings.Contains(htmlContent, "</body>") {
-		htmlContent = strings.Replace(htmlContent, "</body>", htmlFooter+"</body>", 1)
-	} else {
-		htmlContent = htmlContent + htmlFooter
-	}
-
-	// Text footer
-	textFooter := fmt.Sprintf(`
-
----
-%s
-
-Unsubscribe: %s
-Manage Preferences: %s
-`, orgName, unsubscribeURL, preferencesURL)
-
-	textContent = textContent + textFooter
-
-	return htmlContent, textContent
-}
-
 // recordConsentChangeTx records a consent change in the audit trail as part of
 // the caller's transaction, so the evidence commits with the change it proves.
 func recordConsentChangeTx(ctx context.Context, tx *sql.Tx, contactID int64, orgID int64, action string, source string, listID *int, ipAddress string, userAgent string, details string) error {
@@ -732,7 +734,12 @@ func recordConsentChangeTx(ctx context.Context, tx *sql.Tx, contactID int64, org
 
 // encodeUnsubscribeData encodes unsubscribe data to a URL-safe token
 func (s *ComplianceService) encodeUnsubscribeData(data UnsubscribeData) string {
-	// Add a unique ID to prevent token reuse tracking
+	return encodeUnsubscribeToken(s.cfg.JWTSecret, data)
+}
+
+// encodeUnsubscribeToken signs data with a random nonce:
+// base64url(JSON || first 8 bytes of HMAC-SHA256(JWTSecret)).
+func encodeUnsubscribeToken(secret string, data UnsubscribeData) string {
 	fullData := struct {
 		UnsubscribeData
 		Nonce string `json:"n"`
@@ -743,8 +750,7 @@ func (s *ComplianceService) encodeUnsubscribeData(data UnsubscribeData) string {
 
 	jsonData, _ := json.Marshal(fullData)
 
-	// Sign the data
-	mac := hmac.New(sha256.New, []byte(s.cfg.JWTSecret))
+	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(jsonData)
 	signature := mac.Sum(nil)
 

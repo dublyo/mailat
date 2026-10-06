@@ -23059,7 +23059,7 @@
     },
     "/api/v1/contacts/{uuid}/gdpr": {
       "delete": {
-        "description": "DeleteContactData erases a contact (GDPR right to erasure) in one\ntransaction. Erased: every case variant of the address in the organization,\nlist memberships, consent history, signup requests, automation enrollments\nand logs, campaign email recipients/subject/content and delivery event data,\nand webhook payloads naming the address or contact (pending deliveries are\ncancelled). A hash-only suppression (SHA-256 of the lowercased address) is\nkept so the address is never mailed again; this pseudonymous hash is\nretained under the legitimate interest of honoring the objection.\nNot erased: the transactional suppression_list (SES deliverability data),\nthe organization users' own mailboxes and raw stored mail; a webhook\ndelivery already in flight may still be sent once.\nDELETE /api/v1/contacts/:uuid/gdpr",
+        "description": "DeleteContactData erases a contact (GDPR right to erasure) in one\ntransaction. Erased: every case variant of the address in the organization,\nlist memberships, consent history, signup requests, automation enrollments\nand logs, campaign email recipients/subject/content and delivery event data,\ncampaign recipient addresses (replaced by erased+\u003cid\u003e@invalid), open/click\nIP addresses and user agents, test-send recipient lists,\nand webhook payloads naming the address or contact (pending deliveries are\ncancelled). A hash-only suppression (SHA-256 of the lowercased address) is\nkept so the address is never mailed again; this pseudonymous hash is\nretained under the legitimate interest of honoring the objection.\nNot erased: the transactional suppression_list (SES deliverability data),\nthe organization users' own mailboxes and raw stored mail; a webhook\ndelivery already in flight may still be sent once.\nDELETE /api/v1/contacts/:uuid/gdpr",
         "operationId": "delete_api_v1_contacts_uuid_gdpr",
         "parameters": [
           {
@@ -64475,7 +64475,7 @@
     },
     "/api/v1/tracking/click/{token}": {
       "get": {
-        "description": "TrackClick handles link click tracking requests\nGET /api/v1/tracking/click/:token",
+        "description": "TrackClick records a campaign click and redirects (302) to the signed\nhttp(s) target, or to the web app when the token is invalid.\nGET /api/v1/tracking/click/:token",
         "operationId": "get_api_v1_tracking_click_token",
         "parameters": [
           {
@@ -64705,7 +64705,7 @@
     },
     "/api/v1/tracking/open/{token}": {
       "get": {
-        "description": "TrackOpen handles email open tracking requests\nGET /api/v1/tracking/open/:token.gif",
+        "description": "TrackOpen records a campaign open and always returns the 1x1 GIF.\nGET /api/v1/tracking/open/:token.gif",
         "operationId": "get_api_v1_tracking_open_token",
         "parameters": [
           {

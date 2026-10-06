@@ -56,9 +56,7 @@ func TestOneClickUnsubscribeSkipsIPLimitForSignedTokensHTTP(t *testing.T) {
 	}
 
 	for id := int64(1); id <= n; id++ {
-		header, _ := compliance.GenerateListUnsubscribeHeader(id, 1, id)
-		token := strings.SplitN(strings.TrimPrefix(header, "<http://api.test/api/v1/unsubscribe/"), ">", 2)[0]
-		if status := post(token); status != 200 {
+		if status := post(compliance.UnsubscribeToken(id, 1, 0)); status != 200 {
 			t.Fatalf("one-click %d from a shared IP: status %d", id, status)
 		}
 	}

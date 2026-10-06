@@ -179,6 +179,8 @@ func (c *ComplianceController) ExportContactData(r *ghttp.Request) {
 // transaction. Erased: every case variant of the address in the organization,
 // list memberships, consent history, signup requests, automation enrollments
 // and logs, campaign email recipients/subject/content and delivery event data,
+// campaign recipient addresses (replaced by erased+<id>@invalid), open/click
+// IP addresses and user agents, test-send recipient lists,
 // and webhook payloads naming the address or contact (pending deliveries are
 // cancelled). A hash-only suppression (SHA-256 of the lowercased address) is
 // kept so the address is never mailed again; this pseudonymous hash is
