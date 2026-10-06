@@ -25,8 +25,7 @@ import {
   AlertCircle,
   Webhook,
   Filter,
-  Users,
-  CheckCircle2
+  Users
 } from 'lucide-vue-next'
 
 // Import VueFlow styles
@@ -80,17 +79,18 @@ const nodeTypes = [
   {
     category: 'Triggers',
     items: [
-      { type: 'trigger' as WorkflowNodeType, label: 'Contact Added', icon: Users, description: 'When a contact is added to a list', color: 'yellow' },
-      { type: 'trigger' as WorkflowNodeType, label: 'Form Submitted', icon: CheckCircle2, description: 'When a form is submitted', color: 'yellow' },
-      { type: 'trigger' as WorkflowNodeType, label: 'Tag Added', icon: Tag, description: 'When a tag is added to contact', color: 'yellow' },
+      { type: 'trigger' as WorkflowNodeType, label: 'Contact subscribed to list', icon: Users, description: 'When a contact joins a list', color: 'yellow' },
+      { type: 'trigger' as WorkflowNodeType, label: 'Contact created', icon: UserCheck, description: 'When a new contact is created', color: 'yellow' },
+      { type: 'trigger' as WorkflowNodeType, label: 'Manual enrollment', icon: Play, description: 'Enroll contacts or lists by hand or API', color: 'yellow' },
     ]
   },
   {
     category: 'Actions',
     items: [
       { type: 'email' as WorkflowNodeType, label: 'Send Email', icon: Mail, description: 'Send an email to the contact', color: 'blue' },
-      { type: 'action' as WorkflowNodeType, label: 'Add Tag', icon: Tag, description: 'Add a tag to the contact', color: 'orange' },
-      { type: 'action' as WorkflowNodeType, label: 'Update Contact', icon: UserCheck, description: 'Update contact properties', color: 'orange' },
+      { type: 'action' as WorkflowNodeType, label: 'Add to list', icon: Users, description: 'Add the contact to a static list', color: 'orange' },
+      { type: 'action' as WorkflowNodeType, label: 'Remove from list', icon: Users, description: 'Remove the contact from a list', color: 'orange' },
+      { type: 'action' as WorkflowNodeType, label: 'Update contact field', icon: UserCheck, description: 'Set a contact attribute', color: 'orange' },
       { type: 'webhook' as WorkflowNodeType, label: 'Webhook', icon: Webhook, description: 'Send data to a webhook URL', color: 'purple' },
     ]
   },
@@ -115,9 +115,9 @@ onMounted(async () => {
       type: 'workflow',
       position: { x: 400, y: 100 },
       data: {
-        label: 'Contact Added',
+        label: 'Contact subscribed to list',
         type: 'trigger',
-        config: { event: 'contact.created' }
+        config: { event: 'contact.subscribed' }
       }
     }]
   }
@@ -164,8 +164,19 @@ onConnect((connection: Connection) => {
   edges.value = [...edges.value, newEdge]
 })
 
+// An automation has one trigger: picking a trigger replaces its config.
+const replaceTrigger = (item: typeof nodeTypes[0]['items'][0]) => {
+  const trigger = nodes.value.find(n => n.data.type === 'trigger')
+  if (item.type !== 'trigger' || !trigger) return false
+  trigger.data = { ...trigger.data, label: item.label, config: getDefaultConfig('trigger', item.label) }
+  nodes.value = [...nodes.value]
+  selectedNode.value = trigger
+  return true
+}
+
 // Add node from palette
 const addNode = (item: typeof nodeTypes[0]['items'][0]) => {
+  if (replaceTrigger(item)) return
   const id = `${item.type}-${Date.now()}`
   const newNode: Node = {
     id,
@@ -194,6 +205,7 @@ const onDrop = (event: DragEvent) => {
     const data = event.dataTransfer.getData('application/json')
     if (data) {
       const item = JSON.parse(data)
+      if (replaceTrigger(item)) return
       const bounds = (event.target as HTMLElement).closest('.vue-flow')?.getBoundingClientRect()
       if (bounds) {
         const id = `${item.type}-${Date.now()}`
@@ -227,15 +239,15 @@ const onDragOver = (event: DragEvent) => {
 const getDefaultConfig = (type: WorkflowNodeType, label: string): Record<string, unknown> => {
   switch (type) {
     case 'trigger':
-      return { event: label === 'Tag Added' ? 'tag.added' : label === 'Form Submitted' ? 'form.submitted' : 'contact.created' }
+      return { event: label === 'Contact created' ? 'contact.created' : label === 'Manual enrollment' ? 'manual' : 'contact.subscribed' }
     case 'email':
       return { templateId: '', subject: '', identityId: '' }
     case 'delay':
       return { duration: 1, unit: 'days' }
     case 'condition':
-      return { field: '', operator: 'equals', value: '' }
+      return label === 'Filter' ? { field: '', mode: 'filter' } : { field: '' }
     case 'action':
-      return { action: label === 'Add Tag' ? 'add_tag' : 'update_field', value: '' }
+      return { action: label === 'Add to list' ? 'add_to_list' : label === 'Remove from list' ? 'remove_from_list' : 'update_field', value: '' }
     case 'webhook':
       return { url: '', method: 'POST' }
     default:
@@ -270,11 +282,10 @@ const saveAutomation = async () => {
     const token = localStorage.getItem('token')
     const workflow = { nodes: nodes.value, edges: edges.value }
 
+    // The trigger step's event is the trigger; the API derives triggerType from it.
     const body = {
       name: automationName.value,
       description: automationDescription.value,
-      triggerType: nodes.value.find(n => n.data.type === 'trigger')?.data.config?.event || 'contact_added',
-      triggerConfig: {},
       workflow
     }
 
@@ -499,6 +510,7 @@ const edgeCount = computed(() => edges.value.length)
               </div>
 
               <Handle
+                v-if="data.type !== 'condition'"
                 type="source"
                 :position="Position.Bottom"
                 class="node-handle"
@@ -506,8 +518,8 @@ const edgeCount = computed(() => edges.value.length)
 
               <!-- Condition node extra handles -->
               <template v-if="data.type === 'condition'">
-                <Handle id="yes" type="source" :position="Position.Right" class="node-handle handle-yes" />
-                <Handle id="no" type="source" :position="Position.Left" class="node-handle handle-no" />
+                <Handle id="yes" type="source" :position="Position.Right" class="node-handle handle-yes" title="Yes" />
+                <Handle v-if="data.config?.mode !== 'filter'" id="no" type="source" :position="Position.Left" class="node-handle handle-no" title="No" />
               </template>
             </div>
           </template>
@@ -551,12 +563,9 @@ const edgeCount = computed(() => edges.value.length)
               <div class="form-group">
                 <label>Trigger Event</label>
                 <select v-model="selectedNode.data.config.event" class="form-select">
-                  <option value="contact.created">Contact Created</option>
-                  <option value="contact.subscribed">Contact Subscribed</option>
-                  <option value="tag.added">Tag Added</option>
-                  <option value="form.submitted">Form Submitted</option>
-                  <option value="email.opened">Email Opened</option>
-                  <option value="email.clicked">Link Clicked</option>
+                  <option value="contact.subscribed">Contact subscribed to list</option>
+                  <option value="contact.created">Contact created</option>
+                  <option value="manual">Manual enrollment</option>
                 </select>
               </div>
               <div class="form-info">
@@ -632,7 +641,6 @@ const edgeCount = computed(() => edges.value.length)
                   <option value="">Select a field...</option>
                   <option value="email_opened">Email Opened</option>
                   <option value="email_clicked">Link Clicked</option>
-                  <option value="tag_exists">Has Tag</option>
                   <option value="engagement_score">Engagement Score</option>
                   <option value="custom_field">Custom Field</option>
                 </select>
@@ -662,8 +670,6 @@ const edgeCount = computed(() => edges.value.length)
               <div class="form-group">
                 <label>Action Type</label>
                 <select v-model="selectedNode.data.config.action" class="form-select">
-                  <option value="add_tag">Add Tag</option>
-                  <option value="remove_tag">Remove Tag</option>
                   <option value="add_to_list">Add to List</option>
                   <option value="remove_from_list">Remove from List</option>
                   <option value="update_field">Update Field</option>
@@ -675,7 +681,7 @@ const edgeCount = computed(() => edges.value.length)
                   v-model="selectedNode.data.config.value"
                   type="text"
                   class="form-input"
-                  placeholder="Tag name, list ID, etc."
+                  placeholder="List ID or field value"
                 />
               </div>
             </template>

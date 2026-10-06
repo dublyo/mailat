@@ -279,6 +279,24 @@
       },
       "model.Automation": {
         "properties": {
+          "activatedAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "archivedAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
           "completedCount": {
             "format": "int64",
             "type": "integer"
@@ -294,11 +312,15 @@
             "format": "int64",
             "type": "integer"
           },
+          "hasUnpublishedChanges": {
+            "type": "boolean"
+          },
           "id": {
             "format": "int64",
             "type": "integer"
           },
           "inProgressCount": {
+            "description": "equals Stats.Active",
             "format": "int64",
             "type": "integer"
           },
@@ -309,8 +331,24 @@
             "format": "int64",
             "type": "integer"
           },
+          "publishedVersion": {
+            "allOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              }
+            ],
+            "nullable": true
+          },
+          "reentryPolicy": {
+            "description": "never, after_exit",
+            "type": "string"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/model.AutomationCounts"
+          },
           "status": {
-            "description": "draft, active, paused",
+            "description": "draft, active, paused, archived",
             "type": "string"
           },
           "triggerConfig": {
@@ -318,7 +356,7 @@
             "type": "object"
           },
           "triggerType": {
-            "description": "contact.created, contact.subscribed, tag.added, etc.",
+            "description": "contact.subscribed, contact.created, manual",
             "type": "string"
           },
           "updatedAt": {
@@ -335,6 +373,39 @@
               }
             ],
             "nullable": true
+          }
+        },
+        "type": "object"
+      },
+      "model.AutomationCounts": {
+        "properties": {
+          "active": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "cancelled": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "completed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "enrolled": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "exited": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "failed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "waiting": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "type": "object"
@@ -362,27 +433,76 @@
         },
         "type": "object"
       },
+      "model.AutomationNodeStats": {
+        "properties": {
+          "clicked": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "entered": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "failed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "opened": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "sent": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "skipped": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "succeeded": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "waiting": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "yes": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "model.AutomationStats": {
         "properties": {
           "automationUuid": {
             "type": "string"
           },
-          "completed": {
-            "format": "int64",
-            "type": "integer"
-          },
           "completionRate": {
             "type": "number"
           },
-          "enrolled": {
-            "format": "int64",
-            "type": "integer"
-          },
           "errors": {
+            "description": "equals Failed",
             "format": "int64",
             "type": "integer"
           },
           "inProgress": {
+            "description": "equals Active",
+            "format": "int64",
+            "type": "integer"
+          },
+          "nodes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/model.AutomationNodeStats"
+            },
+            "type": "object"
+          },
+          "version": {
             "format": "int64",
             "type": "integer"
           }
@@ -391,6 +511,24 @@
       },
       "model.AutomationSummary": {
         "properties": {
+          "activatedAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "archivedAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
           "completedCount": {
             "format": "int64",
             "type": "integer"
@@ -406,6 +544,9 @@
             "format": "int64",
             "type": "integer"
           },
+          "hasUnpublishedChanges": {
+            "type": "boolean"
+          },
           "id": {
             "format": "int64",
             "type": "integer"
@@ -420,6 +561,21 @@
           "orgId": {
             "format": "int64",
             "type": "integer"
+          },
+          "publishedVersion": {
+            "allOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              }
+            ],
+            "nullable": true
+          },
+          "reentryPolicy": {
+            "type": "string"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/model.AutomationCounts"
           },
           "status": {
             "type": "string"
@@ -1325,6 +1481,15 @@
             "minLength": 2,
             "type": "string"
           },
+          "reentryPolicy": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "description": "never (default), after_exit",
+            "nullable": true
+          },
           "triggerConfig": {
             "additionalProperties": {},
             "type": "object"
@@ -1342,8 +1507,7 @@
           }
         },
         "required": [
-          "name",
-          "triggerType"
+          "name"
         ],
         "type": "object"
       },
@@ -3526,6 +3690,14 @@
             ],
             "nullable": true
           },
+          "reentryPolicy": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
           "triggerConfig": {
             "additionalProperties": {},
             "type": "object"
@@ -4002,16 +4174,20 @@
               "$ref": "#/components/schemas/model.WorkflowNode"
             },
             "type": "array"
+          },
+          "schemaVersion": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "type": "object"
       },
       "model.WorkflowEdge": {
         "properties": {
-          "id": {
-            "type": "string"
+          "animated": {
+            "type": "boolean"
           },
-          "label": {
+          "id": {
             "type": "string"
           },
           "source": {
@@ -4044,7 +4220,7 @@
             "$ref": "#/components/schemas/model.WorkflowPosition"
           },
           "type": {
-            "description": "trigger, email, delay, condition, action",
+            "description": "renderer key; always 'workflow'; kind is Data.Type",
             "type": "string"
           }
         },
@@ -4060,6 +4236,7 @@
             "type": "string"
           },
           "type": {
+            "description": "trigger, email, delay, condition, action, webhook",
             "type": "string"
           }
         },

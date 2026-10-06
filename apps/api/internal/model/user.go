@@ -875,51 +875,81 @@ type AbTestVariant struct {
 // AUTOMATIONS / WORKFLOWS
 // ===================
 
-// Automation represents an email automation workflow
+// Automation is an automation's draft plus its published-version state.
+// TriggerType, TriggerConfig, Workflow and ReentryPolicy are the draft; running
+// enrollments use the immutable published version.
 type Automation struct {
-	ID              int            `json:"id"`
-	UUID            string         `json:"uuid"`
-	OrgID           int            `json:"orgId"`
-	Name            string         `json:"name"`
-	Description     string         `json:"description,omitempty"`
-	TriggerType     string         `json:"triggerType"` // contact.created, contact.subscribed, tag.added, etc.
-	TriggerConfig   map[string]any `json:"triggerConfig,omitempty"`
-	Workflow        *Workflow      `json:"workflow"`
-	Status          string         `json:"status"` // draft, active, paused
-	EnrolledCount   int            `json:"enrolledCount"`
-	CompletedCount  int            `json:"completedCount"`
-	InProgressCount int            `json:"inProgressCount"`
-	CreatedAt       time.Time      `json:"createdAt"`
-	UpdatedAt       time.Time      `json:"updatedAt"`
+	ID                    int              `json:"id"`
+	UUID                  string           `json:"uuid"`
+	OrgID                 int              `json:"orgId"`
+	Name                  string           `json:"name"`
+	Description           string           `json:"description,omitempty"`
+	TriggerType           string           `json:"triggerType"` // contact.subscribed, contact.created, manual
+	TriggerConfig         map[string]any   `json:"triggerConfig,omitempty"`
+	Workflow              *Workflow        `json:"workflow"`
+	Status                string           `json:"status"`        // draft, active, paused, archived
+	ReentryPolicy         string           `json:"reentryPolicy"` // never, after_exit
+	PublishedVersion      *int             `json:"publishedVersion"`
+	HasUnpublishedChanges bool             `json:"hasUnpublishedChanges"`
+	ActivatedAt           *time.Time       `json:"activatedAt"`
+	ArchivedAt            *time.Time       `json:"archivedAt"`
+	Stats                 AutomationCounts `json:"stats"`
+	EnrolledCount         int              `json:"enrolledCount"`
+	CompletedCount        int              `json:"completedCount"`
+	InProgressCount       int              `json:"inProgressCount"` // equals Stats.Active
+	CreatedAt             time.Time        `json:"createdAt"`
+	UpdatedAt             time.Time        `json:"updatedAt"`
+}
+
+// AutomationCounts are live enrollment counts; Waiting is the subset of
+// Active whose next step is in the future.
+type AutomationCounts struct {
+	Enrolled  int `json:"enrolled"`
+	Active    int `json:"active"`
+	Waiting   int `json:"waiting"`
+	Completed int `json:"completed"`
+	Exited    int `json:"exited"`
+	Failed    int `json:"failed"`
+	Cancelled int `json:"cancelled"`
 }
 
 // AutomationSummary is a lighter version for list views
 type AutomationSummary struct {
-	ID              int            `json:"id"`
-	UUID            string         `json:"uuid"`
-	OrgID           int            `json:"orgId"`
-	Name            string         `json:"name"`
-	Description     string         `json:"description,omitempty"`
-	TriggerType     string         `json:"triggerType"`
-	TriggerConfig   map[string]any `json:"triggerConfig,omitempty"`
-	Status          string         `json:"status"`
-	EnrolledCount   int            `json:"enrolledCount"`
-	CompletedCount  int            `json:"completedCount"`
-	InProgressCount int            `json:"inProgressCount"`
-	CreatedAt       time.Time      `json:"createdAt"`
-	UpdatedAt       time.Time      `json:"updatedAt"`
+	ID                    int              `json:"id"`
+	UUID                  string           `json:"uuid"`
+	OrgID                 int              `json:"orgId"`
+	Name                  string           `json:"name"`
+	Description           string           `json:"description,omitempty"`
+	TriggerType           string           `json:"triggerType"`
+	TriggerConfig         map[string]any   `json:"triggerConfig,omitempty"`
+	Status                string           `json:"status"`
+	ReentryPolicy         string           `json:"reentryPolicy"`
+	PublishedVersion      *int             `json:"publishedVersion"`
+	HasUnpublishedChanges bool             `json:"hasUnpublishedChanges"`
+	ActivatedAt           *time.Time       `json:"activatedAt"`
+	ArchivedAt            *time.Time       `json:"archivedAt"`
+	Stats                 AutomationCounts `json:"stats"`
+	EnrolledCount         int              `json:"enrolledCount"`
+	CompletedCount        int              `json:"completedCount"`
+	InProgressCount       int              `json:"inProgressCount"`
+	CreatedAt             time.Time        `json:"createdAt"`
+	UpdatedAt             time.Time        `json:"updatedAt"`
 }
+
+// WorkflowSchemaVersion is the current canonical graph schema.
+const WorkflowSchemaVersion = 1
 
 // Workflow represents the visual workflow graph
 type Workflow struct {
-	Nodes []WorkflowNode `json:"nodes"`
-	Edges []WorkflowEdge `json:"edges"`
+	SchemaVersion int            `json:"schemaVersion"`
+	Nodes         []WorkflowNode `json:"nodes"`
+	Edges         []WorkflowEdge `json:"edges"`
 }
 
 // WorkflowNode represents a node in the workflow
 type WorkflowNode struct {
 	ID       string           `json:"id"`
-	Type     string           `json:"type"` // trigger, email, delay, condition, action
+	Type     string           `json:"type"` // renderer key; always 'workflow'; kind is Data.Type
 	Position WorkflowPosition `json:"position"`
 	Data     WorkflowNodeData `json:"data"`
 }
@@ -933,19 +963,19 @@ type WorkflowPosition struct {
 // WorkflowNodeData represents the data for a workflow node
 type WorkflowNodeData struct {
 	Label  string         `json:"label"`
-	Type   string         `json:"type"`
+	Type   string         `json:"type"` // trigger, email, delay, condition, action, webhook
 	Config map[string]any `json:"config,omitempty"`
 }
 
-// WorkflowEdge represents a connection between nodes
+// WorkflowEdge connects two nodes; a condition's edges use sourceHandle yes/no.
 type WorkflowEdge struct {
 	ID           string `json:"id"`
 	Source       string `json:"source"`
 	Target       string `json:"target"`
 	SourceHandle string `json:"sourceHandle,omitempty"`
 	TargetHandle string `json:"targetHandle,omitempty"`
-	Label        string `json:"label,omitempty"`
 	Type         string `json:"type,omitempty"`
+	Animated     bool   `json:"animated,omitempty"`
 }
 
 // AutomationListResult represents paginated automation list
@@ -956,47 +986,111 @@ type AutomationListResult struct {
 	PageSize    int                 `json:"pageSize"`
 }
 
-// AutomationStats represents automation statistics
-type AutomationStats struct {
-	AutomationUUID string  `json:"automationUuid"`
-	Enrolled       int     `json:"enrolled"`
-	InProgress     int     `json:"inProgress"`
-	Completed      int     `json:"completed"`
-	Errors         int     `json:"errors"`
-	CompletionRate float64 `json:"completionRate"`
+// AutomationNodeStats counts step runs of one node in one version.
+type AutomationNodeStats struct {
+	Entered   int `json:"entered"`
+	Waiting   int `json:"waiting"`
+	Succeeded int `json:"succeeded"`
+	Skipped   int `json:"skipped"`
+	Failed    int `json:"failed"`
+	Yes       int `json:"yes"`
+	No        int `json:"no"`
+	Sent      int `json:"sent"`
+	Opened    int `json:"opened"`
+	Clicked   int `json:"clicked"`
 }
 
-// CreateAutomationRequest for creating an automation
+// AutomationStats are live counts plus per-node counts for one version.
+type AutomationStats struct {
+	AutomationUUID string `json:"automationUuid"`
+	AutomationCounts
+	InProgress     int                            `json:"inProgress"` // equals Active
+	Errors         int                            `json:"errors"`     // equals Failed
+	CompletionRate float64                        `json:"completionRate"`
+	Version        int                            `json:"version"`
+	Nodes          map[string]AutomationNodeStats `json:"nodes"`
+}
+
+// CreateAutomationRequest for creating an automation. The trigger node's
+// config.event is the trigger; a differing triggerType is rejected.
 type CreateAutomationRequest struct {
 	Name          string         `json:"name" v:"required|min-length:2"`
 	Description   string         `json:"description"`
-	TriggerType   string         `json:"triggerType" v:"required"`
+	TriggerType   string         `json:"triggerType"`
 	TriggerConfig map[string]any `json:"triggerConfig"`
 	Workflow      *Workflow      `json:"workflow"`
+	ReentryPolicy *string        `json:"reentryPolicy"` // never (default), after_exit
 }
 
-// UpdateAutomationRequest for updating an automation
+// UpdateAutomationRequest changes the draft only.
 type UpdateAutomationRequest struct {
 	Name          *string        `json:"name"`
 	Description   *string        `json:"description"`
 	TriggerType   *string        `json:"triggerType"`
 	TriggerConfig map[string]any `json:"triggerConfig"`
 	Workflow      *Workflow      `json:"workflow"`
+	ReentryPolicy *string        `json:"reentryPolicy"`
 }
 
-// AutomationEnrollment tracks a contact's progress through an automation
-type AutomationEnrollment struct {
-	ID            int        `json:"id"`
-	UUID          string     `json:"uuid"`
-	AutomationID  int        `json:"automationId"`
-	ContactID     int        `json:"contactId"`
-	OrgID         int        `json:"orgId"`
-	Status        string     `json:"status"` // active, completed, exited, error
-	CurrentStepID string     `json:"currentStepId"`
-	StepIndex     int        `json:"stepIndex"`
-	EnrolledAt    time.Time  `json:"enrolledAt"`
-	CompletedAt   *time.Time `json:"completedAt,omitempty"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
+// AutomationValidationError locates one problem; NodeID is empty for graph-wide errors.
+type AutomationValidationError struct {
+	NodeID  string `json:"nodeId"`
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+// ActivateAutomationRequest: PublishDraft defaults to true; false resumes the
+// current published version without touching the draft.
+type ActivateAutomationRequest struct {
+	PublishDraft *bool `json:"publishDraft"`
+}
+
+// EnrollRequest names exactly one of a contact or a list.
+type EnrollRequest struct {
+	ContactUUID string `json:"contactUuid"`
+	ListUUID    string `json:"listUuid"`
+}
+
+type EnrollResult struct {
+	Enrolled int `json:"enrolled"`
+	Skipped  int `json:"skipped"`
+}
+
+// AutomationEnrollmentView is one contact's run through a pinned version.
+type AutomationEnrollmentView struct {
+	UUID          string                  `json:"uuid"`
+	ContactUUID   string                  `json:"contactUuid"`
+	ContactEmail  string                  `json:"contactEmail"`
+	Status        string                  `json:"status"` // active, completed, exited, failed, cancelled
+	ExitReason    *string                 `json:"exitReason"`
+	Version       *int                    `json:"version"`
+	CurrentNodeID *string                 `json:"currentNodeId"`
+	NextRunAt     *time.Time              `json:"nextRunAt"`
+	RetryCount    int                     `json:"retryCount"`
+	Error         *string                 `json:"error"`
+	EnrolledAt    time.Time               `json:"enrolledAt"`
+	CompletedAt   *time.Time              `json:"completedAt"`
+	Steps         []AutomationStepRunView `json:"steps,omitempty"`
+}
+
+// AutomationStepRunView is one node's run; MessageUUID is the queued email.
+type AutomationStepRunView struct {
+	NodeID      string     `json:"nodeId"`
+	NodeType    string     `json:"nodeType"`
+	Status      string     `json:"status"` // waiting, succeeded, skipped, failed
+	Outcome     *string    `json:"outcome"`
+	MessageUUID *string    `json:"messageUuid,omitempty"`
+	Error       *string    `json:"error"`
+	StartedAt   time.Time  `json:"startedAt"`
+	FinishedAt  *time.Time `json:"finishedAt"`
+	ResumeAt    *time.Time `json:"resumeAt"`
+}
+
+type AutomationEnrollmentListResult struct {
+	Enrollments []AutomationEnrollmentView `json:"enrollments"`
+	Total       int                        `json:"total"`
+	Page        int                        `json:"page"`
+	PageSize    int                        `json:"pageSize"`
 }
 
 // ===================

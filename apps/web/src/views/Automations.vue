@@ -125,13 +125,10 @@ const getStatusIcon = (status: string) => {
 
 const getTriggerLabel = (triggerType: string) => {
   const labels: Record<string, string> = {
-    'contact_added': 'Contact Added',
-    'contact.created': 'Contact Created',
-    'contact.subscribed': 'Contact Subscribed',
-    'tag.added': 'Tag Added',
-    'form.submitted': 'Form Submitted',
-    'email.opened': 'Email Opened',
-    'api_trigger': 'API Trigger'
+    'contact.subscribed': 'Contact subscribed to list',
+    'contact.created': 'Contact created',
+    'manual': 'Manual enrollment',
+    'contact_added': 'Contact created'
   }
   return labels[triggerType] || triggerType
 }

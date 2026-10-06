@@ -28,28 +28,37 @@ func (s *AutomationService) CreateAutomation(ctx context.Context, orgID int64, r
 	automationUUID := uuid.New().String()
 	now := time.Now()
 
-	// Convert workflow to JSON
-	workflowJSON, err := json.Marshal(req.Workflow)
+	workflow, triggerType, triggerConfig, err := PrepareAutomationDraft(req.Workflow, req.TriggerType, req.TriggerConfig)
+	if err != nil {
+		return nil, err
+	}
+	reentry := "never"
+	if req.ReentryPolicy != nil {
+		if reentry = *req.ReentryPolicy; !ValidReentryPolicy(reentry) {
+			return nil, fmt.Errorf("reentryPolicy must be never or after_exit")
+		}
+	}
+	workflowJSON, err := json.Marshal(workflow)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize workflow: %w", err)
 	}
 
 	query := `
-		INSERT INTO automations (uuid, org_id, name, description, trigger_type, trigger_config, workflow, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', $8, $8)
-		RETURNING id, uuid, org_id, name, description, trigger_type, trigger_config, workflow, status, created_at, updated_at
+		INSERT INTO automations (uuid, org_id, name, description, trigger_type, trigger_config, workflow, status, reentry_policy, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', $9, $8, $8)
+		RETURNING id, uuid, org_id, name, description, trigger_type, trigger_config, workflow, status, reentry_policy, created_at, updated_at
 	`
 
-	triggerConfigJSON, _ := json.Marshal(req.TriggerConfig)
+	triggerConfigJSON, _ := json.Marshal(triggerConfig)
 
 	var automation model.Automation
 	var workflowBytes []byte
 	var triggerConfigBytes []byte
 	err = s.db.QueryRowContext(ctx, query,
-		automationUUID, orgID, req.Name, req.Description, req.TriggerType, triggerConfigJSON, workflowJSON, now,
+		automationUUID, orgID, req.Name, req.Description, triggerType, triggerConfigJSON, workflowJSON, now, reentry,
 	).Scan(
 		&automation.ID, &automation.UUID, &automation.OrgID, &automation.Name, &automation.Description,
-		&automation.TriggerType, &triggerConfigBytes, &workflowBytes, &automation.Status,
+		&automation.TriggerType, &triggerConfigBytes, &workflowBytes, &automation.Status, &automation.ReentryPolicy,
 		&automation.CreatedAt, &automation.UpdatedAt,
 	)
 	if err != nil {
@@ -65,7 +74,7 @@ func (s *AutomationService) CreateAutomation(ctx context.Context, orgID int64, r
 // GetAutomation retrieves an automation by UUID
 func (s *AutomationService) GetAutomation(ctx context.Context, orgID int64, automationUUID string) (*model.Automation, error) {
 	query := `
-		SELECT id, uuid, org_id, name, description, trigger_type, trigger_config, workflow, status,
+		SELECT id, uuid, org_id, name, description, trigger_type, trigger_config, workflow, status, reentry_policy,
 		       enrolled_count, completed_count, in_progress_count, created_at, updated_at
 		FROM automations
 		WHERE uuid = $1 AND org_id = $2
@@ -76,7 +85,7 @@ func (s *AutomationService) GetAutomation(ctx context.Context, orgID int64, auto
 	var triggerConfigBytes []byte
 	err := s.db.QueryRowContext(ctx, query, automationUUID, orgID).Scan(
 		&automation.ID, &automation.UUID, &automation.OrgID, &automation.Name, &automation.Description,
-		&automation.TriggerType, &triggerConfigBytes, &workflowBytes, &automation.Status,
+		&automation.TriggerType, &triggerConfigBytes, &workflowBytes, &automation.Status, &automation.ReentryPolicy,
 		&automation.EnrolledCount, &automation.CompletedCount, &automation.InProgressCount,
 		&automation.CreatedAt, &automation.UpdatedAt,
 	)
@@ -159,6 +168,24 @@ func (s *AutomationService) ListAutomations(ctx context.Context, orgID int64, pa
 func (s *AutomationService) UpdateAutomation(ctx context.Context, orgID int64, automationUUID string, req *model.UpdateAutomationRequest) (*model.Automation, error) {
 	now := time.Now()
 
+	// The trigger step defines the trigger, so trigger fields change only with the workflow.
+	if req.Workflow != nil {
+		triggerType := ""
+		if req.TriggerType != nil {
+			triggerType = *req.TriggerType
+		}
+		workflow, trigger, triggerConfig, err := PrepareAutomationDraft(req.Workflow, triggerType, req.TriggerConfig)
+		if err != nil {
+			return nil, err
+		}
+		req.Workflow, req.TriggerType, req.TriggerConfig = workflow, &trigger, triggerConfig
+	} else if req.TriggerType != nil || req.TriggerConfig != nil {
+		return nil, fmt.Errorf("send the workflow to change the trigger")
+	}
+	if req.ReentryPolicy != nil && !ValidReentryPolicy(*req.ReentryPolicy) {
+		return nil, fmt.Errorf("reentryPolicy must be never or after_exit")
+	}
+
 	// Build update query dynamically
 	updates := []string{}
 	args := []interface{}{}
@@ -183,6 +210,11 @@ func (s *AutomationService) UpdateAutomation(ctx context.Context, orgID int64, a
 		configJSON, _ := json.Marshal(req.TriggerConfig)
 		updates = append(updates, fmt.Sprintf("trigger_config = $%d", argIndex))
 		args = append(args, configJSON)
+		argIndex++
+	}
+	if req.ReentryPolicy != nil {
+		updates = append(updates, fmt.Sprintf("reentry_policy = $%d", argIndex))
+		args = append(args, *req.ReentryPolicy)
 		argIndex++
 	}
 	if req.Workflow != nil {
