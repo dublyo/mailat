@@ -15,6 +15,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/dublyo/mailat/api/internal/config"
+	"github.com/dublyo/mailat/api/internal/eventoutbox"
 	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/internal/provider"
 )
@@ -519,7 +520,7 @@ func (x *AutomationExecutor) runNode(ctx context.Context, tx *sql.Tx, st *enroll
 	case KindEmail:
 		return x.runEmail(ctx, tx, st, g, n)
 	case KindWebhook:
-		return nil, permanentStep("Webhook steps are not available yet")
+		return x.runWebhook(ctx, tx, st, n)
 	}
 	return nil, permanentStep("Unknown step type %s", n.Kind)
 }
@@ -618,6 +619,40 @@ func (x *AutomationExecutor) runEmail(ctx context.Context, tx *sql.Tx, st *enrol
 		return nil, err
 	}
 	return &stepResult{status: "succeeded", outcome: "queued", messageID: &msgID}, nil
+}
+
+// runWebhook queues a signed delivery to one of the publisher's own active
+// endpoints through the event outbox; the step does not wait for delivery.
+func (x *AutomationExecutor) runWebhook(ctx context.Context, tx *sql.Tx, st *enrollmentStep, n *CompiledNode) (*stepResult, error) {
+	if !st.publishedBy.Valid {
+		return nil, permanentStep("The user who published this version no longer exists")
+	}
+	var webhookID, ownerID int64
+	err := tx.QueryRowContext(ctx, `SELECT w.id, w.user_id FROM webhooks w JOIN users u ON u.id=w.user_id AND u.org_id=w.org_id
+		WHERE w.uuid=$1 AND w.org_id=$2 AND w.user_id=$3 AND w.active AND u.status='active'`,
+		n.Webhook.WebhookUUID, st.orgID, st.publishedBy.Int64).Scan(&webhookID, &ownerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, permanentStep("The webhook of step %s is no longer available", n.ID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var automationUUID, automationName, contactUUID, email, first, last string
+	if err := tx.QueryRowContext(ctx, `SELECT a.uuid::text, a.name, c.uuid::text, c.email, COALESCE(c.first_name,''), COALESCE(c.last_name,'')
+		FROM automations a, contacts c WHERE a.id=$1 AND c.id=$2 AND c.org_id=$3`, st.automationID, st.contactID, st.orgID).
+		Scan(&automationUUID, &automationName, &contactUUID, &email, &first, &last); err != nil {
+		return nil, err
+	}
+	eventID, _, err := eventoutbox.QueueTarget(ctx, tx, eventoutbox.Event{
+		Type: eventoutbox.TargetOnlyTypes[0], OrgID: st.orgID, UserID: ownerID,
+		DedupeKey: "automation:" + st.uuid + ":" + n.ID,
+		Data: map[string]any{"automationUuid": automationUUID, "automationName": automationName, "enrollmentUuid": st.uuid,
+			"nodeId": n.ID, "contactId": contactUUID, "email": email, "firstName": first, "lastName": last},
+	}, webhookID, 0)
+	if err != nil {
+		return nil, err
+	}
+	return &stepResult{status: "succeeded", outcome: "queued", webhookID: &eventID}, nil
 }
 
 // advance records the node's run and moves the enrollment on.

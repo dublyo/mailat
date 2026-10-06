@@ -166,6 +166,10 @@ func QueueTarget(ctx context.Context, q DBTX, event Event, webhookID, triggerID 
 	return id, delivery, err
 }
 
+// TargetOnlyTypes are delivered only to a destination chosen by their source
+// (QueueTarget); they stay out of Types so nobody can subscribe to them.
+var TargetOnlyTypes = []string{"automation.webhook"}
+
 var Types = []string{"contact.subscribed", "email.received", "email.sent", "email.delivered", "email.failed", "email.unknown", "email.bounced", "email.complained", "campaign.started", "campaign.paused", "campaign.cancelled", "campaign.sent"}
 
 func KnownType(kind string) bool {
