@@ -1039,6 +1039,12 @@ type AutomationValidationError struct {
 	Message string `json:"message"`
 }
 
+// AutomationValidationResult is the outcome of POST /automations/:uuid/validate.
+type AutomationValidationResult struct {
+	Valid  bool                        `json:"valid"`
+	Errors []AutomationValidationError `json:"errors"`
+}
+
 // ActivateAutomationRequest: PublishDraft defaults to true; false resumes the
 // current published version without touching the draft.
 type ActivateAutomationRequest struct {

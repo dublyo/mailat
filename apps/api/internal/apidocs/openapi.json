@@ -166,6 +166,19 @@
         },
         "type": "object"
       },
+      "model.ActivateAutomationRequest": {
+        "properties": {
+          "publishDraft": {
+            "allOf": [
+              {
+                "type": "boolean"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "type": "object"
+      },
       "model.AddContactsToListRequest": {
         "properties": {
           "contactIds": {
@@ -593,6 +606,34 @@
           },
           "uuid": {
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "model.AutomationValidationError": {
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "nodeId": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "model.AutomationValidationResult": {
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/model.AutomationValidationError"
+            },
+            "type": "array"
+          },
+          "valid": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -4624,6 +4665,27 @@
           },
           "uuid": {
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "service.AutomationActivation": {
+        "properties": {
+          "automation": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/model.Automation"
+              }
+            ],
+            "nullable": true
+          },
+          "published": {
+            "description": "a new version was created",
+            "type": "boolean"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "type": "object"
@@ -12547,7 +12609,7 @@
     },
     "/api/v1/automations": {
       "get": {
-        "description": "List retrieves automations with pagination\nGET /api/v1/automations",
+        "description": "List pages automations with live counts. status is draft, active, paused or archived.\nGET /api/v1/automations",
         "operationId": "get_api_v1_automations",
         "parameters": [
           {
@@ -12815,7 +12877,7 @@
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
       },
       "post": {
-        "description": "Create creates a new automation\nPOST /api/v1/automations",
+        "description": "Create saves a new draft; only structural problems are rejected.\nPOST /api/v1/automations",
         "operationId": "post_api_v1_automations",
         "requestBody": {
           "content": {
@@ -13069,7 +13131,7 @@
     },
     "/api/v1/automations/{uuid}": {
       "delete": {
-        "description": "Delete deletes an automation\nDELETE /api/v1/automations/:uuid",
+        "description": "Delete removes a draft or archived automation; archive a live one first.\nDELETE /api/v1/automations/:uuid",
         "operationId": "delete_api_v1_automations_uuid",
         "parameters": [
           {
@@ -13313,7 +13375,7 @@
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
       },
       "get": {
-        "description": "Get retrieves an automation by UUID\nGET /api/v1/automations/:uuid",
+        "description": "Get returns the draft, the published version number, whether the draft has\nunpublished changes, and live enrollment counts.\nGET /api/v1/automations/:uuid",
         "operationId": "get_api_v1_automations_uuid",
         "parameters": [
           {
@@ -13565,7 +13627,7 @@
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
       },
       "put": {
-        "description": "Update updates an automation\nPUT /api/v1/automations/:uuid",
+        "description": "Update changes the draft only; running enrollments keep their published\nversion. Archived automations cannot be edited.\nPUT /api/v1/automations/:uuid",
         "operationId": "put_api_v1_automations_uuid",
         "parameters": [
           {
@@ -13829,7 +13891,7 @@
     },
     "/api/v1/automations/{uuid}/activate": {
       "post": {
-        "description": "Activate activates an automation\nPOST /api/v1/automations/:uuid/activate",
+        "description": "Activate publishes the draft as a new version when it changed and makes the\nautomation active. {\"publishDraft\":false} resumes the current version\nwithout touching the draft. Used for activate, resume and publish changes.\nPOST /api/v1/automations/:uuid/activate",
         "operationId": "post_api_v1_automations_uuid_activate",
         "parameters": [
           {
@@ -13841,6 +13903,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/model.ActivateAutomationRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -13854,7 +13926,7 @@
                     "data": {
                       "allOf": [
                         {
-                          "$ref": "#/components/schemas/model.Automation"
+                          "$ref": "#/components/schemas/service.AutomationActivation"
                         }
                       ],
                       "nullable": true
@@ -14073,6 +14145,269 @@
           }
         ],
         "summary": "Activate",
+        "tags": [
+          "automations"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "mailat",
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+      }
+    },
+    "/api/v1/automations/{uuid}/archive": {
+      "post": {
+        "description": "Archive ends the automation for good and cancels its active enrollments.\nPOST /api/v1/automations/:uuid/archive",
+        "operationId": "post_api_v1_automations_uuid_archive",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "properties": {
+                        "automation": {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/model.Automation"
+                            }
+                          ],
+                          "nullable": true
+                        },
+                        "cancelledEnrollments": {
+                          "format": "int64",
+                          "type": "integer"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Archive",
         "tags": [
           "automations"
         ],
@@ -14347,7 +14682,7 @@
     },
     "/api/v1/automations/{uuid}/pause": {
       "post": {
-        "description": "Pause pauses an automation\nPOST /api/v1/automations/:uuid/pause",
+        "description": "Pause stops new enrollments and freezes running ones.\nPOST /api/v1/automations/:uuid/pause",
         "operationId": "post_api_v1_automations_uuid_pause",
         "parameters": [
           {
@@ -14601,13 +14936,20 @@
     },
     "/api/v1/automations/{uuid}/stats": {
       "get": {
-        "description": "GetStats retrieves automation statistics\nGET /api/v1/automations/:uuid/stats",
+        "description": "GetStats returns live enrollment counts and per-node counts for a version\n(default: the published version).\nGET /api/v1/automations/:uuid/stats",
         "operationId": "get_api_v1_automations_uuid_stats",
         "parameters": [
           {
             "in": "path",
             "name": "uuid",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
             "schema": {
               "type": "string"
             }
@@ -14845,6 +15187,255 @@
           }
         ],
         "summary": "GetStats",
+        "tags": [
+          "automations"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "mailat",
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+      }
+    },
+    "/api/v1/automations/{uuid}/validate": {
+      "post": {
+        "description": "Validate runs the publish checks, including the referenced lists,\ntemplates, identities and webhooks, without changing anything.\nPOST /api/v1/automations/:uuid/validate",
+        "operationId": "post_api_v1_automations_uuid_validate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/model.AutomationValidationResult"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Validate",
         "tags": [
           "automations"
         ],

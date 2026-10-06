@@ -24,7 +24,7 @@ func TestAutomationDraftSaveNormalizes(t *testing.T) {
 		"edges":[{"id":"e","source":"t","target":"w","label":"x"}]}`), &legacy); err != nil {
 		t.Fatal(err)
 	}
-	a, err := s.CreateAutomation(ctx, 1, &model.CreateAutomationRequest{Name: "Legacy", TriggerType: "contact_added", Workflow: &legacy})
+	a, err := s.CreateAutomation(ctx, 1, 0, &model.CreateAutomationRequest{Name: "Legacy", TriggerType: "contact_added", Workflow: &legacy})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,19 +34,19 @@ func TestAutomationDraftSaveNormalizes(t *testing.T) {
 	}
 
 	// An incomplete draft saves; structural problems and trigger mismatches do not.
-	if _, err := s.CreateAutomation(ctx, 1, &model.CreateAutomationRequest{Name: "Empty"}); err != nil {
+	if _, err := s.CreateAutomation(ctx, 1, 0, &model.CreateAutomationRequest{Name: "Empty"}); err != nil {
 		t.Fatal("empty draft:", err)
 	}
 	var invalid *AutomationInvalidError
 	bad := &model.Workflow{Nodes: []model.WorkflowNode{{ID: "bad id", Data: model.WorkflowNodeData{Type: "sms"}}}}
-	if _, err := s.CreateAutomation(ctx, 1, &model.CreateAutomationRequest{Name: "Bad", Workflow: bad}); !errors.As(err, &invalid) || invalid.Errors[0].Field != "id" {
+	if _, err := s.CreateAutomation(ctx, 1, 0, &model.CreateAutomationRequest{Name: "Bad", Workflow: bad}); !errors.As(err, &invalid) || invalid.Errors[0].Field != "id" {
 		t.Fatalf("structural error: %v", err)
 	}
-	if _, err := s.CreateAutomation(ctx, 1, &model.CreateAutomationRequest{Name: "Mismatch", TriggerType: "manual", Workflow: &legacy}); !errors.As(err, &invalid) {
+	if _, err := s.CreateAutomation(ctx, 1, 0, &model.CreateAutomationRequest{Name: "Mismatch", TriggerType: "manual", Workflow: &legacy}); !errors.As(err, &invalid) {
 		t.Fatalf("mismatch: %v", err)
 	}
 	policy := "always"
-	if _, err := s.CreateAutomation(ctx, 1, &model.CreateAutomationRequest{Name: "Policy", ReentryPolicy: &policy}); err == nil {
+	if _, err := s.CreateAutomation(ctx, 1, 0, &model.CreateAutomationRequest{Name: "Policy", ReentryPolicy: &policy}); err == nil {
 		t.Fatal("unknown reentry policy accepted")
 	}
 

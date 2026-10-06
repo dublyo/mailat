@@ -329,12 +329,19 @@ const activateAutomation = async () => {
   if (!route.params.uuid) return
   try {
     const token = localStorage.getItem('token')
-    await fetch(`/api/v1/automations/${route.params.uuid}/activate`, {
+    const res = await fetch(`/api/v1/automations/${route.params.uuid}/activate`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}` }
     })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      // Activation publishes the draft; show the validation errors it returned.
+      const errors = (body?.data?.errors ?? []).map((e: { message: string }) => e.message)
+      window.alert([body?.message || 'Could not activate the automation', ...errors].join('\n'))
+      return
+    }
     if (automation.value) {
-      automation.value.status = 'active'
+      automation.value.status = body?.data?.automation?.status ?? 'active'
     }
   } catch (error) {
     console.error('Failed to activate automation:', error)

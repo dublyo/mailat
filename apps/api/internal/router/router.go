@@ -402,6 +402,8 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.DELETE("/automations/:uuid", automationCtrl.Delete)
 			protectedGroup.POST("/automations/:uuid/activate", automationCtrl.Activate)
 			protectedGroup.POST("/automations/:uuid/pause", automationCtrl.Pause)
+			protectedGroup.POST("/automations/:uuid/validate", automationCtrl.Validate)
+			protectedGroup.POST("/automations/:uuid/archive", automationCtrl.Archive)
 			protectedGroup.GET("/automations/:uuid/stats", automationCtrl.GetStats)
 			protectedGroup.POST("/automations/:uuid/enroll", automationCtrl.EnrollContact)
 

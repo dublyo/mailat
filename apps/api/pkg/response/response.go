@@ -131,3 +131,9 @@ func TooManyRequests(r *ghttp.Request, retryAfter time.Duration, message string)
 	r.Response.Status = 429
 	Error(r, 429, message)
 }
+
+// ErrorWithData writes an error envelope that carries structured data, such as
+// field-level validation errors.
+func ErrorWithData(r *ghttp.Request, code int, message string, data interface{}) {
+	WithStatus(r, code, code, message, data)
+}
