@@ -260,6 +260,17 @@ test('a paused automation with changes can resume without publishing', async t =
   assert.equal(f.named('update').length, 0)
 })
 
+test('a migrated paused automation without a version resumes by publishing version 1', async t => {
+  const f = mount(t, editorCode, { current: automation({ status: 'paused', publishedVersion: null }) })
+  await flush()
+  await click(f.root, 'Resume')
+  const message = text(dialog(f.root))
+  assert.match(message, /enrolled in version 1/)
+  assert.ok(!message.includes('null'), message)
+  await confirmWith(f.root, 'Publish and resume')
+  assert.deepEqual(f.named('activate')[0].args, ['auto-1', { publishDraft: true }])
+})
+
 test('archived automations are read-only', async t => {
   const f = mount(t, editorCode, { current: automation({ status: 'archived', publishedVersion: 1 }) })
   await flush()
@@ -339,4 +350,21 @@ test('WorkflowBuilder.vue is gone and nothing references it', () => {
   assert.ok(!editor.includes('localStorage'), 'the editor uses automationApi, not raw fetch with a stored token')
   assert.ok(!editor.includes('fetch('))
   assert.ok(!editor.includes("'contact_added'"))
+})
+
+test('resuming from the list asks before publishing unpublished changes', async t => {
+  const rows = [
+    automation({ uuid: 'p', name: 'Changed', status: 'paused', publishedVersion: 2, hasUnpublishedChanges: true }),
+    automation({ uuid: 'q', name: 'Clean', status: 'paused', publishedVersion: 3 }),
+  ]
+  const f = mount(t, listCode, { api: { list: () => Promise.resolve({ automations: rows, total: 2, page: 1, pageSize: 100 }) } })
+  await flush()
+  await click(f.root, 'Resume Changed')
+  assert.equal(f.named('activate').length, 0, 'nothing is published before the choice')
+  assert.match(text(dialog(f.root)), /continue on version 2/)
+  await confirmWith(f.root, 'Resume without publishing')
+  assert.deepEqual(f.named('activate')[0].args, ['p', { publishDraft: false }])
+  await click(f.root, 'Resume Clean')
+  assert.equal(dialog(f.root), undefined)
+  assert.deepEqual(f.named('activate')[1].args, ['q', { publishDraft: false }])
 })

@@ -615,8 +615,10 @@ const primaryAction = computed(() => {
 
 function askPrimary() {
   const v = publishedVersion.value
-  if (status.value === 'draft') {
-    ask('Activate automation?', 'Contacts who meet the trigger from now on are enrolled in version 1. Contacts who met it earlier are not.', 'Activate', () => activate(true))
+  // Paused with no version: a legacy automation from before versioning.
+  if (status.value === 'draft' || v == null) {
+    ask(status.value === 'draft' ? 'Activate automation?' : 'Publish and resume?', 'Contacts who meet the trigger from now on are enrolled in version 1. Contacts who met it earlier are not.',
+      status.value === 'draft' ? 'Activate' : 'Publish and resume', () => activate(true))
   } else if (status.value === 'paused' && !hasUnpublished.value) {
     ask('Resume automation?', `Contacts continue on version ${v}. Waits that came due while paused run right away.`, 'Resume', () => activate(true))
   } else {

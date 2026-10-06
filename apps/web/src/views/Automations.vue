@@ -32,7 +32,10 @@ const filterTabs: { value: 'all' | AutomationStatus; label: string }[] = [
   { value: 'draft', label: 'Draft' },
   { value: 'archived', label: 'Archived' },
 ]
-const confirmState = ref<{ title: string; message: string; confirmLabel: string; run: () => unknown } | null>(null)
+const confirmState = ref<{
+  title: string; message: string; confirmLabel: string; run: () => unknown
+  danger?: boolean; secondaryLabel?: string; runSecondary?: () => unknown
+} | null>(null)
 
 onMounted(async () => {
   await loadAutomations()
@@ -76,15 +79,35 @@ const editAutomation = (automation: Automation) => {
   router.push(`/automations/${automation.uuid}`)
 }
 
-// Resume publishes the saved draft, like the editor's Resume button.
-const toggleStatus = async (automation: Automation) => {
+const setStatus = async (automation: Automation, change: () => Promise<Automation>) => {
   clearError()
   try {
-    if (automation.status === 'active') replaceRow(await automationApi.pause(automation.uuid))
-    else replaceRow((await automationApi.activate(automation.uuid)).automation)
+    replaceRow(await change())
   } catch (e) {
     showError(e, 'Could not change automation status', automation)
   }
+}
+
+const resume = (automation: Automation, publishDraft: boolean) =>
+  setStatus(automation, async () => (await automationApi.activate(automation.uuid, { publishDraft })).automation)
+
+// Resuming with unpublished changes asks whether to publish them first, like
+// the editor; otherwise it resumes the published version (or publishes
+// version 1 for a paused automation that has none).
+const toggleStatus = (automation: Automation) => {
+  if (automation.status === 'active') return setStatus(automation, () => automationApi.pause(automation.uuid))
+  if (automation.status === 'paused' && automation.publishedVersion != null && automation.hasUnpublishedChanges) {
+    confirmState.value = {
+      title: `Publish changes and resume "${automation.name}"?`,
+      message: `New enrollments use the new version; contacts already in progress continue on version ${automation.publishedVersion}. Or resume version ${automation.publishedVersion} and keep your changes as an unpublished draft.`,
+      confirmLabel: 'Publish and resume',
+      run: () => resume(automation, true),
+      secondaryLabel: 'Resume without publishing',
+      runSecondary: () => resume(automation, false),
+    }
+    return
+  }
+  return resume(automation, automation.publishedVersion == null)
 }
 
 const askArchive = (automation: Automation) => {
@@ -92,6 +115,7 @@ const askArchive = (automation: Automation) => {
     title: `Archive "${automation.name}"?`,
     message: 'Every contact in progress is cancelled, and the automation becomes read-only. This cannot be undone.',
     confirmLabel: 'Archive',
+    danger: true,
     run: async () => {
       clearError()
       try {
@@ -108,6 +132,7 @@ const askDelete = (automation: Automation) => {
     title: `Delete "${automation.name}"?`,
     message: 'The automation and its history are removed permanently.',
     confirmLabel: 'Delete',
+    danger: true,
     run: async () => {
       clearError()
       try {
@@ -120,10 +145,10 @@ const askDelete = (automation: Automation) => {
   }
 }
 
-const confirmRun = async () => {
+const confirmRun = async (secondary = false) => {
   const state = confirmState.value
   confirmState.value = null
-  await state?.run()
+  await (secondary ? state?.runSecondary?.() : state?.run())
 }
 
 const filteredAutomations = computed(() => {
@@ -338,7 +363,8 @@ const formatDate = (dateStr: string) => {
         <p class="mt-2 text-sm text-gray-600">{{ confirmState.message }}</p>
         <div class="mt-4 flex justify-end gap-2">
           <button class="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200" @click="confirmState = null">Cancel</button>
-          <button class="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700" @click="confirmRun">{{ confirmState.confirmLabel }}</button>
+          <button v-if="confirmState.secondaryLabel" class="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200" @click="confirmRun(true)">{{ confirmState.secondaryLabel }}</button>
+          <button :class="['rounded-lg px-4 py-2 text-sm font-medium text-white', confirmState.danger ? 'bg-red-600 hover:bg-red-700' : 'bg-indigo-600 hover:bg-indigo-700']" @click="confirmRun()">{{ confirmState.confirmLabel }}</button>
         </div>
       </div>
     </div>
