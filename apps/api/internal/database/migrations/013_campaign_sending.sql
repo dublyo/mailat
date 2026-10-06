@@ -13,7 +13,12 @@ ALTER TABLE campaigns
   ADD COLUMN IF NOT EXISTS last_batch_at timestamptz,
   ADD COLUMN IF NOT EXISTS failed_count integer NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS skipped_count integer NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS unknown_count integer NOT NULL DEFAULT 0;
+  ADD COLUMN IF NOT EXISTS unknown_count integer NOT NULL DEFAULT 0,
+  -- Counter values at the last resume: the bounce/complaint breaker judges
+  -- only what was sent since, so a breaker pause can be resumed.
+  ADD COLUMN IF NOT EXISTS breaker_baseline_sent integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS breaker_baseline_bounces integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS breaker_baseline_complaints integer NOT NULL DEFAULT 0;
 
 -- Nothing was ever sent before M3. Never auto-blast legacy rows after deploy:
 -- they return to draft so the owner re-confirms the sender (identity/creator) and sends.

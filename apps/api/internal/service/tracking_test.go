@@ -178,3 +178,32 @@ func TestTrackingStoredEventsAreCapped(t *testing.T) {
 	count(t, f.db, 1, `SELECT open_count FROM campaigns WHERE id=1`)
 	count(t, f.db, maxStoredTrackingEvents, `SELECT engagement_score FROM contacts WHERE id=1`)
 }
+
+// A signed template link is personalised at redirect time; the stored event
+// keeps the template, so neither the token nor campaign_events holds the address.
+func TestTrackingClickFillsTemplateLinks(t *testing.T) {
+	f := newTrackingFixture(t)
+	mustExec(t, f.db, `UPDATE contacts SET first_name='Ann' WHERE id=1; UPDATE contacts SET first_name='A B' WHERE id=2`)
+	tmpl := "https://shop.test/?e={{ email }}&n={{firstName}}"
+	click := func(r, c, o int64) string {
+		t.Helper()
+		got, err := f.svc.ProcessClickEvent(context.Background(), ClickToken(trackingSecret, r, c, o, 0, tmpl), "", "ua")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := click(1, 1, 1); got != "https://shop.test/?e=a@x.test&n=Ann" {
+		t.Fatalf("personalised target %q", got)
+	}
+	// A value that breaks the URL is dropped rather than failing the redirect.
+	if got := click(2, 1, 1); got != "https://shop.test/?e=&n=" {
+		t.Fatalf("invalid value target %q", got)
+	}
+	// No contact (erased or deleted): variables render empty.
+	if got := click(3, 2, 2); got != "https://shop.test/?e=&n=" {
+		t.Fatalf("no contact target %q", got)
+	}
+	count(t, f.db, 3, `SELECT count(*) FROM campaign_events WHERE event_type='click' AND url=$1`, tmpl)
+	count(t, f.db, 0, `SELECT count(*) FROM campaign_events WHERE url LIKE '%@%'`)
+}

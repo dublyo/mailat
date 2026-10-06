@@ -97,6 +97,7 @@ func TestGDPRErasureOfCampaignRecipients(t *testing.T) {
 	// (campaign_id, lower(email)) unique index.
 	mustExec(t, f.db, `
 		INSERT INTO campaign_events(campaign_id,recipient_id,event_type,user_agent,ip_address) VALUES(1,1,'open','UA','192.0.2.1'),(1,2,'open','UA2','192.0.2.2');
+		INSERT INTO campaign_events(campaign_id,recipient_id,event_type,url,link_index) VALUES(1,1,'click','https://shop.test/?e=reader@example.test',0);
 		INSERT INTO users(id,org_id,email,password_hash,updated_at) VALUES(2,1,'admin@one.test','x',now());
 		INSERT INTO campaign_test_sends(campaign_id,user_id,idempotency_key,request_hash,recipients,results) VALUES(1,1,'key-12345','h',ARRAY['reader@example.test'],'[{"email":"reader@example.test"}]'),(1,2,'key-67890','h',ARRAY['me@one.test'],'[]')`)
 	actor := ContactActor{UserID: 1}
@@ -107,7 +108,8 @@ func TestGDPRErasureOfCampaignRecipients(t *testing.T) {
 	}
 	count(t, f.db, 1, `SELECT count(*) FROM campaign_recipients WHERE id=1 AND email='erased+1@invalid' AND contact_id IS NULL`)
 	count(t, f.db, 1, `SELECT count(*) FROM campaign_recipients WHERE id=2 AND email='erased+2@invalid' AND contact_id IS NULL`)
-	count(t, f.db, 2, `SELECT count(*) FROM campaign_events WHERE ip_address IS NULL AND user_agent IS NULL`)
+	count(t, f.db, 3, `SELECT count(*) FROM campaign_events WHERE ip_address IS NULL AND user_agent IS NULL AND url IS NULL`)
+	count(t, f.db, 1, `SELECT count(*) FROM campaign_events WHERE event_type='click' AND link_index=0`)
 	count(t, f.db, 0, `SELECT count(*) FROM campaign_test_sends WHERE 'reader@example.test' = ANY(recipients) OR results::text LIKE '%reader@%'`)
 	count(t, f.db, 1, `SELECT count(*) FROM campaign_test_sends WHERE recipients=ARRAY['me@one.test']`)
 

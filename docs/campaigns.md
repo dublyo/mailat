@@ -55,9 +55,9 @@ A dynamic list stores rules instead of members. Segments are created and edited 
 ## What every message contains
 
 - **Personalisation.** `{{email}}`, `{{firstName}}` / `{{first_name}}`, `{{lastName}}` / `{{last_name}}` and `{{<attribute key>}}` are replaced in one pass. Values are HTML-escaped in the HTML part and inserted as-is in the text part; line breaks are removed from the subject. Unknown variables render empty and are listed as warnings when you save and in the preview.
-- **A footer** with your organization name, postal address and an unsubscribe link, added to both the HTML and the text part. It cannot be turned off.
+- **A footer** with your organization name, postal address and an unsubscribe link, added to both the HTML and the text part. It cannot be turned off. It goes before the last `</body>` in the markup (not one inside a comment or `<style>`/`<script>`), after closing any element left open (such as a hidden wrapper). HTML that ends inside an unfinished tag or a `<plaintext>` element is rejected.
 - **One-click unsubscribe headers:** `List-Unsubscribe` (an HTTPS URL on `API_URL`) and `List-Unsubscribe-Post: List-Unsubscribe=One-Click`, as Gmail and Yahoo require for bulk senders.
-- **Open and click tracking**, on by default and switchable per campaign (**Track opens**, **Track clicks**). With opens on, a 1×1 pixel is added to the HTML part. With clicks on, `http`/`https` links in the HTML part are rewritten through a signed redirect; `mailto:`, `tel:`, `#` anchors, links longer than 2,048 characters, links marked `data-mailat-no-track` and the footer link are left alone. Plain-text links are never rewritten. Turning tracking off after sending stops recording, but tracked links still redirect.
+- **Open and click tracking**, on by default and switchable per campaign (**Track opens**, **Track clicks**). With opens on, a 1×1 pixel is added to the HTML part. With clicks on, `http`/`https` links in the HTML part are rewritten through a signed redirect; `mailto:`, `tel:`, `#` anchors, links longer than 2,048 characters, links marked `data-mailat-no-track` and the footer link are left alone. Plain-text links are never rewritten. Links are signed before personalisation: a link such as `https://shop.example/?e={{email}}` carries the template in its token, and the variables are filled in from the recipient when the link is clicked, so tracking tokens and stored click events never hold the address. Turning tracking off after sending stops recording, but tracked links still redirect.
 
 Tokens in tracking and unsubscribe links are signed with a key derived from `JWT_SECRET` and contain no email address. Click targets are signed too, so the redirect only goes to the original `http`/`https` URL. Changing `JWT_SECRET` invalidates the tracking and unsubscribe links in mail already sent, so keep it stable.
 
@@ -79,13 +79,14 @@ Use **Preview** to render the message for a contact (tracking off, links shown a
 | `user_paused` | Someone paused it. | Resume. |
 | `sender_unavailable` | The From identity or its domain is no longer usable (disabled, deleted, unverified, feedback no longer ready, creator deactivated), or SES rejected the sender. | Fix the identity or domain, then resume. |
 | `no_postal_address` | The postal address was removed. | Set it, then resume. |
+| `unsubscribe_url_invalid` | `API_URL` or `WEB_URL` is empty or not an absolute `http(s)` URL, so unsubscribe links would not work. | Fix the server configuration, restart, then resume. |
 | `invalid_segment` / `list_unavailable` | The segment rules no longer validate, or the list is gone. | Fix the list, then resume. |
 | `provider_paused` | SES reports the account suspended or sending paused. | Resolve it in AWS, then resume. |
 | `provider_rejected` | SES rejected five messages in a row (often SES sandbox mode or content). | Check the failed recipients' errors, then resume. |
 | `monthly_quota_exceeded` | The organization's monthly send limit is used up. | Resume next month or raise the limit. |
-| `bounce_rate_high` | At least 100 sent and permanent bounces reached 5%. | Clean the list before resuming. |
-| `complaint_rate_high` | At least 200 sent and complaints reached 0.3%. | Review consent and content before resuming. |
-| `ses_daily_quota` / `ses_throttled` | Still `sending`: SES's 24-hour quota is used up (retry in 30 minutes) or SES throttled a request (retry in 1 minute). | Nothing; it continues by itself. |
+| `bounce_rate_high` | At least 100 sent and permanent bounces reached 5%, counted since the last resume. | Check the bounced recipients, then resume or cancel. |
+| `complaint_rate_high` | At least 200 sent and complaints reached 0.3%, counted since the last resume. | Review consent and content, then resume or cancel. |
+| `ses_daily_quota` / `ses_throttled` | Still `sending`: SES's 24-hour quota is used up (retry in 30 minutes) or SES throttled a request (retry in 1 minute; 30 minutes when SES says the daily quota is exceeded). | Nothing; it continues by itself. |
 | `no_eligible_recipients` | Finished as `sent` because nobody was eligible. | Check the list. |
 | `legacy_requires_review` | A campaign that was mid-send before this version was reset to `draft`. | Review it and send again from an identity you own. |
 
@@ -93,7 +94,7 @@ Each recipient row moves from `pending` through `claimed` and `sending` to `sent
 
 ## Pause, resume, cancel, edit and delete
 
-- **Pause** a `sending` campaign; at most one message per worker finishes after the pause. **Resume** revalidates the sender, feedback and postal address, then continues with the remaining recipients and no duplicates.
+- **Pause** a `sending` campaign; at most one message per worker finishes after the pause. **Resume** revalidates the sender, feedback and postal address, then continues with the remaining recipients and no duplicates. The bounce and complaint breaker restarts its count at each resume, so the materialised audience (already filtered for suppressions) is judged on what it sends next.
 - **Cancel** a draft, scheduled, sending or paused campaign. Recipients not yet attempted become `cancelled` and their monthly-quota reservations are refunded.
 - **Edit** drafts and scheduled campaigns freely. Once sending has started, content, sender, list and tracking are locked; a paused campaign whose audience was never prepared may still change content but not its list. To change a campaign that already sent to anyone, cancel it and duplicate it.
 - **Delete** drafts, or cancelled campaigns that never prepared an audience. A list used by a scheduled, sending or paused campaign cannot be deleted.

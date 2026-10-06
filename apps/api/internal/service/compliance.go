@@ -605,9 +605,10 @@ func (s *ComplianceService) DeleteContactData(ctx context.Context, orgID int64, 
 
 	// Campaign recipients keep their counters but lose the address (a unique
 	// per-row placeholder, so two erased rows in one campaign never collide)
-	// and the tracking IP/UA. contact_id becomes NULL with the contact delete.
+	// and the tracking IP/UA and click URLs (their clickstream). contact_id
+	// becomes NULL with the contact delete.
 	recipientMatch := `org_id = $1 AND (contact_id = ANY($2) OR lower(email) = $3)`
-	if err = exec("campaign events", `UPDATE campaign_events e SET ip_address = NULL, user_agent = NULL
+	if err = exec("campaign events", `UPDATE campaign_events e SET ip_address = NULL, user_agent = NULL, url = NULL
 		WHERE e.recipient_id IN (SELECT id FROM campaign_recipients WHERE `+recipientMatch+`)`, orgID, pq.Array(ids), addr); err != nil {
 		return err
 	}

@@ -354,7 +354,7 @@ func semanticConstraints(name string, s object) {
 		set("emails", object{"minItems": 1, "maxItems": 100})
 	case "model.Campaign":
 		set("status", object{"enum": []string{"draft", "scheduled", "sending", "paused", "sent", "cancelled"}})
-		set("statusReason", object{"nullable": true, "description": "Why the campaign is paused, throttled, reset or finished early: user_paused, sender_unavailable, provider_paused, provider_rejected, monthly_quota_exceeded, bounce_rate_high, complaint_rate_high, invalid_segment, no_postal_address, list_unavailable, ses_daily_quota, ses_throttled, no_eligible_recipients or legacy_requires_review."})
+		set("statusReason", object{"nullable": true, "description": "Why the campaign is paused, throttled, reset or finished early: user_paused, sender_unavailable, provider_paused, provider_rejected, monthly_quota_exceeded, bounce_rate_high, complaint_rate_high, invalid_segment, no_postal_address, unsubscribe_url_invalid, list_unavailable, ses_daily_quota, ses_throttled, no_eligible_recipients or legacy_requires_review."})
 		set("openCount", object{"description": "Unique recipients who opened; rates use sentCount as the denominator."})
 		set("clickCount", object{"description": "Unique recipients who clicked; a click also counts as an open."})
 	case "model.CreateCampaignRequest", "model.UpdateCampaignRequest":

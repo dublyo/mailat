@@ -159,7 +159,8 @@ func TestCampaignRecheckSkipsWithReasons(t *testing.T) {
 		UPDATE contacts SET email='new@x.test' WHERE id=5;
 		DELETE FROM contacts WHERE id=6;
 		INSERT INTO suppression_list(org_id,email,reason,source) VALUES(1,'Tx@x.test','bounce','ses');
-		UPDATE contacts SET attributes='{"plan":"pro"}' WHERE id=1`)
+		UPDATE contacts SET attributes='{"plan":"pro"}' WHERE id=1;
+		UPDATE campaign_recipients SET quota_reserved=true WHERE contact_id IN (1,2,3)`)
 	var ids []int64
 	rows, err := db.Query(`SELECT id FROM campaign_recipients ORDER BY id`)
 	if err != nil {
@@ -176,9 +177,13 @@ func TestCampaignRecheckSkipsWithReasons(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ok, err := a.recheck(context.Background(), tx, 1, audienceRun, ids)
+	ok, refund, err := a.recheck(context.Background(), tx, 1, audienceRun, ids)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Reserved rows that are skipped come back for a refund and lose the flag.
+	if refund != 2 {
+		t.Fatalf("refund=%d want 2", refund)
 	}
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
@@ -192,11 +197,20 @@ func TestCampaignRecheckSkipsWithReasons(t *testing.T) {
 	count(t, db, 1, `SELECT count(*) FROM campaign_recipients WHERE status='claimed' AND contact_id=1`)
 	count(t, db, 1, `SELECT count(*) FROM campaign_recipients WHERE status='claimed' AND contact_id=8`)
 	count(t, db, 6, `SELECT skipped_count FROM campaigns WHERE id=1`)
+	count(t, db, 1, `SELECT count(*) FROM campaign_recipients WHERE quota_reserved`)
 
 	// A second pass over the same ids changes nothing and keeps the counter.
-	ok, err = a.recheck(context.Background(), db, 1, audienceRun, ids)
-	if err != nil || len(ok) != 1 {
-		t.Fatalf("second recheck: %v %+v", err, ok)
+	ok, refund, err = a.recheck(context.Background(), db, 1, audienceRun, ids)
+	if err != nil || len(ok) != 1 || refund != 0 {
+		t.Fatalf("second recheck: %v %d %+v", err, refund, ok)
 	}
 	count(t, db, 6, `SELECT skipped_count FROM campaigns WHERE id=1`)
+
+	// Nothing eligible: the refund still comes back.
+	mustExec(t, db, `UPDATE contacts SET status='unsubscribed' WHERE id=1`)
+	ok, refund, err = a.recheck(context.Background(), db, 1, audienceRun, ids)
+	if err != nil || len(ok) != 0 || refund != 1 {
+		t.Fatalf("all skipped: %v %d %+v", err, refund, ok)
+	}
+	count(t, db, 7, `SELECT skipped_count FROM campaigns WHERE id=1`)
 }

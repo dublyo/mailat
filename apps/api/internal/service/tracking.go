@@ -99,6 +99,12 @@ func trackableURL(u string) bool {
 	return scheme == "http" || scheme == "https"
 }
 
+// trackableTemplate is trackableURL for a link that may still hold
+// {{variables}}; they are filled in when the click redirects.
+func trackableTemplate(u string) bool {
+	return len(u) <= maxTrackedURLLen && trackableURL(templateVarRe.ReplaceAllString(u, "x"))
+}
+
 // OpenToken signs an open-pixel token for a campaign recipient.
 func OpenToken(secret string, recipientID, campaignID, orgID int64) string {
 	return encodeTrackingToken(secret, TrackingData{R: recipientID, C: campaignID, O: orgID})
@@ -210,16 +216,44 @@ func (s *TrackingService) ProcessOpenEvent(ctx context.Context, token string, ip
 	return tx.Commit()
 }
 
+// clickTarget fills the {{variables}} of a signed template link from the
+// recipient, as the renderer would have. Without a contact (deleted, erased,
+// or the lookup failed) they render empty, so the reader still reaches the
+// link. Stored click events keep the template, never the result.
+func (s *TrackingService) clickTarget(ctx context.Context, d *TrackingData) string {
+	if !templateVarRe.MatchString(d.U) {
+		return d.U
+	}
+	var rcpt eligibleRecipient
+	var attrs []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT r.email, COALESCE(c.first_name,''), COALESCE(c.last_name,''), COALESCE(c.attributes,'{}'::jsonb)
+		FROM campaign_recipients r JOIN contacts c ON c.id=r.contact_id AND c.org_id=r.org_id
+		WHERE r.id=$1 AND r.org_id=$2 AND r.campaign_id=$3`, d.R, d.O, d.C).
+		Scan(&rcpt.Email, &rcpt.FirstName, &rcpt.LastName, &attrs); err == nil {
+		_ = json.Unmarshal(attrs, &rcpt.Attributes)
+	} else {
+		rcpt = eligibleRecipient{}
+	}
+	if target := (&personaliser{rcpt: rcpt}).apply(d.U, false); trackableURL(target) {
+		return target
+	}
+	// A value made the link invalid (a space, too long): drop the values.
+	return (&personaliser{}).apply(d.U, false)
+}
+
 // ProcessClickEvent returns the signed redirect target and records the click
 // when the campaign tracks clicks. The target is returned even when recording
 // is off or fails, so the reader always reaches the link. A click with no
 // recorded open also counts as the first open (when opens are tracked).
 func (s *TrackingService) ProcessClickEvent(ctx context.Context, token string, ipAddress string, userAgent string) (string, error) {
 	d, err := decodeTrackingToken(s.cfg.JWTSecret, token)
-	if err != nil || !trackableURL(d.U) {
+	if err != nil || !trackableTemplate(d.U) {
 		return "", errInvalidTrackingToken
 	}
-	target := d.U
+	target := s.clickTarget(ctx, d)
+	if !trackableURL(target) {
+		return "", errInvalidTrackingToken
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return target, fmt.Errorf("failed to record click: %w", err)
@@ -238,7 +272,7 @@ func (s *TrackingService) ProcessClickEvent(ctx context.Context, token string, i
 	stored := t.clickCount < maxStoredTrackingEvents
 	if stored {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO campaign_events(campaign_id,recipient_id,event_type,url,link_index,user_agent,ip_address) VALUES($1,$2,'click',$3,$4,$5,$6)`,
-			d.C, d.R, target, d.L, truncateRunes(userAgent, 512), truncateRunes(ipAddress, 45)); err != nil {
+			d.C, d.R, d.U, d.L, truncateRunes(userAgent, 512), truncateRunes(ipAddress, 45)); err != nil {
 			return target, fmt.Errorf("failed to record click: %w", err)
 		}
 	}

@@ -208,6 +208,11 @@ func validateCampaignContent(subject, htmlContent, textContent string) error {
 	if len(htmlContent)+len(textContent) > maxComposeBodyBytes {
 		return &provider.MailValidationError{Message: "campaign content exceeds the maximum size"}
 	}
+	if htmlContent != "" {
+		if _, _, err := footerInsertion(htmlContent); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -487,6 +492,9 @@ func (s *CampaignService) checkSendable(ctx context.Context, q eventoutbox.DBTX,
 	if err := s.requireSES(); err != nil {
 		return 0, nil, err
 	}
+	if err := checkCampaignLinkBases(s.cfg.APIUrl, s.cfg.WebUrl); err != nil {
+		return 0, nil, err
+	}
 	if err := canChangeSendState(ctx, q, orgID, actor, createdBy(c)); err != nil {
 		return 0, nil, err
 	}
@@ -660,6 +668,8 @@ func pauseCampaign(ctx context.Context, q eventoutbox.DBTX, orgID, campaignID in
 
 // ResumeCampaign revalidates the stored sender, feedback and postal address and
 // continues a paused campaign; already materialised rows are never duplicated.
+// It moves the breaker baseline to the current counters, so a campaign paused
+// for its bounce or complaint rate is judged afresh on what it sends next.
 func (s *CampaignService) ResumeCampaign(ctx context.Context, orgID int64, actor CampaignActor, campaignUUID string) (*model.Campaign, error) {
 	c, err := s.GetCampaign(ctx, orgID, campaignUUID)
 	if err != nil {
@@ -671,7 +681,8 @@ func (s *CampaignService) ResumeCampaign(ctx context.Context, orgID int64, actor
 	if _, _, err := s.checkSendable(ctx, s.db, orgID, c, actor, true); err != nil {
 		return nil, err
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE campaigns SET status='sending', status_reason=NULL, throttled_until=NULL, updated_at=now()
+	res, err := s.db.ExecContext(ctx, `UPDATE campaigns SET status='sending', status_reason=NULL, throttled_until=NULL,
+			breaker_baseline_sent=sent_count, breaker_baseline_bounces=bounce_count, breaker_baseline_complaints=complaint_count, updated_at=now()
 		WHERE org_id=$1 AND id=$2 AND status='paused'`, orgID, c.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resume campaign: %w", err)
@@ -684,7 +695,8 @@ func (s *CampaignService) ResumeCampaign(ctx context.Context, orgID int64, actor
 
 // CancelCampaign stops a campaign for good. Unattempted rows become cancelled
 // and their reserved monthly quota is refunded; rows already handed to SES
-// finish normally.
+// finish normally. Like the runner, it locks the campaign row before
+// recipient rows.
 func (s *CampaignService) CancelCampaign(ctx context.Context, orgID int64, actor CampaignActor, campaignUUID string) (*model.Campaign, error) {
 	c, err := s.GetCampaign(ctx, orgID, campaignUUID)
 	if err != nil {

@@ -62,7 +62,11 @@ func TestCampaignThrottleDelay(t *testing.T) {
 		{&types.TooManyRequestsException{Message: msg("Maximum sending rate exceeded")}, time.Minute},
 		{&types.TooManyRequestsException{Message: msg("Daily message quota exceeded")}, 30 * time.Minute},
 		{&smithy.GenericAPIError{Code: "Throttling", Message: "Daily message quota exceeded", Fault: smithy.FaultClient}, 30 * time.Minute},
-		{&types.LimitExceededException{}, 30 * time.Minute},
+		// The code alone is not the daily quota (spec: only the message decides).
+		{&types.LimitExceededException{}, time.Minute},
+		{&types.LimitExceededException{Message: msg("Maximum sending rate exceeded")}, time.Minute},
+		{&types.LimitExceededException{Message: msg("Daily message quota exceeded")}, 30 * time.Minute},
+		{errors.New("daily quota"), time.Minute}, // not a throttle
 	} {
 		if got := campaignThrottleDelay(tc.err); got != tc.want {
 			t.Errorf("%v: got %v want %v", tc.err, got, tc.want)

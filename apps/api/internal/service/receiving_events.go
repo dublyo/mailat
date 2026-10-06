@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/dublyo/mailat/api/internal/eventoutbox"
 	"github.com/dublyo/mailat/api/internal/model"
 )
@@ -69,7 +71,7 @@ func (s *ReceivingService) ProcessDeliveryEvent(ctx context.Context, auth *Recei
 		}
 	}
 	var known bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM received_emails WHERE org_id=$1 AND (ses_message_id=$2 OR (ses_message_id IS NULL AND uuid::text=$3)) AND direction='outbound') OR EXISTS(SELECT 1 FROM transactional_emails WHERE org_id=$1 AND provider_message_id=$2) OR EXISTS(SELECT 1 FROM emails WHERE org_id=$1 AND provider_message_id=$2) OR EXISTS(SELECT 1 FROM compose_submission_keys k JOIN users u ON u.id=k.user_id WHERE u.org_id=$1 AND (k.ses_message_id=$2 OR (k.ses_message_id IS NULL AND k.email_uuid::text=$3))) OR EXISTS(SELECT 1 FROM campaign_recipients WHERE org_id=$1 AND (provider_message_id=$2 OR (provider_message_id IS NULL AND message_uuid::text=$3)))`, auth.OrgID, n.Mail.MessageId, mailboxUUID).Scan(&known)
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM received_emails WHERE org_id=$1 AND (ses_message_id=$2 OR (ses_message_id IS NULL AND uuid::text=$3)) AND direction='outbound') OR EXISTS(SELECT 1 FROM transactional_emails WHERE org_id=$1 AND provider_message_id=$2) OR EXISTS(SELECT 1 FROM emails WHERE org_id=$1 AND provider_message_id=$2) OR EXISTS(SELECT 1 FROM compose_submission_keys k JOIN users u ON u.id=k.user_id WHERE u.org_id=$1 AND (k.ses_message_id=$2 OR (k.ses_message_id IS NULL AND k.email_uuid::text=$3))) OR EXISTS(SELECT 1 FROM campaign_recipients WHERE org_id=$1 AND (provider_message_id=$2 OR (provider_message_id IS NULL AND message_uuid=$4::uuid)))`, auth.OrgID, n.Mail.MessageId, mailboxUUID, headerUUIDParam(mailboxUUID)).Scan(&known)
 	if err != nil {
 		return err
 	}
@@ -193,8 +195,8 @@ func applyCampaignFeedback(ctx context.Context, tx *sql.Tx, orgID int64, notific
 			CASE WHEN EXISTS(SELECT 1 FROM identities i JOIN users u ON u.id=i.user_id
 				WHERE i.id=c.identity_id AND i.user_id=c.created_by_user_id AND u.org_id=c.org_id) THEN c.identity_id ELSE 0 END
 		FROM campaign_recipients r JOIN campaigns c ON c.id=r.campaign_id AND c.org_id=r.org_id
-		WHERE r.org_id=$1 AND (r.provider_message_id=$2 OR (r.provider_message_id IS NULL AND r.message_uuid::text=$3))
-		ORDER BY r.id LIMIT 1 FOR UPDATE OF r`, orgID, n.Mail.MessageId, headerUUID).
+		WHERE r.org_id=$1 AND (r.provider_message_id=$2 OR (r.provider_message_id IS NULL AND r.message_uuid=$3::uuid))
+		ORDER BY r.id LIMIT 1 FOR UPDATE OF r`, orgID, n.Mail.MessageId, headerUUIDParam(headerUUID)).
 		Scan(&id, &campaignID, &status, &current, &email, &messageUUID, &campaignUUID, &userID, &identityID)
 	if err == sql.ErrNoRows {
 		return nil
@@ -265,6 +267,17 @@ func applyCampaignFeedback(ctx context.Context, tx *sql.Tx, orgID int64, notific
 		}
 	}
 	return nil
+}
+
+// headerUUIDParam is the X-Mailat-Message-ID header as a uuid parameter, or
+// NULL when it is missing or malformed. Comparing the uuid column directly
+// (not message_uuid::text) lets both match branches use an index.
+func headerUUIDParam(header string) any {
+	u, err := uuid.Parse(strings.TrimSpace(header))
+	if err != nil {
+		return nil
+	}
+	return u.String()
 }
 
 // unmatchedFeedbackGrace is how long feedback for an unknown send keeps failing

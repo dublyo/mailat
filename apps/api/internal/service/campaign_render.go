@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/mail"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -54,7 +55,19 @@ type renderOptions struct {
 const maxSubjectBytes = 998
 
 var templateVarRe = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_]{0,63})\s*\}\}`)
-var closingBodyRe = regexp.MustCompile(`(?i)</body\s*>`)
+
+// checkCampaignLinkBases requires absolute http(s) API and web URLs: the
+// List-Unsubscribe header and footer link are built from them, and a relative
+// or empty base would leave recipients without a working unsubscribe.
+func checkCampaignLinkBases(apiURL, webURL string) error {
+	for _, base := range []struct{ name, value string }{{"API_URL", apiURL}, {"WEB_URL", webURL}} {
+		u, err := url.Parse(strings.TrimSpace(base.value))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return &provider.MailValidationError{Message: base.name + " must be an absolute http(s) URL so campaign unsubscribe links work"}
+		}
+	}
+	return nil
+}
 
 // renderCampaignMessage personalises, tracks and footers one campaign message.
 // It returns the message and the template variables that had no value.
@@ -62,6 +75,11 @@ var closingBodyRe = regexp.MustCompile(`(?i)</body\s*>`)
 func renderCampaignMessage(snap campaignSnapshot, rcpt eligibleRecipient, opts renderOptions) (*provider.EmailMessage, []string, error) {
 	if opts.Mode != renderPreview && opts.Secret == "" {
 		return nil, nil, errors.New("campaign render: missing signing secret")
+	}
+	if opts.Mode != renderPreview {
+		if err := checkCampaignLinkBases(opts.APIURL, opts.WebURL); err != nil {
+			return nil, nil, err
+		}
 	}
 	if opts.Mode == renderSend && strings.TrimSpace(snap.PostalAddress) == "" {
 		return nil, nil, &provider.MailValidationError{Message: "set the organization's postal address before sending campaigns"}
@@ -74,8 +92,6 @@ func renderCampaignMessage(snap campaignSnapshot, rcpt eligibleRecipient, opts r
 	if opts.Mode == renderTest {
 		subject = sanitizeSubject("[Test] " + subject)
 	}
-	htmlBody := p.apply(snap.HTMLContent, true)
-	textBody := p.apply(snap.TextContent, false)
 
 	apiURL := strings.TrimRight(opts.APIURL, "/")
 	webURL := strings.TrimRight(opts.WebURL, "/")
@@ -92,18 +108,28 @@ func renderCampaignMessage(snap campaignSnapshot, rcpt eligibleRecipient, opts r
 	}
 
 	tracking := opts.Mode == renderSend && rcpt.ID > 0
+	htmlBody := snap.HTMLContent
+	if htmlBody != "" && tracking && snap.TrackClicks {
+		// Links are signed before personalisation, so a token carries the
+		// template URL (never the recipient's data); the click handler fills
+		// the variables in at redirect time.
+		htmlBody = rewriteTrackedLinks(htmlBody, func(index int, target string) string {
+			return apiURL + "/api/v1/tracking/click/" + ClickToken(opts.Secret, rcpt.ID, snap.ID, snap.OrgID, index, target)
+		})
+	}
+	htmlBody = p.apply(htmlBody, true)
+	textBody := p.apply(snap.TextContent, false)
 	if htmlBody != "" {
-		if tracking && snap.TrackClicks {
-			htmlBody = rewriteTrackedLinks(htmlBody, func(index int, target string) string {
-				return apiURL + "/api/v1/tracking/click/" + ClickToken(opts.Secret, rcpt.ID, snap.ID, snap.OrgID, index, target)
-			})
+		at, closers, err := footerInsertion(htmlBody)
+		if err != nil {
+			return nil, nil, err
 		}
 		// The footer is added after rewriting so its links are never tracked.
-		tail := htmlFooter(snap.OrgName, snap.PostalAddress, unsubPage)
+		tail := closers + htmlFooter(snap.OrgName, snap.PostalAddress, unsubPage)
 		if tracking && snap.TrackOpens {
 			tail += `<img src="` + html.EscapeString(apiURL+"/api/v1/tracking/open/"+OpenToken(opts.Secret, rcpt.ID, snap.ID, snap.OrgID)+".gif") + `" width="1" height="1" alt="" style="display:none">`
 		}
-		htmlBody = insertBeforeBodyEnd(htmlBody, tail)
+		htmlBody = htmlBody[:at] + tail + htmlBody[at:]
 	}
 	if textBody != "" {
 		textBody += textFooter(snap.OrgName, snap.PostalAddress, unsubPage)
@@ -230,7 +256,7 @@ func rewriteTrackedLinks(src string, wrap func(index int, target string) string)
 				href = i
 			}
 		}
-		if skip || href < 0 || !trackableURL(strings.TrimSpace(tok.Attr[href].Val)) {
+		if skip || href < 0 || !trackableTemplate(strings.TrimSpace(tok.Attr[href].Val)) {
 			b.WriteString(raw)
 			continue
 		}
@@ -240,13 +266,123 @@ func rewriteTrackedLinks(src string, wrap func(index int, target string) string)
 	}
 }
 
-func insertBeforeBodyEnd(doc, tail string) string {
-	locs := closingBodyRe.FindAllStringIndex(doc, -1)
-	if len(locs) == 0 {
-		return doc + tail
+// Elements whose end tag the footer never emits: void elements, the document
+// structure, and p (the footer's own <div> already closes an open p).
+var footerNoClose = map[string]bool{
+	"area": true, "base": true, "br": true, "col": true, "embed": true, "hr": true, "img": true, "input": true,
+	"link": true, "meta": true, "param": true, "source": true, "track": true, "wbr": true, "keygen": true,
+	"html": true, "head": true, "body": true, "p": true,
+}
+
+// Elements after which the tokenizer reads raw text up to the matching end tag.
+var rawTextElements = map[string]bool{
+	"iframe": true, "noembed": true, "noframes": true, "noscript": true, "plaintext": true,
+	"script": true, "style": true, "textarea": true, "title": true, "xmp": true,
+}
+
+var errUnfinishedHTML = &provider.MailValidationError{Message: "HTML content ends inside an unfinished tag or a <plaintext> element"}
+
+// footerInsertion picks where the compliance footer goes so it always lands
+// in rendered body content: before the last </body> seen in normal markup
+// (never one inside a comment or raw-text element), else at the end. closers
+// ends whatever is still open there (an unterminated comment, raw-text element
+// or wrapper such as a hidden <div>). A document that ends inside a tag or a
+// <plaintext> element cannot be closed reliably and is rejected.
+func footerInsertion(doc string) (at int, closers string, err error) {
+	z := html.NewTokenizer(strings.NewReader(doc))
+	var stack []string
+	closeAll := func() string {
+		var b strings.Builder
+		for i := len(stack) - 1; i >= 0; i-- {
+			b.WriteString("</" + stack[i] + ">")
+		}
+		return b.String()
 	}
-	at := locs[len(locs)-1][0]
-	return doc[:at] + tail + doc[at:]
+	foreign := func() bool {
+		for _, n := range stack {
+			if n == "svg" || n == "math" {
+				return true
+			}
+		}
+		return false
+	}
+	at, offset, fix := -1, 0, ""
+	for {
+		tt := z.Next()
+		raw := string(z.Raw())
+		offset += len(raw)
+		if tt == html.ErrorToken {
+			if z.Err() != io.EOF || raw != "" {
+				return 0, "", errUnfinishedHTML // e.g. "</di" at the end
+			}
+			break
+		}
+		last := offset == len(doc)
+		switch tt {
+		case html.StartTagToken, html.SelfClosingTagToken:
+			if last && !strings.HasSuffix(raw, ">") {
+				return 0, "", errUnfinishedHTML
+			}
+			name, _ := z.TagName()
+			n := string(name)
+			// Self-closing is honoured only in svg/math; raw-text tags switch the
+			// tokenizer to raw text either way.
+			if rawTextElements[n] || (!footerNoClose[n] && (tt == html.StartTagToken || !foreign())) {
+				stack = append(stack, n)
+			}
+		case html.EndTagToken:
+			if last && !strings.HasSuffix(raw, ">") {
+				return 0, "", errUnfinishedHTML
+			}
+			name, _ := z.TagName()
+			n := string(name)
+			if n == "body" {
+				at, closers = offset-len(raw), closeAll()
+				continue
+			}
+			for i := len(stack) - 1; i >= 0; i-- {
+				if stack[i] == n {
+					stack = stack[:i]
+					break
+				}
+			}
+		case html.CommentToken, html.DoctypeToken:
+			if !last {
+				break
+			}
+			if strings.HasPrefix(raw, "<!--") {
+				if !strings.HasSuffix(raw, "-->") && !strings.HasSuffix(raw, "--!>") {
+					fix = "-->"
+				}
+			} else if !strings.HasSuffix(raw, ">") {
+				fix = ">"
+			}
+		}
+	}
+	if at < 0 {
+		for _, n := range stack {
+			if n == "plaintext" {
+				return 0, "", errUnfinishedHTML
+			}
+		}
+		at, closers = len(doc), fix+closeAll()
+	}
+	// Prove it: markup appended at this point must tokenize as a tag of its own.
+	prefix := doc[:at] + closers
+	z = html.NewTokenizer(strings.NewReader(prefix + "<mailat-footer>"))
+	for offset = 0; offset < len(prefix); {
+		if z.Next() == html.ErrorToken {
+			return 0, "", errUnfinishedHTML
+		}
+		offset += len(z.Raw())
+	}
+	if offset != len(prefix) || z.Next() != html.StartTagToken {
+		return 0, "", errUnfinishedHTML
+	}
+	if name, _ := z.TagName(); string(name) != "mailat-footer" {
+		return 0, "", errUnfinishedHTML
+	}
+	return at, closers, nil
 }
 
 func postalHTML(addr string) string {

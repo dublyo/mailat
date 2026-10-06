@@ -351,6 +351,9 @@ func (r *campaignRunner) senderReason(ctx context.Context, q eventoutbox.DBTX, o
 	} else if err != nil {
 		return "", err
 	}
+	if checkCampaignLinkBases(r.cfg.APIUrl, r.cfg.WebUrl) != nil {
+		return "unsubscribe_url_invalid", nil
+	}
 	return "", nil
 }
 
@@ -394,12 +397,6 @@ func (a *campaignAction) set(next campaignAction) {
 func (r *campaignRunner) processBatch(ctx context.Context, c *senderCampaign) (bool, error) {
 	defer r.touch(c)
 	if reason, err := r.cachedSenderReason(ctx, c); err != nil || reason != "" {
-		if reason != "" {
-			r.pause(ctx, c, reason)
-		}
-		return false, err
-	}
-	if reason, err := r.breaker(ctx, c); err != nil || reason != "" {
 		if reason != "" {
 			r.pause(ctx, c, reason)
 		}
@@ -501,6 +498,15 @@ func (r *campaignRunner) recheckAndReserve(ctx context.Context, c *senderCampaig
 		return nil, action, fmt.Errorf("recheck recipients: %w", err)
 	}
 	defer tx.Rollback()
+	// The campaign row is locked first, as CancelCampaign does, so the two
+	// never deadlock and a cancel either waits for this or has already won.
+	var sending bool
+	if err := tx.QueryRowContext(ctx, `SELECT status='sending' FROM campaigns WHERE id=$1 AND org_id=$2 FOR NO KEY UPDATE`, c.ID, c.OrgID).Scan(&sending); err != nil && err != sql.ErrNoRows {
+		return nil, action, fmt.Errorf("recheck recipients: %w", err)
+	}
+	if !sending {
+		return nil, action, nil // paused or cancelled meanwhile; the caller releases the claim
+	}
 	audience, reason, err := r.validateForSend(ctx, tx, c.OrgID, c.ListID, c.IdentityID, c.UserID, c.FromEmail)
 	if err != nil {
 		return nil, action, err
@@ -509,13 +515,17 @@ func (r *campaignRunner) recheckAndReserve(ctx context.Context, c *senderCampaig
 		action.pause = reason
 		return nil, action, nil
 	}
-	eligible, err := audience.recheck(ctx, tx, c.ID, r.run, ids)
+	eligible, refund, err := audience.recheck(ctx, tx, c.ID, r.run, ids)
 	if err != nil {
+		return nil, action, err
+	}
+	// Skipped rows that a released earlier attempt had reserved were never sent.
+	if err := refundMonthlySendsTx(ctx, tx, c.OrgID, refund); err != nil {
 		return nil, action, err
 	}
 	var unreserved []int64
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM campaign_recipients WHERE org_id=$1 AND campaign_id=$2 AND id=ANY($3::bigint[])
-		AND status='claimed' AND lease_owner=$4::uuid AND NOT quota_reserved ORDER BY id`, c.OrgID, c.ID, pq.Array(eligibleIDs(eligible)), r.run)
+		AND status='claimed' AND lease_owner=$4::uuid AND NOT quota_reserved ORDER BY id FOR UPDATE`, c.OrgID, c.ID, pq.Array(eligibleIDs(eligible)), r.run)
 	if err != nil {
 		return nil, action, fmt.Errorf("reserve recipients: %w", err)
 	}
@@ -536,9 +546,15 @@ func (r *campaignRunner) recheckAndReserve(ctx context.Context, c *senderCampaig
 		return nil, action, err
 	}
 	if granted > 0 {
-		if _, err := tx.ExecContext(ctx, `UPDATE campaign_recipients SET quota_reserved=true, updated_at=now() WHERE org_id=$1 AND id=ANY($2::bigint[])`,
-			c.OrgID, pq.Array(unreserved[:granted])); err != nil {
+		res, err := tx.ExecContext(ctx, `UPDATE campaign_recipients SET quota_reserved=true, updated_at=now()
+			WHERE org_id=$1 AND id=ANY($2::bigint[]) AND status='claimed' AND lease_owner=$3::uuid`, c.OrgID, pq.Array(unreserved[:granted]), r.run)
+		if err != nil {
 			return nil, action, fmt.Errorf("reserve recipients: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n < granted {
+			if err := refundMonthlySendsTx(ctx, tx, c.OrgID, granted-n); err != nil {
+				return nil, action, err
+			}
 		}
 	}
 	if denied := unreserved[granted:]; len(denied) > 0 {
@@ -631,18 +647,27 @@ func (r *campaignRunner) sendOne(ctx context.Context, c *senderCampaign, snap ca
 	}
 	startCtx, cancelStart := context.WithTimeout(context.WithoutCancel(ctx), campaignFinishTimeout)
 	defer cancelStart()
-	var started string
-	err := r.db.QueryRowContext(startCtx, `UPDATE campaign_recipients SET status='sending', attempt_started_at=now(), updated_at=now()
-		WHERE id=$1 AND org_id=$2 AND campaign_id=$3 AND status='claimed' AND lease_owner=$4::uuid AND lease_expires_at>now()
+	// The start also rechecks what can change between the batch recheck and
+	// this send (unsubscribe, suppression, erasure, a changed address), and
+	// mails the address stored now, not the one read for the batch.
+	var started, email string
+	err := r.db.QueryRowContext(startCtx, `UPDATE campaign_recipients r SET status='sending', attempt_started_at=now(), updated_at=now()
+		WHERE r.id=$1 AND r.org_id=$2 AND r.campaign_id=$3 AND r.status='claimed' AND r.lease_owner=$4::uuid AND r.lease_expires_at>now()
 			AND EXISTS(SELECT 1 FROM campaigns WHERE id=$3 AND org_id=$2 AND status='sending')
-		RETURNING message_uuid::text`, rcpt.ID, c.OrgID, c.ID, r.run).Scan(&started)
-	if err != nil {
-		if err != sql.ErrNoRows {
-			log.Printf("Campaign %d: guarded start failed: %v", c.ID, err)
+			AND `+recipientSendableSQL+`
+		RETURNING r.message_uuid::text, r.email`, rcpt.ID, c.OrgID, c.ID, r.run).Scan(&started, &email)
+	if err == sql.ErrNoRows {
+		skipped, serr := r.skipUnsendable(startCtx, c, rcpt.ID)
+		if serr != nil {
+			log.Printf("Campaign %d: cannot skip recipient: %v", c.ID, serr)
 		}
+		return campaignAction{}, skipped
+	}
+	if err != nil {
+		log.Printf("Campaign %d: guarded start failed: %v", c.ID, err)
 		return campaignAction{}, false
 	}
-	rcpt.MessageUUID = started
+	rcpt.MessageUUID, rcpt.Email = started, email
 
 	var result *provider.SendResult
 	msg, _, err := renderCampaignMessage(snap, rcpt, opts)
@@ -690,6 +715,59 @@ func (r *campaignRunner) sendOne(ctx context.Context, c *senderCampaign, snap ca
 	return campaignAction{}, true
 }
 
+// recipientSendableSQL holds for a campaign_recipients row r whose contact is
+// still active at the same address, not unsubscribed and not suppressed.
+var recipientSendableSQL = `r.unsubscribed_at IS NULL
+	AND EXISTS(SELECT 1 FROM contacts c WHERE c.id=r.contact_id AND c.org_id=r.org_id AND c.status='active' AND lower(c.email)=lower(r.email))
+	AND NOT ` + campaignSuppressedSQL("r.org_id", "r.email")
+
+// skipUnsendable runs after a failed guarded start. A row still claimed by
+// this runner in a sending campaign failed only the eligibility part: it
+// becomes skipped (refunding its reservation) and the batch continues. Any
+// other failure (pause, cancel, lost lease) returns false to stop the batch.
+func (r *campaignRunner) skipUnsendable(ctx context.Context, c *senderCampaign, id int64) (bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var sending bool
+	err = tx.QueryRowContext(ctx, `SELECT status='sending' FROM campaigns WHERE id=$1 AND org_id=$2 FOR NO KEY UPDATE`, c.ID, c.OrgID).Scan(&sending)
+	if err == sql.ErrNoRows || (err == nil && !sending) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var reserved bool
+	err = tx.QueryRowContext(ctx, `UPDATE campaign_recipients r SET status='skipped', quota_reserved=false,
+			skip_reason=CASE
+				WHEN c.id IS NULL THEN 'contact_deleted'
+				WHEN lower(c.email)<>lower(r.email) THEN 'email_changed'
+				WHEN c.status<>'active' OR r.unsubscribed_at IS NOT NULL THEN 'inactive'
+				ELSE 'suppressed' END,
+			lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
+		FROM campaign_recipients old LEFT JOIN contacts c ON c.id=old.contact_id AND c.org_id=old.org_id
+		WHERE old.id=r.id AND r.id=$1 AND r.org_id=$2 AND r.campaign_id=$3 AND r.status='claimed' AND r.lease_owner=$4::uuid AND r.lease_expires_at>now()
+			AND NOT (`+recipientSendableSQL+`)
+		RETURNING old.quota_reserved`, id, c.OrgID, c.ID, r.run).Scan(&reserved)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if reserved {
+		if err := refundMonthlySendsTx(ctx, tx, c.OrgID, 1); err != nil {
+			return false, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE campaigns SET skipped_count=skipped_count+1, updated_at=now() WHERE id=$1 AND org_id=$2`, c.ID, c.OrgID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
 // finishRecipient records a send outcome and the campaign counters in one
 // transaction. A row SES never accepted goes back to pending uncounted. SNS
 // may already have promoted the row (sending/unknown -> sent); that is kept.
@@ -731,6 +809,26 @@ func (r *campaignRunner) finishRecipient(ctx context.Context, c *senderCampaign,
 			WHERE id=$1 AND org_id=$2`, id, c.OrgID, errText)
 		unknown = 1
 	default: // throttle, provider_paused, sender: SES did not accept the message
+		// A cancel that committed during the send left this row alone (it was
+		// sending); it becomes cancelled and refunded instead of pending. The
+		// share lock waits for a cancel in progress (campaign after recipient,
+		// as everywhere this row is finished).
+		var campaignStatus string
+		if err = tx.QueryRowContext(ctx, `SELECT status FROM campaigns WHERE id=$1 AND org_id=$2 FOR SHARE`, c.ID, c.OrgID).Scan(&campaignStatus); err != nil {
+			return err
+		}
+		if campaignStatus == "cancelled" {
+			var reserved bool
+			if err = tx.QueryRowContext(ctx, `UPDATE campaign_recipients r SET status='cancelled', quota_reserved=false, attempt_started_at=NULL,
+					lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
+				FROM campaign_recipients old WHERE old.id=r.id AND r.id=$1 AND r.org_id=$2 RETURNING old.quota_reserved`, id, c.OrgID).Scan(&reserved); err != nil {
+				return err
+			}
+			if reserved {
+				err = refundMonthlySendsTx(ctx, tx, c.OrgID, 1)
+			}
+			break
+		}
 		_, err = tx.ExecContext(ctx, `UPDATE campaign_recipients SET status='pending', attempt_started_at=NULL, lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
 			WHERE id=$1 AND org_id=$2`, id, c.OrgID)
 	}
@@ -787,10 +885,13 @@ func (r *campaignRunner) throttle(ctx context.Context, c *senderCampaign, d time
 }
 
 // breaker pauses campaigns whose bounce or complaint rate endangers the
-// account. Rates use the campaign counters fed by SNS.
+// account. Rates use the campaign counters fed by SNS, counted since the last
+// resume (ResumeCampaign moves the baseline), so a resumed campaign is judged
+// on what it sends next instead of pausing again before sending anything.
 func (r *campaignRunner) breaker(ctx context.Context, c *senderCampaign) (string, error) {
 	var sent, bounces, complaints int64
-	if err := r.db.QueryRowContext(ctx, `SELECT sent_count, bounce_count, complaint_count FROM campaigns WHERE id=$1 AND org_id=$2`, c.ID, c.OrgID).
+	if err := r.db.QueryRowContext(ctx, `SELECT sent_count-breaker_baseline_sent, bounce_count-breaker_baseline_bounces,
+			complaint_count-breaker_baseline_complaints FROM campaigns WHERE id=$1 AND org_id=$2`, c.ID, c.OrgID).
 		Scan(&sent, &bounces, &complaints); err != nil {
 		return "", fmt.Errorf("check campaign rates: %w", err)
 	}

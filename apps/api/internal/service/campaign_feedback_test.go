@@ -57,6 +57,8 @@ func TestCampaignSESFeedback(t *testing.T) {
 	// Precedence delivered < bounced < complained; each counter moves once.
 	process("n1", campaignFeedback("Delivery", aID, "", "", "a@example.net"))
 	process("n1", campaignFeedback("Delivery", aID, "", "", "a@example.net")) // replay
+	// A malformed header is matched as NULL (by provider ID only), not an error.
+	process("n1b", campaignFeedback("Delivery", aID, "not-a-uuid", "", "a@example.net"))
 	process("n2", campaignFeedback("Delivery", aID, "", "", "a@example.net"))
 	counters(1, 0, 0)
 	process("n3", campaignFeedback("Bounce", aID, "", "Transient", "a@example.net"))
@@ -147,4 +149,15 @@ func TestCampaignSESFeedbackWithoutIdentity(t *testing.T) {
 	other := &ReceivingAuthorization{OrgID: 2, TopicARN: auth.TopicARN}
 	_ = recv.ProcessDeliveryEvent(ctx, other, "c2", campaignFeedback("Bounce", bID, "", "Permanent", "b@example.net"))
 	count(t, db, 0, `SELECT bounce_count FROM campaigns WHERE id=$1`, id)
+}
+
+func TestHeaderUUIDParam(t *testing.T) {
+	if got := headerUUIDParam(" 6F1C7B0E-5D2A-4A43-9A51-1D6C3F7B8E01 "); got != "6f1c7b0e-5d2a-4a43-9a51-1d6c3f7b8e01" {
+		t.Fatalf("got %v", got)
+	}
+	for _, bad := range []string{"", "not-a-uuid", "6f1c7b0e"} {
+		if got := headerUUIDParam(bad); got != nil {
+			t.Fatalf("%q -> %v", bad, got)
+		}
+	}
 }

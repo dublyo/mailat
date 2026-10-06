@@ -134,11 +134,13 @@ func (a *campaignAudience) materialise(ctx context.Context, q eventoutbox.DBTX, 
 
 // recheck re-evaluates claimed rows owned by runID just before sending. In one
 // statement, rows that are no longer eligible become skipped (reason from the
-// first failing check) and campaigns.skipped_count grows by the same amount;
-// the eligible rows come back with fresh contact data.
-func (a *campaignAudience) recheck(ctx context.Context, q eventoutbox.DBTX, campaignID int64, runID string, ids []int64) ([]eligibleRecipient, error) {
+// first failing check, quota_reserved cleared) and campaigns.skipped_count
+// grows by the same amount; the eligible rows come back with fresh contact
+// data. refund counts skipped rows that had monthly quota reserved; the caller
+// refunds them in the same transaction. Callers lock the campaign row first.
+func (a *campaignAudience) recheck(ctx context.Context, q eventoutbox.DBTX, campaignID int64, runID string, ids []int64) (out []eligibleRecipient, refund int64, err error) {
 	if len(ids) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 	args := sqlArgs{}
 	org := args.add(a.orgID)
@@ -146,7 +148,7 @@ func (a *campaignAudience) recheck(ctx context.Context, q eventoutbox.DBTX, camp
 	run := args.add(runID)
 	idList := args.add(pq.Array(ids))
 	query := `WITH chk AS (
-		SELECT r.id, r.contact_id, r.email, r.message_uuid, c.first_name, c.last_name, c.attributes,
+		SELECT r.id, r.contact_id, r.email, r.message_uuid, r.quota_reserved, c.first_name, c.last_name, c.attributes,
 			CASE
 				WHEN c.id IS NULL THEN 'contact_deleted'
 				WHEN lower(c.email)<>lower(r.email) THEN 'email_changed'
@@ -159,32 +161,41 @@ func (a *campaignAudience) recheck(ctx context.Context, q eventoutbox.DBTX, camp
 		WHERE r.org_id=` + org + ` AND r.campaign_id=` + cid + `::int AND r.id=ANY(` + idList + `::bigint[])
 			AND r.status='claimed' AND r.lease_owner=` + run + `::uuid
 	), skipped AS (
-		UPDATE campaign_recipients r SET status='skipped', skip_reason=chk.reason,
+		UPDATE campaign_recipients r SET status='skipped', skip_reason=chk.reason, quota_reserved=false,
 			lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
-		FROM chk WHERE r.id=chk.id AND chk.reason IS NOT NULL
-		RETURNING r.id
+		FROM chk WHERE r.id=chk.id AND chk.reason IS NOT NULL AND r.status='claimed' AND r.lease_owner=` + run + `::uuid
+		RETURNING r.id, chk.quota_reserved AS was_reserved
 	), bump AS (
 		UPDATE campaigns SET skipped_count=skipped_count+(SELECT COUNT(*) FROM skipped), updated_at=now()
 		WHERE id=` + cid + `::int AND org_id=` + org + ` AND EXISTS(SELECT 1 FROM skipped)
 	)
-	SELECT id, contact_id, email, message_uuid::text, COALESCE(first_name,''), COALESCE(last_name,''), COALESCE(attributes,'{}'::jsonb)
-	FROM chk WHERE reason IS NULL ORDER BY id`
+	-- One summary row (the refund) left-joined to the eligible rows, so the
+	-- refund comes back even when no row is eligible.
+	SELECT e.id, e.contact_id, e.email, e.message_uuid::text, COALESCE(e.first_name,''), COALESCE(e.last_name,''),
+		COALESCE(e.attributes,'{}'::jsonb), s.refund
+	FROM (SELECT COUNT(*) FILTER (WHERE was_reserved) AS refund FROM skipped) s
+	LEFT JOIN chk e ON e.reason IS NULL ORDER BY e.id`
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to recheck recipients: %w", err)
+		return nil, 0, fmt.Errorf("failed to recheck recipients: %w", err)
 	}
 	defer rows.Close()
-	var out []eligibleRecipient
 	for rows.Next() {
+		var id, contactID sql.NullInt64
+		var email, messageUUID sql.NullString
 		var r eligibleRecipient
 		var attrs []byte
-		if err := rows.Scan(&r.ID, &r.ContactID, &r.Email, &r.MessageUUID, &r.FirstName, &r.LastName, &attrs); err != nil {
-			return nil, fmt.Errorf("failed to read rechecked recipient: %w", err)
+		if err := rows.Scan(&id, &contactID, &email, &messageUUID, &r.FirstName, &r.LastName, &attrs, &refund); err != nil {
+			return nil, 0, fmt.Errorf("failed to read rechecked recipient: %w", err)
 		}
+		if !id.Valid {
+			continue // the summary row alone: nothing eligible
+		}
+		r.ID, r.ContactID, r.Email, r.MessageUUID = id.Int64, contactID.Int64, email.String, messageUUID.String
 		if err := json.Unmarshal(attrs, &r.Attributes); err != nil || r.Attributes == nil {
 			r.Attributes = map[string]any{}
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	return out, refund, rows.Err()
 }

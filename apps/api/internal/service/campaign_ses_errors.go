@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"time"
 
 	"github.com/dublyo/mailat/api/internal/provider"
@@ -41,11 +42,16 @@ func classifySESSendError(err error) string {
 	return sendOutcomeUncertain
 }
 
-// campaignThrottleDelay is how long a throttled campaign waits: long when the
-// daily quota is spent, short for a per-second rate throttle.
+// campaignThrottleDelay is how long a throttled campaign waits: 30 minutes
+// when the message mentions the daily quota ("Daily message quota exceeded"),
+// otherwise one minute. Unlike provider.IsQuotaExhausted, the error code alone
+// (LimitExceededException) does not mean the day's quota is spent.
 func campaignThrottleDelay(err error) time.Duration {
-	if provider.IsQuotaExhausted(err) {
-		return 30 * time.Minute
+	if provider.ClassifySendError(err) == provider.SendThrottled {
+		text := strings.ToLower(err.Error())
+		if strings.Contains(text, "daily") || strings.Contains(text, "quota") {
+			return 30 * time.Minute
+		}
 	}
 	return time.Minute
 }

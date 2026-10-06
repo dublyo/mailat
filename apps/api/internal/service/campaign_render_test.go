@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"errors"
 	"net/url"
 	"strings"
@@ -243,5 +244,90 @@ func TestRenderedMIMEHeaders(t *testing.T) {
 	}
 	if _, err := url.Parse(strings.TrimSuffix(strings.SplitN(strings.SplitN(head, "List-Unsubscribe: <", 2)[1], ">", 2)[0], ">")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The footer always lands in rendered body content: never inside a comment,
+// raw-text element or unclosed wrapper, and never before a fake </body>.
+func TestRenderFooterPlacement(t *testing.T) {
+	snap, rcpt, opts := renderFixture()
+	snap.TrackOpens, snap.TrackClicks = false, false
+	footer := `<div style="margin-top:32px`
+	for _, tc := range []struct{ name, doc, before, after string }{
+		{"unterminated comment", `<p>x</p><!-- note`, `<p>x</p><!-- note-->`, ""},
+		{"unterminated style", `<p>x</p><style>p{color:red}`, `<style>p{color:red}</style>`, ""},
+		{"unterminated title", `<title>Hi`, `<title>Hi</title>`, ""},
+		{"unterminated textarea", `<textarea>x`, `<textarea>x</textarea>`, ""},
+		{"body end in a trailing comment", `<html><body><p>x</p></body><!--[if mso]></body><![endif]--></html>`, `<p>x</p>`, `</body><!--[if mso]>`},
+		{"body end in a script", `<body><p>x</p><script>var s="</body>"</script></body>`, `</script>`, `</body>`},
+		{"hidden wrapper before </body>", `<body><div style="display:none"><span>x</body>`, `<span>x</span></div>`, `</body>`},
+		{"hidden wrapper, no body", `<div style="display:none"><p>x`, `<p>x</div>`, ""},
+		{"closed wrapper", `<body><div style="display:none">x</div></body>`, `x</div>`, `</body>`},
+		{"svg self-closing", `<body><svg><path d="M0"/></svg></body>`, `</svg>`, `</body>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snap.HTMLContent = tc.doc
+			msg, _ := mustRender(t, snap, rcpt, opts)
+			i := strings.Index(msg.HTMLBody, footer)
+			if i < 0 || !strings.HasSuffix(msg.HTMLBody[:i], tc.before) || !strings.HasPrefix(msg.HTMLBody[strings.Index(msg.HTMLBody, "Unsubscribe</a></p></div>")+len("Unsubscribe</a></p></div>"):], tc.after) {
+				t.Fatalf("footer misplaced: %s", msg.HTMLBody)
+			}
+		})
+	}
+	for _, doc := range []string{`<p>x</p><a href="https://x`, `<a title="x>`, `<p>x</p></di`, `<plaintext>x`} {
+		snap.HTMLContent = doc
+		var mv *provider.MailValidationError
+		if _, _, err := renderCampaignMessage(snap, rcpt, opts); !errors.As(err, &mv) {
+			t.Fatalf("%q: %v", doc, err)
+		}
+		if err := validateCampaignContent("S", doc, ""); !errors.As(err, &mv) {
+			t.Fatalf("validate %q: %v", doc, err)
+		}
+	}
+	if err := validateCampaignContent("S", `<p>x<!-- open`, ""); err != nil {
+		t.Fatalf("closable content rejected: %v", err)
+	}
+}
+
+// Links are signed before personalisation: the token holds the template, so
+// no recipient data is ever carried by a click token.
+func TestRenderClickTokensCarryTemplates(t *testing.T) {
+	snap, rcpt, opts := renderFixture()
+	snap.HTMLContent = `<a href="https://shop.test/?e={{ email }}&amp;n={{firstName}}">x</a> {{email}}`
+	msg, _ := mustRender(t, snap, rcpt, opts)
+	if strings.Count(msg.HTMLBody, "reader@example.test") != 1 {
+		t.Fatalf("body: %s", msg.HTMLBody)
+	}
+	prefix := `href="https://api.test/api/v1/tracking/click/`
+	i := strings.Index(msg.HTMLBody, prefix) + len(prefix)
+	token := msg.HTMLBody[i : i+strings.Index(msg.HTMLBody[i:], `"`)]
+	raw, _ := base64.RawURLEncoding.DecodeString(token)
+	if strings.Contains(string(raw), "reader@") || strings.Contains(string(raw), "Ann") {
+		t.Fatalf("token carries recipient data: %s", raw)
+	}
+	d, err := decodeTrackingToken(trackingSecret, token)
+	if err != nil || d.U != "https://shop.test/?e={{ email }}&n={{firstName}}" {
+		t.Fatalf("token %+v %v", d, err)
+	}
+}
+
+func TestRenderRequiresAbsoluteLinkBases(t *testing.T) {
+	snap, rcpt, opts := renderFixture()
+	var mv *provider.MailValidationError
+	for _, bad := range []struct{ api, web string }{{"", "https://app.test"}, {"https://api.test", ""}, {"/api", "https://app.test"}, {"https://api.test", "app.test"}, {"ftp://api.test", "https://app.test"}} {
+		opts.APIURL, opts.WebURL = bad.api, bad.web
+		for _, mode := range []renderMode{renderSend, renderTest} {
+			opts.Mode = mode
+			if _, _, err := renderCampaignMessage(snap, rcpt, opts); !errors.As(err, &mv) {
+				t.Fatalf("%+v mode %d: %v", bad, mode, err)
+			}
+		}
+	}
+	opts.APIURL, opts.WebURL, opts.Mode = "", "", renderPreview
+	if _, _, err := renderCampaignMessage(snap, rcpt, opts); err != nil {
+		t.Fatalf("preview needs no link bases: %v", err)
+	}
+	if checkCampaignLinkBases("http://localhost:8080", "http://localhost:5173") != nil {
+		t.Fatal("local development URLs rejected")
 	}
 }

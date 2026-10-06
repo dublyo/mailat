@@ -499,11 +499,44 @@ func TestCampaignSenderBounceBreaker(t *testing.T) {
 	if err := r.prepareDue(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	mustExec(t, db, `UPDATE campaigns SET sent_count=100, bounce_count=5 WHERE id=$1`, id)
+	// The breaker runs when a batch wraps up (spec step 11): 102 sent, 10 bounced.
+	mustExec(t, db, `UPDATE campaigns SET sent_count=100, bounce_count=10 WHERE id=$1`, id)
+	addContact(t, db, 20, 1, "late@example.net", "active", 1)
+	fake.script = func(int, string) error {
+		// Materialised after the batch was claimed: still pending at the pause.
+		mustExec(t, db, `INSERT INTO campaign_recipients(campaign_id,org_id,contact_id,email) VALUES($1,1,20,'late@example.net') ON CONFLICT DO NOTHING`, id)
+		return nil
+	}
 	drain(t, r)
 	wantCampaign(t, db, id, "paused", "bounce_rate_high")
-	if fake.callCount("") != 0 {
-		t.Fatal("sent past the breaker")
+	if fake.callCount("") != 2 || fake.callCount("late@example.net") != 0 {
+		t.Fatalf("calls %v", fake.calls)
+	}
+
+	// Resume judges only what is sent next, so the campaign is not paused
+	// again before sending and finishes.
+	fake.script = nil
+	var campaignUUID string
+	if err := db.QueryRow(`SELECT uuid::text FROM campaigns WHERE id=$1`, id).Scan(&campaignUUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ResumeCampaign(context.Background(), 1, campaignCreator, campaignUUID); err != nil {
+		t.Fatal(err)
+	}
+	count(t, db, 1, `SELECT count(*) FROM campaigns WHERE id=$1 AND breaker_baseline_sent=102 AND breaker_baseline_bounces=10`, id)
+	drain(t, r)
+	wantCampaign(t, db, id, "sent", "")
+	if fake.callCount("late@example.net") != 1 {
+		t.Fatalf("calls %v", fake.calls)
+	}
+
+	// New bounces after the resume still trip it.
+	if got, err := r.breaker(context.Background(), &senderCampaign{ID: id, OrgID: 1}); err != nil || got != "" {
+		t.Fatalf("breaker after resume: %q %v", got, err)
+	}
+	mustExec(t, db, `UPDATE campaigns SET sent_count=sent_count+99, bounce_count=bounce_count+5 WHERE id=$1`, id)
+	if got, err := r.breaker(context.Background(), &senderCampaign{ID: id, OrgID: 1}); err != nil || got != "bounce_rate_high" {
+		t.Fatalf("breaker on new bounces: %q %v", got, err)
 	}
 }
 
@@ -611,4 +644,101 @@ func TestCampaignSenderQuotaCacheKeepsLastKnown(t *testing.T) {
 	if q := fresh.sendQuota(ctx); q != nil || fresh.applyRate(q) != 1 {
 		t.Fatal("unknown quota must fall back to 1/s")
 	}
+}
+
+func campaignUUIDOf(t *testing.T, db *sql.DB, id int64) string {
+	t.Helper()
+	var u string
+	if err := db.QueryRow(`SELECT uuid::text FROM campaigns WHERE id=$1`, id).Scan(&u); err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// An unsubscribe, suppression or erasure that commits after the batch recheck
+// still stops the send: the guarded start rechecks, the row is skipped and its
+// reservation refunded, and the rest of the batch continues.
+func TestCampaignSenderGuardedStartRechecksEligibility(t *testing.T) {
+	db, svc, r, fake := senderFixture(t, "c@example.net", "d@example.net", "e@example.net")
+	svc.cfg.DisableAppLimits = false
+	mustExec(t, db, `UPDATE organizations SET monthly_email_limit=100 WHERE id=1`)
+	id := startCampaign(t, svc)
+	fake.script = func(call int, _ string) error {
+		if call == 1 {
+			mustExec(t, db, `UPDATE campaign_recipients SET unsubscribed_at=now() WHERE email='b@example.net';
+				INSERT INTO suppression_list(org_id,email,reason,source) VALUES(1,'D@example.net','complaint','ses');
+				UPDATE campaign_recipients SET email='erased+'||id||'@invalid' WHERE email='c@example.net';
+				DELETE FROM contacts WHERE email='c@example.net'`)
+		}
+		return nil
+	}
+	drain(t, r)
+	wantCampaign(t, db, id, "sent", "")
+	if fake.callCount("") != 2 || fake.callCount("a@example.net") != 1 || fake.callCount("e@example.net") != 1 {
+		t.Fatalf("calls %v", fake.calls)
+	}
+	for email, reason := range map[string]string{"b@example.net": "inactive", "d@example.net": "suppressed"} {
+		count(t, db, 1, `SELECT count(*) FROM campaign_recipients WHERE email=$1 AND status='skipped' AND skip_reason=$2 AND NOT quota_reserved AND lease_owner IS NULL`, email, reason)
+	}
+	count(t, db, 1, `SELECT count(*) FROM campaign_recipients WHERE email LIKE 'erased+%' AND status='skipped' AND skip_reason='contact_deleted'`)
+	count(t, db, 3, `SELECT skipped_count FROM campaigns WHERE id=$1 AND sent_count=2`, id)
+	count(t, db, 2, `SELECT attempts FROM organization_send_usage WHERE org_id=1`)
+}
+
+// A cancel during an in-flight send that SES then throttles leaves the row
+// cancelled and refunded, not pending in a cancelled campaign.
+func TestCampaignSenderCancelDuringRefusedSend(t *testing.T) {
+	db, svc, r, fake := senderFixture(t, "c@example.net")
+	svc.cfg.DisableAppLimits = false
+	mustExec(t, db, `UPDATE organizations SET monthly_email_limit=100 WHERE id=1`)
+	id := startCampaign(t, svc)
+	fake.script = func(call int, _ string) error {
+		if call == 1 {
+			if _, err := svc.CancelCampaign(context.Background(), 1, campaignCreator, campaignUUIDOf(t, db, id)); err != nil {
+				t.Error(err)
+			}
+		}
+		return apiErr("TooManyRequestsException")
+	}
+	drain(t, r)
+	wantCampaign(t, db, id, "cancelled", "")
+	count(t, db, 3, `SELECT count(*) FROM campaign_recipients WHERE status='cancelled' AND lease_owner IS NULL`)
+	count(t, db, 1, `SELECT count(*) FROM campaign_recipients WHERE email='a@example.net' AND NOT quota_reserved AND attempt_started_at IS NULL`)
+	count(t, db, 0, `SELECT count(*) FROM campaign_recipients WHERE status<>'cancelled'`)
+	count(t, db, 0, `SELECT attempts FROM organization_send_usage WHERE org_id=1`)
+}
+
+// Rows released by a throttle keep their reservation; when a later recheck
+// skips them, the reservation is refunded.
+func TestCampaignSenderRefundsSkippedReservedRows(t *testing.T) {
+	db, svc, r, fake := senderFixture(t, "c@example.net")
+	svc.cfg.DisableAppLimits = false
+	mustExec(t, db, `UPDATE organizations SET monthly_email_limit=100 WHERE id=1`)
+	id := startCampaign(t, svc)
+	fake.script = func(int, string) error { return apiErr("TooManyRequestsException") }
+	runTick(t, r)
+	count(t, db, 3, `SELECT count(*) FROM campaign_recipients WHERE status='pending' AND quota_reserved`)
+	count(t, db, 3, `SELECT attempts FROM organization_send_usage WHERE org_id=1`)
+
+	fake.script = nil
+	mustExec(t, db, `UPDATE contacts SET status='unsubscribed' WHERE email IN ('b@example.net','c@example.net')`)
+	mustExec(t, db, `UPDATE campaigns SET throttled_until=now()-interval '1 second' WHERE id=$1`, id)
+	drain(t, r)
+	wantCampaign(t, db, id, "sent", "")
+	count(t, db, 2, `SELECT count(*) FROM campaign_recipients WHERE status='skipped' AND NOT quota_reserved`)
+	count(t, db, 1, `SELECT attempts FROM organization_send_usage WHERE org_id=1`)
+}
+
+// Unusable unsubscribe link bases block sending up front and pause a running campaign.
+func TestCampaignSenderRequiresAbsoluteLinkBases(t *testing.T) {
+	db, svc, r, fake := senderFixture(t)
+	id := startCampaign(t, svc)
+	svc.cfg.APIUrl = ""
+	drain(t, r)
+	wantCampaign(t, db, id, "paused", "unsubscribe_url_invalid")
+	if fake.callCount("") != 0 {
+		t.Fatalf("calls %v", fake.calls)
+	}
+	_, err := svc.ResumeCampaign(context.Background(), 1, campaignCreator, campaignUUIDOf(t, db, id))
+	wantValidation(t, err, "API_URL")
 }
