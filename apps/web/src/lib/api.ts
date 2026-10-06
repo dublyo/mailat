@@ -821,16 +821,6 @@ export const settingsApi = {
   verify2FA: (code: string) => api.post<{ backupCodes: string[] }>('/api/v1/security/2fa/verify', { code }),
 
   disable2FA: (password: string, code: string) => api.post('/api/v1/security/2fa/disable', { password, code }),
-
-  // AWS Setup
-  validateAWSCredentials: (data: { region: string; accessKeyId: string; secretAccessKey: string }) =>
-    api.post<{ valid: boolean; message: string; error?: string }>('/api/v1/settings/aws/validate', data),
-
-  provisionAWS: (data: { region: string; accessKeyId: string; secretAccessKey: string }) =>
-    api.post<AWSProvisioningResult>('/api/v1/settings/aws/provision', data),
-
-  getAWSStatus: () =>
-    api.get<AWSProvisioningStatus>('/api/v1/settings/aws/status'),
 }
 
 // ============ API Keys ============
@@ -881,34 +871,6 @@ export const apiKeyApi = {
   // Delete an API key
   delete: (uuid: string) =>
     api.delete<void>(`/api/v1/api-keys/${uuid}`),
-}
-
-export interface AWSProvisioningResult {
-  success: boolean
-  resources?: {
-    s3BucketName: string
-    s3BucketArn: string
-    lambdaFunctionArn: string
-    lambdaRoleArn: string
-    snsTopicArn: string
-    receiptRuleSetName: string
-    region: string
-  }
-  nextSteps?: string[]
-  error?: string
-  warning?: string
-}
-
-export interface AWSProvisioningStatus {
-  provisioned: boolean
-  resources?: {
-    region: string
-    s3Bucket: string
-    lambdaArn: string
-    snsTopicArn: string
-    receiptRuleSet: string
-  }
-  message?: string
 }
 
 export interface Session {

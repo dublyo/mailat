@@ -276,25 +276,6 @@ func customizeContract(op object, verb, path string) {
 		}
 		dataSchema(object{"type": "object", "properties": object{"matches": object{"type": "boolean"}, "active": object{"type": "boolean"}, "actions": object{"type": "object", "properties": actions}}})
 	}
-	if strings.HasPrefix(path, "/settings/aws/") {
-		op["deprecated"] = true
-		op["x-mailat-backend-note"] = "Legacy AWS provisioning handler with a distinct response envelope. Prefer domain setup-sending/sending-status and explicit /inbox/setup for the current SES workflow; this handler's compatibility is not verified by the documentation."
-		p := object{"message": object{"type": "string"}}
-		if strings.HasSuffix(path, "/validate") {
-			p["valid"] = object{"type": "boolean"}
-		} else {
-			p["success"] = object{"type": "boolean"}
-			p["resources"] = object{"$ref": "#/components/schemas/service.ProvisionedResources"}
-			p["warning"] = object{"type": "string"}
-			p["nextSteps"] = object{"type": "array", "items": object{"type": "string"}}
-		}
-		responses["200"].(object)["content"] = object{"application/json": object{"schema": object{"type": "object", "properties": p}}}
-		// Middleware uses code/message; this legacy handler itself uses error.
-		for _, status := range []string{"400", "401", "500"} {
-			errorSchema := responses[status].(object)["content"].(object)["application/json"].(object)["schema"]
-			responses[status].(object)["content"] = object{"application/json": object{"schema": object{"oneOf": []object{errorSchema.(object), {"type": "object", "required": []string{"error"}, "properties": object{"error": object{"type": "string"}, "message": object{"type": "string"}, "valid": object{"type": "boolean"}, "success": object{"type": "boolean"}}}}}}}
-		}
-	}
 	switch path {
 	case "/branding/css":
 		responses["200"] = object{"description": "Brand CSS variables", "content": object{"text/css": object{"schema": object{"type": "string"}}}}

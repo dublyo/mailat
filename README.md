@@ -50,6 +50,10 @@ cd apps/web
 npm run dev
 ```
 
+The database schema lives in the versioned SQL migrations under
+`apps/api/internal/database/migrations`; they are authoritative. The API
+applies pending migrations on startup (`AUTO_MIGRATE=true` by default).
+
 ### Environment Variables
 
 Copy `.env.example` to `.env` and configure:
@@ -394,8 +398,7 @@ mailat/
 │   │       │   ├── compose.go         # Compose/Send handlers
 │   │       │   └── sse.go             # SSE real-time
 │   │       ├── database/           # DB connections
-│   │       ├── handler/            # Webhook handlers
-│   │       │   └── sns_webhook.go     # AWS SNS handler
+│   │       │   └── migrations/        # Versioned SQL migrations (authoritative schema)
 │   │       ├── middleware/         # Auth middleware
 │   │       ├── model/              # Data models
 │   │       ├── provider/           # External providers
@@ -415,9 +418,6 @@ mailat/
 │           │   └── receivedInbox.ts   # Pinia state
 │           └── lib/
 │               └── api.ts             # API client
-├── prisma/
-│   ├── schema.prisma               # Database schema
-│   └── migrations/                 # SQL migrations
 ├── docker/
 │   └── caddy/Caddyfile             # Reverse proxy config
 └── docker-compose.yml              # Local development

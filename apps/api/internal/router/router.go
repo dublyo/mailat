@@ -10,7 +10,6 @@ import (
 	"github.com/dublyo/mailat/api/internal/config"
 	"github.com/dublyo/mailat/api/internal/controller"
 	"github.com/dublyo/mailat/api/internal/database"
-	"github.com/dublyo/mailat/api/internal/handler"
 	"github.com/dublyo/mailat/api/internal/middleware"
 	"github.com/dublyo/mailat/api/internal/service"
 )
@@ -139,9 +138,6 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 	phase5Ctrl := controller.NewPhase5Controller(webauthnService, sharedMailboxService, sieveService, webhookTriggerService, pushService, brandingService, auditLogService)
 	settingsCtrl := controller.NewSettingsController(settingsService)
 
-	// AWS Setup handler
-	awsSetupHandler := handler.NewAWSSetupHandler(database.DB, cfg)
-
 	// Email Receiving controllers
 	sseCtrl := controller.NewSSEController()
 	receivingService.SetNotifier(sseCtrl.NotifyNewEmail)
@@ -234,10 +230,6 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			// User Settings
 			protectedGroup.GET("/settings", settingsCtrl.GetSettings)
 			protectedGroup.PUT("/settings", settingsCtrl.UpdateSettings)
-
-			// AWS Setup
-			protectedGroup.POST("/settings/aws/validate", awsSetupHandler.ValidateCredentials)
-			protectedGroup.POST("/settings/aws/provision", awsSetupHandler.ProvisionResources)
 
 			// SSE (Server-Sent Events)
 			protectedGroup.GET("/sse/connect", sseCtrl.Connect)

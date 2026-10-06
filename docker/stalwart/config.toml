@@ -52,27 +52,37 @@ store = "rocksdb"
 # AUTHENTICATION
 # ===================
 
+# STALWART_ADMIN_TOKEN is required: Stalwart expands the %{env:...}% macro at
+# startup, and an unset variable leaves the fallback admin without a usable
+# secret. Generate one with `openssl rand -hex 32`. (The previous
+# "${STALWART_ADMIN_TOKEN}" form was never expanded and became the literal
+# password.)
 [authentication]
 fallback-admin.user = "admin"
-fallback-admin.secret = "${STALWART_ADMIN_TOKEN}"
+fallback-admin.secret = "%{env:STALWART_ADMIN_TOKEN}%"
 
 # ===================
 # SMTP RELAY (Allow internal Docker network)
 # ===================
 
-# Allow relay from internal Docker network without authentication
-# This is safe because only containers on the same network can connect
+# Allow relay without authentication only from loopback and the RFC 1918
+# private ranges (Docker networks). Keep this list narrow: a public range here
+# makes the server an open relay.
 [session.rcpt]
-relay = [ { if = "remote-ip", eq = "172.0.0.0/8", then = true },
-          { if = "remote-ip", eq = "192.168.0.0/16", then = true },
+relay = [ { if = "remote-ip", eq = "127.0.0.0/8", then = true },
+          { if = "remote-ip", eq = "::1/128", then = true },
+          { if = "remote-ip", eq = "172.16.0.0/12", then = true },
           { if = "remote-ip", eq = "10.0.0.0/8", then = true },
+          { if = "remote-ip", eq = "192.168.0.0/16", then = true },
           { else = false } ]
 
-# Allow MAIL FROM without auth for internal networks
+# Allow MAIL FROM without auth for the same internal ranges
 [session.auth]
-require = [ { if = "remote-ip", eq = "172.0.0.0/8", then = false },
-            { if = "remote-ip", eq = "192.168.0.0/16", then = false },
+require = [ { if = "remote-ip", eq = "127.0.0.0/8", then = false },
+            { if = "remote-ip", eq = "::1/128", then = false },
+            { if = "remote-ip", eq = "172.16.0.0/12", then = false },
             { if = "remote-ip", eq = "10.0.0.0/8", then = false },
+            { if = "remote-ip", eq = "192.168.0.0/16", then = false },
             { else = true } ]
 
 # ===================

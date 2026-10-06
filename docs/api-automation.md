@@ -34,8 +34,9 @@ every route has been exercised against its external provider. In particular,
 routes use JMAP; SES integrations should use `/inbox/received`, `/inbox/changes`
 and `/inbox/filters`. Stored Sieve, shared-mailbox, auto-reply or forwarding
 configuration does not by itself prove that the SES receive pipeline executes
-it. Legacy `/settings/aws/*` uses a different JSON envelope; prefer the current
-domain sending-setup and explicit inbox receiving-setup routes.
+it. Use the domain sending-setup and explicit inbox receiving-setup routes for
+SES configuration (the legacy `/settings/aws/*` provisioning endpoints were
+removed).
 
 Send `Authorization: Bearer <key>`. Keys belong to their creating user and
 organization. Choose only the scopes a workflow needs:

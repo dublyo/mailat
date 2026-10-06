@@ -20,6 +20,6 @@
       "@mailat/web": ["apps/web/src"]
     }
   },
-  "include": ["scripts/**/*", "prisma/**/*"],
+  "include": ["scripts/**/*"],
   "exclude": ["node_modules", "dist", "apps", "packages"]
 }

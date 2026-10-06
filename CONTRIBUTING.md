@@ -35,11 +35,13 @@ Thank you for your interest in contributing to Mailat! This document provides gu
    # Edit .env with your configuration
    ```
 
-4. **Run database migrations**
-   ```bash
-   cd prisma
-   npx prisma migrate dev
-   ```
+4. **Database migrations**
+
+   The versioned SQL files in `apps/api/internal/database/migrations` are the
+   authoritative schema. The API applies any pending migrations on startup
+   (`AUTO_MIGRATE=true`, the default), so there is no separate migration step.
+   Add schema changes as a new numbered file there; never edit a migration
+   that has already been released.
 
 5. **Start services**
    ```bash
