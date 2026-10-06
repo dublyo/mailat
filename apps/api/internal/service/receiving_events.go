@@ -386,7 +386,7 @@ func (s *ReceivingService) cleanupStorage(ctx context.Context) error {
 			return err
 		}
 		var referenced bool
-		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM received_emails WHERE raw_s3_bucket=$1 AND raw_s3_key=$2) OR EXISTS(SELECT 1 FROM email_attachments WHERE s3_bucket=$1 AND s3_key=$2) OR EXISTS(SELECT 1 FROM compose_uploads WHERE s3_bucket=$1 AND s3_key=$2)`, bucket, key).Scan(&referenced)
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM received_emails WHERE raw_s3_bucket=$1 AND raw_s3_key=$2) OR EXISTS(SELECT 1 FROM email_attachments WHERE s3_bucket=$1 AND s3_key=$2) OR EXISTS(SELECT 1 FROM compose_uploads WHERE s3_bucket=$1 AND s3_key=$2) OR EXISTS(SELECT 1 FROM send_attachment_refs WHERE s3_bucket=$1 AND s3_key=$2)`, bucket, key).Scan(&referenced)
 		if err != nil {
 			tx.Rollback()
 			return err

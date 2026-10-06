@@ -188,9 +188,7 @@ func BuildMailMIME(msg *EmailMessage) ([]byte, []string, error) {
 		if strings.ContainsAny(k+v, "\r\n") || strings.ContainsAny(k, ": \t") {
 			return nil, nil, &MailValidationError{"invalid mail header"}
 		}
-		// Only threading and standard one-click unsubscribe headers are accepted from callers.
-		switch strings.ToLower(k) {
-		case "in-reply-to", "references", "list-unsubscribe", "list-unsubscribe-post", "x-mailat-message-id":
+		if AllowedMailHeader(k) {
 			writeMailHeader(&output, k, v)
 		}
 	}
@@ -278,6 +276,18 @@ func BuildMailMIME(msg *EmailMessage) ([]byte, []string, error) {
 		}
 	}
 	return output.Bytes(), recipients, nil
+}
+
+// AllowedMailHeader reports whether callers may set the header: threading,
+// one-click unsubscribe, RFC 3834 auto-reply markers and Mailat's own tracing
+// and forwarding-loop headers. Everything else is dropped.
+func AllowedMailHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "in-reply-to", "references", "list-unsubscribe", "list-unsubscribe-post", "x-mailat-message-id",
+		"auto-submitted", "x-auto-response-suppress", "x-mailat-loop", "x-mailat-forwarded-for":
+		return true
+	}
+	return false
 }
 
 // Fold only on existing whitespace, keeping encoded words and addresses intact.

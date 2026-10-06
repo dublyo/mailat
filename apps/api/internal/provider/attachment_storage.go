@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -10,7 +11,11 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+// ErrAttachmentNotFound means the object is gone; retrying cannot help.
+var ErrAttachmentNotFound = errors.New("attachment object not found")
 
 type AttachmentStorage interface {
 	Put(context.Context, string, string, []byte) error
@@ -33,6 +38,10 @@ func (s *s3AttachmentStorage) Put(ctx context.Context, bucket, key string, data 
 }
 func (s *s3AttachmentStorage) Get(ctx context.Context, bucket, key string) ([]byte, error) {
 	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+	var missing *s3types.NoSuchKey
+	if errors.As(err, &missing) {
+		return nil, ErrAttachmentNotFound
+	}
 	if err != nil {
 		return nil, err
 	}

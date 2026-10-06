@@ -16,22 +16,24 @@ const (
 
 // EmailSendPayload contains the data needed to send an email
 type EmailSendPayload struct {
-	MessageUUID    string            `json:"messageUuid,omitempty"`
-	UserID         int64             `json:"userId,omitempty"`
-	IdentityID     int64             `json:"identityId,omitempty"`
-	EmailID        int64             `json:"emailId"`
-	OrgID          int64             `json:"orgId"`
-	From           string            `json:"from"`
-	To             []string          `json:"to"`
-	Cc             []string          `json:"cc,omitempty"`
-	Bcc            []string          `json:"bcc,omitempty"`
-	ReplyTo        string            `json:"replyTo,omitempty"`
-	Subject        string            `json:"subject"`
-	HTMLBody       string            `json:"htmlBody,omitempty"`
-	TextBody       string            `json:"textBody,omitempty"`
-	MessageID      string            `json:"messageId"`
-	Attachments    []AttachmentInfo  `json:"attachments,omitempty"`
-	Metadata       map[string]string `json:"metadata,omitempty"`
+	MessageUUID string            `json:"messageUuid,omitempty"`
+	UserID      int64             `json:"userId,omitempty"`
+	IdentityID  int64             `json:"identityId,omitempty"`
+	EmailID     int64             `json:"emailId"`
+	OrgID       int64             `json:"orgId"`
+	From        string            `json:"from"`
+	To          []string          `json:"to"`
+	Cc          []string          `json:"cc,omitempty"`
+	Bcc         []string          `json:"bcc,omitempty"`
+	ReplyTo     string            `json:"replyTo,omitempty"`
+	Subject     string            `json:"subject"`
+	HTMLBody    string            `json:"htmlBody,omitempty"`
+	TextBody    string            `json:"textBody,omitempty"`
+	MessageID   string            `json:"messageId"`
+	Attachments []AttachmentInfo  `json:"attachments,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	// Headers pass through provider.AllowedMailHeader; others are dropped.
+	Headers        map[string]string `json:"headers,omitempty"`
 	RetryCount     int               `json:"retryCount"`
 	MaxRetries     int               `json:"maxRetries"`
 	ScheduledFor   *time.Time        `json:"scheduledFor,omitempty"`
@@ -47,6 +49,10 @@ type AttachmentInfo struct {
 	Size        int    `json:"size"`
 	Disposition string `json:"disposition"`
 	CID         string `json:"cid,omitempty"`
+	// S3Bucket/S3Key reference stored bytes when Data is empty; the worker
+	// loads them at send time so durable payloads stay small.
+	S3Bucket string `json:"s3Bucket,omitempty"`
+	S3Key    string `json:"s3Key,omitempty"`
 }
 
 // EmailBatchPayload contains data for batch email sending

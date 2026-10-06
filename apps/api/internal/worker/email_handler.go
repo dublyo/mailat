@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -22,6 +23,7 @@ type EmailHandler struct {
 	db                    *sql.DB
 	cfg                   *config.Config
 	emailProvider         provider.EmailProvider
+	attachments           provider.AttachmentStorage
 	webhookTriggerService webhookTriggerFirer
 }
 
@@ -63,6 +65,7 @@ func NewEmailHandler(db *sql.DB, cfg *config.Config) *EmailHandler {
 		})
 		fmt.Println("Email handler initialized with SMTP provider")
 	}
+	handler.attachments, _ = provider.NewAttachmentStorage(ctx, cfg.AWSRegion, cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey)
 
 	return handler
 }
@@ -77,6 +80,12 @@ func NewEmailHandlerWithProvider(db *sql.DB, cfg *config.Config, p provider.Emai
 	return &EmailHandler{db: db, cfg: cfg, emailProvider: p}
 }
 
+// WithAttachmentStorage sets where S3-referenced attachments are loaded from.
+func (h *EmailHandler) WithAttachmentStorage(s provider.AttachmentStorage) *EmailHandler {
+	h.attachments = s
+	return h
+}
+
 func (h *EmailHandler) HandleEmailSend(ctx context.Context, t *asynq.Task) error {
 	payload, err := UnmarshalEmailSendPayload(t.Payload())
 	if err != nil {
@@ -84,7 +93,7 @@ func (h *EmailHandler) HandleEmailSend(ctx context.Context, t *asynq.Task) error
 	}
 	// A throttled row is already re-queued with next_attempt_at; the database, not
 	// an asynq retry, owns the next attempt.
-	if err = h.ProcessEmail(ctx, payload); errors.Is(err, ErrSendThrottled) {
+	if err = h.ProcessEmail(ctx, payload); errors.Is(err, ErrSendThrottled) || errors.Is(err, ErrAttachmentDeferred) {
 		return nil
 	}
 	return err
@@ -95,9 +104,14 @@ func (h *EmailHandler) HandleEmailSend(ctx context.Context, t *asynq.Task) error
 // but should stop submitting more mail for now.
 var ErrSendThrottled = errors.New("send throttled by provider; retry scheduled")
 
+// ErrAttachmentDeferred means attachment storage failed transiently before
+// anything was submitted; the row was re-queued with a backoff.
+var ErrAttachmentDeferred = errors.New("attachment storage unavailable; retry scheduled")
+
 const (
 	maxSendAttempts = 10
 	throttleGiveUp  = "SES throttled this message repeatedly; nothing was sent"
+	storageGiveUp   = "Attachment storage stayed unavailable; nothing was sent"
 )
 
 // backoff returns the delay before attempt n+1 after the nth throttle:
@@ -135,11 +149,31 @@ func (h *EmailHandler) ProcessEmail(ctx context.Context, payload *EmailSendPaylo
 		}
 	}
 	msg := &provider.EmailMessage{From: payload.From, To: payload.To, Cc: payload.Cc, Bcc: payload.Bcc, ReplyTo: payload.ReplyTo, Subject: payload.Subject, TextBody: payload.TextBody, HTMLBody: payload.HTMLBody, MessageID: payload.MessageID, Headers: map[string]string{}}
+	for k, v := range payload.Headers {
+		if provider.AllowedMailHeader(k) && !strings.EqualFold(k, "X-Mailat-Message-ID") {
+			msg.Headers[k] = v
+		}
+	}
 	if payload.MessageUUID != "" {
 		msg.Headers["X-Mailat-Message-ID"] = payload.MessageUUID
 	}
 	for _, a := range payload.Attachments {
-		msg.Attachments = append(msg.Attachments, provider.Attachment{Filename: a.Name, ContentType: a.Type, Data: a.Data, ContentID: a.CID, Inline: a.Disposition == "inline"})
+		data := a.Data
+		if len(data) == 0 && a.S3Key != "" {
+			if h.attachments == nil {
+				return h.finishEmail(payload.EmailID, "failed", "Attachment storage is not configured", "", payload)
+			}
+			loadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			data, err = h.attachments.Get(loadCtx, a.S3Bucket, a.S3Key)
+			cancel()
+			if errors.Is(err, provider.ErrAttachmentNotFound) {
+				return h.finishEmail(payload.EmailID, "failed", "Attachment unavailable", "", payload)
+			}
+			if err != nil {
+				return h.requeueEmail(payload, "Attachment storage unavailable; retry scheduled", storageGiveUp, false, ErrAttachmentDeferred)
+			}
+		}
+		msg.Attachments = append(msg.Attachments, provider.Attachment{Filename: a.Name, ContentType: a.Type, Data: data, ContentID: a.CID, Inline: a.Disposition == "inline"})
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	result, sendErr := h.emailProvider.SendEmail(sendCtx, msg)
@@ -199,6 +233,10 @@ func (h *EmailHandler) finishEmailTx(ctx context.Context, tx *sql.Tx, id int64, 
 	if _, err = tx.ExecContext(ctx, `INSERT INTO transactional_delivery_events(email_id,event_type,details) VALUES($1,$2,$3)`, id, status, details); err != nil {
 		return err
 	}
+	// Referenced objects are no longer needed once the outcome is final.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM send_attachment_refs WHERE transactional_email_id=$1`, id); err != nil {
+		return err
+	}
 	data := map[string]any{"status": current, "messageUuid": messageUUID, "providerMessageId": providerID}
 	if payload != nil {
 		data["messageId"] = payload.MessageID
@@ -217,6 +255,13 @@ func (h *EmailHandler) deferEmail(_ context.Context, payload *EmailSendPayload, 
 	if quota {
 		reason = "Amazon SES sending quota reached; retry scheduled"
 	}
+	return h.requeueEmail(payload, reason, throttleGiveUp, quota, ErrSendThrottled)
+}
+
+// requeueEmail puts a claimed, never-submitted row back in the queue with a
+// backoff, or fails it with giveUp after too many attempts. It returns
+// deferred when the row was re-queued.
+func (h *EmailHandler) requeueEmail(payload *EmailSendPayload, reason, giveUp string, quota bool, deferred error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	tx, err := h.db.BeginTx(ctx, nil)
@@ -241,7 +286,7 @@ func (h *EmailHandler) deferEmail(_ context.Context, payload *EmailSendPayload, 
 		if _, err = tx.ExecContext(ctx, `UPDATE transactional_emails SET send_attempts=$2,last_deferral_reason=$3 WHERE id=$1`, payload.EmailID, attempts, reason); err != nil {
 			return err
 		}
-		if err = h.finishEmailTx(ctx, tx, payload.EmailID, "failed", throttleGiveUp, "", payload); err != nil {
+		if err = h.finishEmailTx(ctx, tx, payload.EmailID, "failed", giveUp, "", payload); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -256,7 +301,7 @@ func (h *EmailHandler) deferEmail(_ context.Context, payload *EmailSendPayload, 
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	return ErrSendThrottled
+	return deferred
 }
 
 // RecoverPending processes only due, never-attempted or deferred jobs. Multiple instances may
@@ -284,7 +329,7 @@ func (h *EmailHandler) RecoverPending(ctx context.Context) error {
 		if err = h.ProcessEmail(ctx, p); errors.Is(err, ErrSendThrottled) {
 			// SES is limiting this account; leave the rest of the batch for a later pass.
 			break
-		} else if err != nil {
+		} else if err != nil && !errors.Is(err, ErrAttachmentDeferred) {
 			return err
 		}
 	}

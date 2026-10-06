@@ -84,3 +84,25 @@ func TestMailMIMERejectsHeaderInjectionAndOversize(t *testing.T) {
 		t.Fatal("provider rejection not classified")
 	}
 }
+
+func TestMailMIMEHeaderAllowlist(t *testing.T) {
+	raw, _, err := BuildMailMIME(&EmailMessage{From: "a@example.test", To: []string{"b@example.test"}, Subject: "s", TextBody: "x", Headers: map[string]string{
+		"Auto-Submitted": "auto-replied", "X-Auto-Response-Suppress": "All", "X-Mailat-Loop": "aa,bb",
+		"X-Mailat-Forwarded-For": "me@example.test", "X-Custom": "drop", "Bcc": "evil@example.test",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{"Auto-Submitted": "auto-replied", "X-Auto-Response-Suppress": "All", "X-Mailat-Loop": "aa,bb", "X-Mailat-Forwarded-For": "me@example.test", "X-Custom": "", "Bcc": ""} {
+		if got := m.Header.Get(k); got != want {
+			t.Fatalf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if _, _, err = BuildMailMIME(&EmailMessage{From: "a@example.test", To: []string{"b@example.test"}, Subject: "s", TextBody: "x", Headers: map[string]string{"Auto-Submitted": "no\r\nBcc: evil@example.test"}}); err == nil {
+		t.Fatal("CR/LF in an allowed header accepted")
+	}
+}

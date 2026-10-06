@@ -520,16 +520,20 @@ func (s *TransactionalService) CancelEmail(ctx context.Context, orgID int64, ema
 	return s.CancelEmailForUser(ctx, orgID, 0, emailUUID)
 }
 func (s *TransactionalService) CancelEmailForUser(ctx context.Context, orgID, userID int64, emailUUID string) error {
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE transactional_emails
-		SET status = 'cancelled', updated_at = NOW()
-		WHERE uuid = $1 AND org_id = $2 AND status = 'queued' AND ($3::bigint=0 OR identity_id IN (SELECT id FROM identities WHERE user_id=$3))
-	`, emailUUID, orgID, userID)
+	// A cancelled send no longer pins its S3-referenced attachments.
+	var rows int
+	err := s.db.QueryRowContext(ctx, `
+		WITH c AS (
+			UPDATE transactional_emails
+			SET status = 'cancelled', updated_at = NOW()
+			WHERE uuid = $1 AND org_id = $2 AND status = 'queued' AND ($3::bigint=0 OR identity_id IN (SELECT id FROM identities WHERE user_id=$3))
+			RETURNING id
+		), refs AS (DELETE FROM send_attachment_refs WHERE transactional_email_id IN (SELECT id FROM c))
+		SELECT count(*) FROM c
+	`, emailUUID, orgID, userID).Scan(&rows)
 	if err != nil {
 		return fmt.Errorf("failed to cancel email: %w", err)
 	}
-
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return fmt.Errorf("email not found or cannot be cancelled")
 	}
