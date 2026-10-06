@@ -525,3 +525,32 @@ func TestAutomationExecutorConcurrency(t *testing.T) {
 	x2.release(id, token)
 	count(t, db, 1, `SELECT count(*) FROM automation_enrollments WHERE id=$1 AND claim_token IS NULL AND locked_until IS NULL`, id)
 }
+
+// TestAutomationLegacyEnrollmentsAndContacts: enrollments from before the
+// executor (version_id NULL, cancelled by migration 014) do not block
+// re-entry under 'never', and a legacy NULL engagement_score is read as 0.
+func TestAutomationLegacyEnrollmentsAndContacts(t *testing.T) {
+	db, s := newAutomationFixture(t)
+	x := NewAutomationExecutor(db, s.cfg, nil)
+	w := buildGraph(t, []graphNode{
+		{"t", "trigger", map[string]any{"event": "contact.subscribed", "listUuid": autoListA}},
+		{"c", "condition", map[string]any{"field": "engagement_score", "operator": "less_than", "value": "1"}},
+		{"y", "action", map[string]any{"action": "update_field", "attribute": "low", "value": "yes"}},
+		{"n", "action", map[string]any{"action": "update_field", "attribute": "low", "value": "no"}},
+	}, [][3]string{{"t", "c", ""}, {"c", "y", "yes"}, {"c", "n", "no"}})
+	a := publishGraph(t, s, w, "never")
+	mustExec(t, db, `ALTER TABLE contacts ALTER COLUMN engagement_score DROP NOT NULL`)
+	addAutoContact(t, db, 100, "active", `{}`)
+	mustExec(t, db, `UPDATE contacts SET engagement_score=NULL WHERE id=100`)
+	mustExec(t, db, `INSERT INTO automation_enrollments(automation_id,contact_id,org_id,status,error_message,updated_at)
+		SELECT id,100,1,'cancelled','Created before the automation executor existed',now() FROM automations WHERE uuid=$1`, a.UUID)
+	autoSubscribe(t, db, 1, 100, "api")
+	if n := mustRun(t, x.EnrollPending); n != 1 {
+		t.Fatalf("enrolled %d", n)
+	}
+	mustRun(t, x.StepDue)
+	if got := enrollmentState(t, db, 100); got != "completed/y/" {
+		t.Fatalf("state: %s", got)
+	}
+	count(t, db, 1, `SELECT count(*) FROM contacts WHERE id=100 AND attributes->>'low'='yes'`)
+}

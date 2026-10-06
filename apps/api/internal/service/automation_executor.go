@@ -61,9 +61,10 @@ var automationEligibleSQL = "c.status='active' AND NOT " + campaignSuppressedSQL
 
 // automationReentrySQL admits contact c to automation param a under policy
 // param p: never re-enroll for 'never'; for 'after_exit' only with no active
-// enrollment and none started within the cooldown.
+// enrollment and none started within the cooldown. Enrollments from before the
+// executor (version_id NULL, never run) do not count.
 func automationReentrySQL(a, p string) string {
-	return "NOT EXISTS (SELECT 1 FROM automation_enrollments x WHERE x.automation_id=" + a + " AND x.contact_id=c.id AND (" + p +
+	return "NOT EXISTS (SELECT 1 FROM automation_enrollments x WHERE x.automation_id=" + a + " AND x.contact_id=c.id AND x.version_id IS NOT NULL AND (" + p +
 		"='never' OR x.status='active' OR x.enrolled_at > now() - interval '" + automationReentryWindow + "'))"
 }
 
@@ -227,7 +228,7 @@ func (x *AutomationExecutor) EnrollPending(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	// FOR SHARE serializes with archive/pause (FOR UPDATE / UPDATE), so no
+	// FOR SHARE serializes with archive/pause (NO KEY UPDATE / UPDATE), so no
 	// enrollment is added to an automation archived concurrently.
 	rows, err = tx.QueryContext(ctx, `SELECT a.id, a.org_id, v.id, v.trigger_type, v.reentry_policy, a.activated_at
 		FROM automations a JOIN automation_versions v ON v.id = a.published_version_id
@@ -463,7 +464,7 @@ func (x *AutomationExecutor) step(ctx context.Context, id int64, token string) (
 	var suppressed bool
 	var facts ContactFacts
 	var attrs []byte
-	err = tx.QueryRowContext(ctx, `SELECT c.status, `+campaignSuppressedSQL("c.org_id", "c.email")+`, c.engagement_score, COALESCE(c.attributes,'{}'::jsonb)
+	err = tx.QueryRowContext(ctx, `SELECT c.status, `+campaignSuppressedSQL("c.org_id", "c.email")+`, COALESCE(c.engagement_score,0), COALESCE(c.attributes,'{}'::jsonb)
 		FROM contacts c WHERE c.id=$1 AND c.org_id=$2`, st.contactID, st.orgID).Scan(&cStatus, &suppressed, &facts.EngagementScore, &attrs)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
