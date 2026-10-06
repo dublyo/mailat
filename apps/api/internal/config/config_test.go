@@ -3,7 +3,9 @@ package config
 import (
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +75,41 @@ func TestValidate(t *testing.T) {
 	}
 	if err := (&Config{JWTSecret: "x"}).Validate(); err == nil || !strings.Contains(err.Error(), "openssl rand -hex 32") {
 		t.Fatalf("secret errors should carry the generation hint: %v", err)
+	}
+}
+
+// Every JWT_SECRET/ENCRYPTION_KEY example an operator might copy must fail.
+func TestDocumentedSecretExamplesFailValidate(t *testing.T) {
+	assign := regexp.MustCompile(`(?m)^\s*(JWT_SECRET|ENCRYPTION_KEY)\s*=\s*"?([^"\s$]+)"?`)
+	found := 0
+	for _, file := range []string{"README.md", ".env.example", ".env.production.example", "docs/self-hosting-ses.md"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", file))
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		for _, m := range assign.FindAllStringSubmatch(string(data), -1) {
+			found++
+			c := validConfig()
+			if m[1] == "JWT_SECRET" {
+				c.JWTSecret = m[2]
+			} else {
+				c.EncryptionKey = m[2]
+			}
+			if c.Validate() == nil {
+				t.Errorf("%s: documented %s example passes Validate()", file, m[1])
+			}
+		}
+	}
+	if found < 4 {
+		t.Fatalf("found only %d documented examples; the pattern no longer matches the docs", found)
+	}
+	// Older README examples that were once published.
+	for _, v := range []string{"your-jwt-secret-min-32-chars", "a-different-random-value-min-32-chars"} {
+		c := validConfig()
+		c.EncryptionKey = v
+		if c.Validate() == nil {
+			t.Errorf("%q passes Validate()", v)
+		}
 	}
 }
 

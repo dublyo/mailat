@@ -67,8 +67,8 @@ REDIS_URL="redis://:password@host:6379"
 
 # Authentication (startup fails unless both are set, at least 32 bytes and different;
 # generate each with: openssl rand -hex 32)
-JWT_SECRET="your-jwt-secret-min-32-chars"
-ENCRYPTION_KEY="a-different-random-value-min-32-chars"
+JWT_SECRET="replace-with-a-long-random-jwt-secret"
+ENCRYPTION_KEY="replace-with-a-separate-long-random-encryption-key"
 JWT_EXPIRES_IN="7d"
 
 # AWS SES (Required for email sending/receiving)

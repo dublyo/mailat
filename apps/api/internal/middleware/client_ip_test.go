@@ -44,6 +44,21 @@ func TestClientIPTrustBoundary(t *testing.T) {
 	}
 }
 
+func TestClientIPJoinsMultipleForwardedHeaders(t *testing.T) {
+	previous := config.Cfg
+	t.Cleanup(func() { config.Cfg = previous })
+	config.Cfg = &config.Config{TrustedProxyCIDRs: "10.0.0.0/8"}
+	// The visitor's forged line comes first; the proxy adds the real address
+	// on its own line.
+	r := httptest.NewRequest("POST", "http://localhost/", nil)
+	r.RemoteAddr = "10.0.0.2:4000"
+	r.Header.Add("X-Forwarded-For", "1.2.3.4")
+	r.Header.Add("X-Forwarded-For", "203.0.113.50")
+	if got := ClientIP(&ghttp.Request{Request: r}); got != "203.0.113.50" {
+		t.Fatalf("got %s want the proxy-reported address", got)
+	}
+}
+
 func TestClientIPTrustedNetworkFallbacks(t *testing.T) {
 	previous := config.Cfg
 	t.Cleanup(func() { config.Cfg = previous })

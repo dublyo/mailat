@@ -53,7 +53,9 @@ func ClientIP(r *ghttp.Request) string {
 	}
 	// Walk from the immediate peer toward the client and stop at the first
 	// untrusted hop. A visitor cannot spoof the result with a prepended address.
-	chain := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	// Proxies such as HAProxy add their own header line instead of appending,
+	// so every line is joined in order before walking the chain.
+	chain := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
 	for i := len(chain) - 1; i >= 0; i-- {
 		candidate := strings.TrimSpace(chain[i])
 		if net.ParseIP(candidate) == nil {

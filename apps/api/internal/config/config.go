@@ -192,7 +192,7 @@ func Load() (*Config, error) {
 
 var (
 	dayDuration        = regexp.MustCompile(`^\d+d$`)
-	secretPlaceholders = []string{"replace-with", "change-me", "changeme"}
+	secretPlaceholders = []string{"replace-with", "change-me", "changeme", "your-", "a-different-"}
 )
 
 // Validate fails startup on unsafe or malformed settings. The returned error
@@ -209,7 +209,8 @@ func (c *Config) Validate() error {
 			add("%s must be at least 32 bytes", s.name)
 		default:
 			for _, p := range secretPlaceholders {
-				if strings.HasPrefix(lower, p) {
+				// "min-32-chars" catches copied documentation examples.
+				if strings.HasPrefix(lower, p) || strings.Contains(lower, "min-32-chars") {
 					add("%s still holds the example placeholder", s.name)
 					break
 				}
