@@ -50,6 +50,8 @@ organization. Choose only the scopes a workflow needs:
 | Identity reads / changes | `identities:read` / `identities:manage` |
 | Template reads / changes | `templates:read` / `templates:manage` |
 | Webhook subscriptions, deliveries, rotation and replay | `webhooks:manage` |
+| Automation lists, stats and enrollments (includes contact emails) | `automations:read` |
+| Enroll contacts, cancel and retry enrollments | `automations:enroll` |
 
 Key expiry, active user status and a PostgreSQL-backed per-minute request counter
 are checked on every call. A 429 includes `Retry-After` in seconds. API keys cannot
@@ -147,6 +149,136 @@ For reliable catch-up:
 Cursors are opaque decimal strings scoped to the user. They are commit-ordered,
 including concurrent changes to different messages. Changes are retained for 90
 days. An expired cursor returns 410 and requires another initial snapshot.
+
+## Automations (workflows)
+
+An automation is a graph of steps drawn in the editor (Automations in the web
+app). It starts from one trigger and runs each enrolled contact through its
+steps on the server. Nothing runs until the automation is **activated**.
+
+### Triggers and steps
+
+| Trigger | Starts when |
+| --- | --- |
+| `contact.subscribed` | A contact joins a list by any path. You can filter by one list and by source. |
+| `contact.created` | A contact is created. You can filter by source. |
+| `manual` | Only the enroll endpoint or the editor enrolls contacts. |
+
+Each list membership and contact records its source: `signup_form`, `api`,
+`import`, `manual`, `preference_center`, `double_opt_in`, `automation` or
+`unknown`. By default a trigger accepts `signup_form`, `api`, `manual`,
+`preference_center` and `double_opt_in`. **CSV imports (`import`), contacts
+added by another automation (`automation`) and `unknown` enroll only when the
+automation opts in.** Only contacts who meet the trigger after activation are
+enrolled. The enroll endpoint works for any active automation, whatever its
+trigger.
+
+The available steps:
+
+- **Send email** sends an active `email_templates` template. The sender must be
+  one of the publishing user's `can_send` identities on an active, SES-verified
+  domain. This is checked when you publish and again at send time. Each email
+  has the unsubscribe footer and `List-Unsubscribe`/`List-Unsubscribe-Post`
+  headers, and you can turn open and click tracking on or off.
+- **Wait** pauses for 1 minute to 365 days.
+- **If/Else** and **Filter** check whether an earlier email step was opened or
+  clicked, the engagement score, or a contact attribute. The check runs when
+  the contact reaches the step, so put a Wait before an opened or clicked
+  check. A filter continues only on Yes.
+- **Add to list**, **Remove from list** and **Update contact field** change
+  the contact. Static lists only. An automation cannot add contacts to its own
+  trigger list, and it cannot change `email` or `status`.
+- **Webhook** queues a signed `automation.webhook` event to one of the
+  publishing user's active endpoints. It uses the same dispatcher, retries
+  and SSRF guard as other webhooks. Endpoints cannot subscribe to
+  `automation.webhook`; it reaches only the endpoint chosen in the step.
+  Payload `data`: `automationUuid`, `automationName`, `enrollmentUuid`,
+  `nodeId`, `contactId` (the contact UUID), `email`, `firstName` and `lastName`.
+- A step with no next step ends the enrollment as `completed`.
+
+Tags, form-submitted, opened and clicked triggers, date triggers, goals and
+A/B splits are not supported. Validation rejects them.
+
+### Versions and lifecycle
+
+Saving changes only the draft. `POST /automations/:uuid/validate` returns
+`{valid, errors:[{nodeId, field, message}]}`.
+
+`POST /automations/:uuid/activate` validates the draft and publishes it as a
+new immutable version, but only if the draft changed. It then sets the
+automation `active`. The same call publishes changes to a live automation and
+resumes a paused one. With `{"publishDraft": false}` it resumes the current
+version and leaves the draft alone, even if the draft is invalid. A failed
+validation returns 400 with the same `errors` in `data.errors`.
+
+Each enrollment stays on the version it started on. Editing a live automation
+affects only new enrollments.
+
+| Status | Behaviour |
+| --- | --- |
+| `draft` | Never published; nothing runs |
+| `active` | Records trigger events, enrolls contacts and runs steps |
+| `paused` | No new enrollments; contacts in progress stop where they are. On resume, waits that came due run right away |
+| `archived` | Terminal and read-only; contacts in progress are cancelled with `exit_reason=archived` |
+
+Only `draft` and `archived` automations can be deleted. You cannot delete a
+list or template that an active or paused version uses.
+
+### Execution and email delivery
+
+The API process runs the executor. It polls PostgreSQL, takes leases with
+`FOR UPDATE SKIP LOCKED` and needs no Redis, so more than one replica is safe.
+Each step commits in one transaction together with its side effect and the
+enrollment's advance.
+
+An email step only queues the message: it writes one `automation_messages` row
+in that transaction, unique per enrollment and step. A separate leased runner
+sends the queued message through SES after the commit. That runner uses the
+campaign pipeline: the eligibility and suppression check, sender checks,
+monthly quota, the HTML-escaping renderer, the footer, tracking and SES error
+classification.
+
+A message that may have reached SES is never sent twice. After a crash
+mid-send it is marked `unknown` rather than retried.
+
+Transient step failures retry after 1 minute, 5 minutes, 15 minutes, 1 hour
+and 6 hours. If the step still fails, the enrollment becomes `failed`. Errors
+that a retry cannot fix fail the enrollment at once, for example a missing
+template or an identity that is no longer verified.
+
+Before each step, the executor exits the enrollment in these cases:
+
+- the contact unsubscribed (`unsubscribed`)
+- the contact is suppressed (`suppressed`)
+- the contact is no longer active (`inactive`)
+- for a list trigger, the email step finds the contact has left the trigger
+  list (`left_list`)
+
+Re-entry is `never` by default. With `after_exit`, a contact can enroll again
+only when it has no active enrollment and none started in the last 24 hours.
+
+### Enrollments and stats
+
+- `GET /automations/:uuid/stats` returns live counts (`enrolled`, `active`,
+  `waiting`, `completed`, `exited`, `failed`, `cancelled`) and per-step
+  `nodes` counts for the published version. Pass `?version=` to choose another
+  version.
+- `GET /automations/:uuid/enrollments?status=` lists enrollments. `status`
+  also accepts `waiting`. `GET …/enrollments/:enrollmentUuid` adds the step
+  timeline.
+- `POST /automations/:uuid/enroll` takes `{contactUuid}` or `{listUuid}`, with
+  at most 50,000 eligible list members. It returns `{enrolled, skipped}` and
+  needs an active automation.
+- `POST …/enrollments/:enrollmentUuid/cancel` stops an active enrollment.
+- `POST …/enrollments/:enrollmentUuid/retry` restarts a failed step. It
+  returns 409 if the contact already has another active enrollment.
+
+API keys can use only the `automations:read` and `automations:enroll` routes.
+Creating, editing, validating, activating, pausing, archiving and deleting
+automations need a signed-in user.
+
+GDPR erasure of a contact removes its enrollments, step runs, trigger events
+and `automation.webhook` events. The contact export includes its enrollments.
 
 ## Webhook protocol and recovery
 
