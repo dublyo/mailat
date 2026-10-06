@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/smtp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -105,7 +106,7 @@ func (p *SMTPProvider) SendRawEmail(ctx context.Context, from string, to []strin
 
 // sendWithTLS sends email using SMTP with proper TLS handling
 func (p *SMTPProvider) sendWithTLS(from string, to []string, msg []byte) error {
-	addr := fmt.Sprintf("%s:%d", p.host, p.port)
+	addr := net.JoinHostPort(p.host, strconv.Itoa(p.port))
 
 	conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
 	if err != nil {
@@ -209,7 +210,7 @@ func (p *SMTPProvider) GetSendStatistics(ctx context.Context) (*SendStatistics, 
 
 // IsHealthy checks if SMTP connection is healthy
 func (p *SMTPProvider) IsHealthy(ctx context.Context) bool {
-	addr := fmt.Sprintf("%s:%d", p.host, p.port)
+	addr := net.JoinHostPort(p.host, strconv.Itoa(p.port))
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return false

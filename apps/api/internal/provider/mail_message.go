@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/aws-sdk-go-v2/service/sesv2/types"
 	"github.com/aws/smithy-go"
 )
 
@@ -24,15 +26,78 @@ type MailValidationError struct{ Message string }
 
 func (e *MailValidationError) Error() string { return e.Message }
 
-// IsDefinitiveSendError distinguishes a rejected request from an uncertain transport result.
-// A timeout is not proof of rejection: the service may have accepted the message already.
-func IsDefinitiveSendError(err error) bool {
-	var validation *MailValidationError
-	if errors.As(err, &validation) {
-		return true
+// SendErrorClass is what a failed SendEmail call proves about the message.
+type SendErrorClass int
+
+const (
+	// SendUncertain: the provider may have accepted the message (timeouts, 5xx,
+	// transport errors). It must never be resubmitted automatically.
+	SendUncertain SendErrorClass = iota
+	// SendRejected: the request was refused outright and will not succeed as is.
+	SendRejected
+	// SendThrottled: a rate or quota limit refused the request before acceptance,
+	// so retrying later cannot duplicate the message.
+	SendThrottled
+)
+
+var throttleCodes = map[string]bool{
+	"TooManyRequestsException": true,
+	"Throttling":               true,
+	"ThrottlingException":      true,
+	"LimitExceededException":   true,
+}
+
+// ClassifySendError maps a send error to its class. Throttles are checked first
+// because SES reports them as client faults too.
+func ClassifySendError(err error) SendErrorClass {
+	if err == nil {
+		return SendUncertain
+	}
+	var tooMany *types.TooManyRequestsException
+	var limit *types.LimitExceededException
+	if errors.As(err, &tooMany) || errors.As(err, &limit) {
+		return SendThrottled
 	}
 	var apiErr smithy.APIError
-	return errors.As(err, &apiErr) && apiErr.ErrorFault() == smithy.FaultClient
+	if errors.As(err, &apiErr) && throttleCodes[apiErr.ErrorCode()] {
+		return SendThrottled
+	}
+	var respErr *awshttp.ResponseError
+	if errors.As(err, &respErr) && respErr.ResponseError != nil && respErr.Response != nil && respErr.HTTPStatusCode() == 429 {
+		return SendThrottled
+	}
+	var validation *MailValidationError
+	if errors.As(err, &validation) {
+		return SendRejected
+	}
+	// Remaining client faults (MessageRejected, SendingPausedException,
+	// AccountSuspendedException, MailFromDomainNotVerifiedException, ...) are terminal.
+	if apiErr != nil && apiErr.ErrorFault() == smithy.FaultClient {
+		return SendRejected
+	}
+	return SendUncertain
+}
+
+// IsDefinitiveSendError distinguishes a rejected request from an uncertain transport result.
+// A timeout is not proof of rejection: the service may have accepted the message already.
+// Throttles are not definitive: they are retried later.
+func IsDefinitiveSendError(err error) bool {
+	return ClassifySendError(err) == SendRejected
+}
+
+// IsQuotaExhausted reports a throttle caused by the account's sending quota
+// (typically the daily limit) rather than the per-second rate.
+func IsQuotaExhausted(err error) bool {
+	if ClassifySendError(err) != SendThrottled {
+		return false
+	}
+	var limit *types.LimitExceededException
+	var apiErr smithy.APIError
+	if errors.As(err, &limit) || (errors.As(err, &apiErr) && apiErr.ErrorCode() == "LimitExceededException") {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "quota") || strings.Contains(text, "daily")
 }
 
 func singleAddress(value string) (string, error) {

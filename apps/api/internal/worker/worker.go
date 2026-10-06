@@ -45,6 +45,7 @@ type Worker struct {
 	mux    *asynq.ServeMux
 	db     *sql.DB
 	cfg    *config.Config
+	digest DigestSender
 }
 
 // QueueClient is a client for enqueuing tasks
@@ -106,6 +107,12 @@ func NewWorker(db *sql.DB, cfg *config.Config) *Worker {
 	}
 }
 
+// SetDigestSender provides the transactional send path for the daily alert
+// digest. Call it before Start; without it the digest is skipped.
+func (w *Worker) SetDigestSender(fn DigestSender) {
+	w.digest = fn
+}
+
 // RegisterHandlers registers all task handlers
 func (w *Worker) RegisterHandlers() {
 	// Create webhook trigger firer for n8n/Zapier integration
@@ -117,7 +124,7 @@ func (w *Worker) RegisterHandlers() {
 	campaignHandler := NewCampaignHandler(w.db, w.cfg)
 	webhookHandler := NewWebhookHandler(w.db, w.cfg)
 	bounceHandler := NewBounceHandler(w.db, w.cfg)
-	scheduledHandler := NewScheduledTaskHandler(w.db, w.cfg)
+	scheduledHandler := NewScheduledTaskHandler(w.db, w.cfg, w.digest)
 
 	// Register handlers
 	w.mux.HandleFunc(TypeEmailSend, emailHandler.HandleEmailSend)

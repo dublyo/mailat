@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"mime"
 	"net/mail"
 	"path"
@@ -410,7 +411,7 @@ func (s *ComposeService) sendMailboxEmail(ctx context.Context, userID int64, ema
 	sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	msg.Headers["X-Mailat-Message-ID"] = id
-	providerResult, sendErr := s.emailProvider.SendEmail(sendCtx, msg)
+	providerResult, sendErr := s.sendWithThrottleRetry(sendCtx, msg)
 	providerID := ""
 	if providerResult != nil {
 		providerID = providerResult.MessageID
@@ -418,7 +419,12 @@ func (s *ComposeService) sendMailboxEmail(ctx context.Context, userID int64, ema
 	if sendErr != nil {
 		result.Status = "unknown"
 		result.SendError = "The provider response was uncertain. Do not resend automatically; check delivery before creating another attempt."
-		if provider.IsDefinitiveSendError(sendErr) {
+		if provider.ClassifySendError(sendErr) == provider.SendThrottled {
+			// A throttle proves SES did not accept the message, so a retry is safe.
+			result.Status = "failed"
+			result.Retryable = true
+			result.SendError = "Amazon SES is rate limiting this account. Nothing was sent; you can retry in a minute."
+		} else if provider.IsDefinitiveSendError(sendErr) {
 			result.Status = "failed"
 			result.SendError = "SES rejected the message: " + sendErr.Error()
 		}
@@ -432,6 +438,31 @@ func (s *ComposeService) sendMailboxEmail(ctx context.Context, userID int64, ema
 		result.SendError = "The provider attempt finished but its final status could not be saved. Check delivery before resending."
 	}
 	return result, nil
+}
+
+// composeThrottleDelays are the pauses between in-request attempts after a throttle.
+var composeThrottleDelays = []time.Duration{500 * time.Millisecond, time.Second}
+
+// sendWithThrottleRetry submits once and resubmits only after an explicit SES
+// throttle, which is a pre-acceptance rejection and so cannot duplicate mail.
+// Any other error, including a timeout, is returned from the attempt that saw it.
+func (s *ComposeService) sendWithThrottleRetry(ctx context.Context, msg *provider.EmailMessage) (*provider.SendResult, error) {
+	sleep := s.sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	result, err := s.emailProvider.SendEmail(ctx, msg)
+	for _, delay := range composeThrottleDelays {
+		if err == nil || provider.ClassifySendError(err) != provider.SendThrottled {
+			break
+		}
+		sleep(time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64())))
+		if ctx.Err() != nil {
+			break // keep the throttle: nothing was accepted
+		}
+		result, err = s.emailProvider.SendEmail(ctx, msg)
+	}
+	return result, err
 }
 
 func (s *ComposeService) finishMailboxSubmission(emailID int64, result *SendEmailResult, providerID string) error {

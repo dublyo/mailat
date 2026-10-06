@@ -4,14 +4,28 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html"
 	"net"
+	"net/mail"
 	"strings"
+	"time"
 
 	"github.com/hibiken/asynq"
 
 	"github.com/dublyo/mailat/api/internal/config"
+	"github.com/dublyo/mailat/api/internal/model"
+	"github.com/dublyo/mailat/api/internal/provider"
 )
+
+// DigestSender submits one email through the transactional pipeline
+// (TransactionalService.SendEmailForUser), injected to avoid a service import cycle.
+type DigestSender func(ctx context.Context, orgID, userID int64, req *model.SendEmailRequest) (*model.SendEmailResponse, error)
+
+// ErrDigestAlreadySent is what a DigestSender returns when today's idempotency
+// key was already used with different content (counts changed between replicas).
+var ErrDigestAlreadySent = errors.New("alert digest already sent today")
 
 // Task types for scheduled jobs
 const (
@@ -88,13 +102,15 @@ func (s *Scheduler) Shutdown() {
 
 // ScheduledTaskHandler handles scheduled task execution
 type ScheduledTaskHandler struct {
-	db  *sql.DB
-	cfg *config.Config
+	db     *sql.DB
+	cfg    *config.Config
+	digest DigestSender
 }
 
-// NewScheduledTaskHandler creates a new scheduled task handler
-func NewScheduledTaskHandler(db *sql.DB, cfg *config.Config) *ScheduledTaskHandler {
-	return &ScheduledTaskHandler{db: db, cfg: cfg}
+// NewScheduledTaskHandler creates a new scheduled task handler. digest may be nil,
+// in which case the alert digest is skipped.
+func NewScheduledTaskHandler(db *sql.DB, cfg *config.Config, digest DigestSender) *ScheduledTaskHandler {
+	return &ScheduledTaskHandler{db: db, cfg: cfg, digest: digest}
 }
 
 // HandleBlacklistCheck checks all org IPs against blacklists
@@ -203,15 +219,23 @@ func (h *ScheduledTaskHandler) HandleBounceCheck(ctx context.Context, task *asyn
 	return nil
 }
 
-// HandleAlertDigest sends daily alert digest emails
+// HandleAlertDigest sends each org owner a daily alert digest from the owner's own
+// verified identity through the transactional pipeline, so suppression, quota,
+// the durable queue and the Sent folder all apply. The per-day idempotency key
+// makes runs on several replicas send at most once.
 func (h *ScheduledTaskHandler) HandleAlertDigest(ctx context.Context, task *asynq.Task) error {
+	if h.digest == nil {
+		fmt.Println("Alert digest skipped: digest sender not configured")
+		return nil
+	}
 	fmt.Println("Running scheduled alert digest...")
 
-	// Get unacknowledged alerts from the last 24 hours grouped by org
+	// Get unacknowledged alerts from the last 24 hours grouped by org and owner
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT
 			a.org_id,
 			o.name as org_name,
+			u.id as owner_id,
 			u.email as admin_email,
 			COUNT(*) as alert_count,
 			SUM(CASE WHEN a.severity = 'critical' THEN 1 ELSE 0 END) as critical_count
@@ -221,45 +245,79 @@ func (h *ScheduledTaskHandler) HandleAlertDigest(ctx context.Context, task *asyn
 		WHERE a.acknowledged = false
 		AND a.created_at >= NOW() - INTERVAL '24 hours'
 		AND a.org_id > 0
-		GROUP BY a.org_id, o.name, u.email
+		GROUP BY a.org_id, o.name, u.id, u.email
 		HAVING COUNT(*) > 0
 	`)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
-	queueClient, err := NewQueueClient(h.cfg)
+	type digestRow struct {
+		orgID, ownerID            int64
+		orgName, adminEmail       string
+		alertCount, criticalCount int
+	}
+	var digests []digestRow
+	for rows.Next() {
+		var d digestRow
+		if err := rows.Scan(&d.orgID, &d.orgName, &d.ownerID, &d.adminEmail, &d.alertCount, &d.criticalCount); err != nil {
+			rows.Close()
+			return err
+		}
+		digests = append(digests, d)
+	}
+	err = rows.Err()
+	rows.Close()
 	if err != nil {
 		return err
 	}
-	defer queueClient.Close()
 
-	for rows.Next() {
-		var orgID int64
-		var orgName, adminEmail string
-		var alertCount, criticalCount int
-
-		if err := rows.Scan(&orgID, &orgName, &adminEmail, &alertCount, &criticalCount); err != nil {
+	day := time.Now().UTC().Format("2006-01-02")
+	for _, d := range digests {
+		var fromEmail, fromName string
+		err := h.db.QueryRowContext(ctx, `SELECT i.email, COALESCE(i.display_name,'') FROM identities i JOIN domains d ON d.id=i.domain_id
+			WHERE i.user_id=$1 AND i.can_send AND d.org_id=$2 AND d.status='active' AND COALESCE(d.ses_verified,false)
+			ORDER BY i.id LIMIT 1`, d.ownerID, d.orgID).Scan(&fromEmail, &fromName)
+		if err == sql.ErrNoRows {
+			fmt.Printf("Alert digest skipped org=%d: no verified sender\n", d.orgID)
 			continue
 		}
-
-		// Queue alert digest email
-		subject := fmt.Sprintf("[Mailat] You have %d unread alerts", alertCount)
-		if criticalCount > 0 {
-			subject = fmt.Sprintf("[URGENT] %d critical alerts require attention", criticalCount)
+		if err != nil {
+			return err
+		}
+		from := fromEmail
+		if fromName != "" {
+			from = (&mail.Address{Name: fromName, Address: fromEmail}).String()
 		}
 
-		htmlBody := fmt.Sprintf(`
-			<h2>Alert Summary for %s</h2>
-			<p>You have <strong>%d</strong> unacknowledged alerts in the last 24 hours.</p>
-			<p>Critical alerts: <strong>%d</strong></p>
-			<p><a href="%s/dashboard/alerts">View all alerts</a></p>
-		`, orgName, alertCount, criticalCount, h.cfg.WebUrl)
+		subject := fmt.Sprintf("[Mailat] You have %d unread alerts", d.alertCount)
+		if d.criticalCount > 0 {
+			subject = fmt.Sprintf("[URGENT] %d critical alerts require attention", d.criticalCount)
+		}
+		// Deterministic for the day: only the org name and counts vary.
+		htmlBody := fmt.Sprintf(`<h2>Alert Summary for %s</h2>
+<p>You have <strong>%d</strong> unacknowledged alerts in the last 24 hours.</p>
+<p>Critical alerts: <strong>%d</strong></p>
+<p><a href="%s/health">Review sending health</a></p>`, html.EscapeString(d.orgName), d.alertCount, d.criticalCount, html.EscapeString(h.cfg.WebUrl))
 
-		alertsEmail := fmt.Sprintf("alerts@%s", h.cfg.AppDomain)
-		payload := NewEmailSendPayload(0, orgID, alertsEmail, []string{adminEmail}, subject, htmlBody, "", "")
-		queueClient.EnqueueEmailSend(payload)
+		req := &model.SendEmailRequest{
+			From:           from,
+			To:             []string{d.adminEmail},
+			Subject:        subject,
+			HTML:           htmlBody,
+			IdempotencyKey: fmt.Sprintf("alert-digest:%d:%s", d.orgID, day),
+		}
+		_, err = h.digest(ctx, d.orgID, d.ownerID, req)
+		var validation *provider.MailValidationError
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrDigestAlreadySent):
+			fmt.Printf("Alert digest for org=%d already sent today\n", d.orgID)
+		case errors.As(err, &validation):
+			// For example, the owner's address is suppressed.
+			fmt.Printf("Alert digest skipped org=%d: %s\n", d.orgID, validation.Message)
+		default:
+			fmt.Printf("Alert digest failed org=%d: %v\n", d.orgID, err)
+		}
 	}
 
 	return nil
@@ -346,9 +404,9 @@ func (h *ScheduledTaskHandler) createBlacklistAlert(ctx context.Context, orgID i
 	}
 
 	alertData, _ := json.Marshal(map[string]any{
-		"ipAddress":  ipAddress,
-		"listedOn":   listedRBLs,
-		"totalRBLs":  len(result.Results),
+		"ipAddress":   ipAddress,
+		"listedOn":    listedRBLs,
+		"totalRBLs":   len(result.Results),
 		"listedCount": result.ListedCount,
 	})
 

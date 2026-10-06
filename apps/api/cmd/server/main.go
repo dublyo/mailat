@@ -132,6 +132,7 @@ func main() {
 	var sched *worker.Scheduler
 	if cfg.WorkerEnabled {
 		w = worker.NewWorker(db, cfg)
+		w.SetDigestSender(service.NewTransactionalService(db, cfg, redis).AlertDigestSender())
 		go func() {
 			if err := w.Start(); err != nil {
 				fmt.Printf("Worker failed: %v\n", err)
@@ -155,11 +156,6 @@ func main() {
 				fmt.Println("Scheduler started (periodic tasks)")
 			}
 		}
-	}
-
-	// Setup PostgreSQL triggers for delivery tracking
-	if err := service.SetupTriggers(db); err != nil {
-		fmt.Printf("Warning: failed to setup delivery tracking triggers: %v\n", err)
 	}
 
 	// Start delivery tracker (PostgreSQL NOTIFY listener)

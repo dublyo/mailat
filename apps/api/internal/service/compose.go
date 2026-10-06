@@ -21,6 +21,7 @@ type ComposeService struct {
 	identity      *IdentityService
 	emailProvider provider.EmailProvider
 	attachments   provider.AttachmentStorage
+	sleep         func(time.Duration) // nil means time.Sleep; tests inject a fake
 }
 
 // NewComposeService creates a new compose service
@@ -92,6 +93,8 @@ type SendEmailResult struct {
 	MessageID string    `json:"messageId"`
 	Status    string    `json:"status"`
 	SendError string    `json:"sendError,omitempty"`
+	// Retryable marks a failure where nothing was accepted, so a new attempt is safe.
+	Retryable bool `json:"retryable,omitempty"`
 }
 
 // DraftResult represents a saved draft

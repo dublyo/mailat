@@ -85,6 +85,19 @@ func (s *TransactionalService) SendEmail(ctx context.Context, orgID int64, req *
 	return s.SendEmailForUser(ctx, orgID, 0, req)
 }
 
+// AlertDigestSender adapts SendEmailForUser for the worker's daily alert digest.
+// A same-day key reused with different counts (another replica already sent the
+// digest) is reported as worker.ErrDigestAlreadySent instead of a failure.
+func (s *TransactionalService) AlertDigestSender() worker.DigestSender {
+	return func(ctx context.Context, orgID, userID int64, req *model.SendEmailRequest) (*model.SendEmailResponse, error) {
+		resp, err := s.SendEmailForUser(ctx, orgID, userID, req)
+		if errors.Is(err, ErrSubmissionConflict) {
+			return nil, worker.ErrDigestAlreadySent
+		}
+		return resp, err
+	}
+}
+
 // SendEmailForUser adds the actor boundary for HTTP users and user-bound API keys.
 func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID, userID int64, req *model.SendEmailRequest) (*model.SendEmailResponse, error) {
 	if s.emailProvider == nil {

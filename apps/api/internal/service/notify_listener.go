@@ -136,95 +136,6 @@ func (l *NotifyListener) processNotification(notification *pq.Notification) {
 	}
 }
 
-// SetupTriggers creates the necessary PostgreSQL triggers for delivery tracking
-func SetupTriggers(db *sql.DB) error {
-	// Create the notify function for email status changes
-	_, err := db.Exec(`
-		CREATE OR REPLACE FUNCTION notify_email_status_change()
-		RETURNS TRIGGER AS $$
-		DECLARE
-			payload JSON;
-		BEGIN
-			payload := json_build_object(
-				'table', TG_TABLE_NAME,
-				'action', TG_OP,
-				'email_id', NEW.id,
-				'org_id', NEW.org_id,
-				'old_status', COALESCE(OLD.status, ''),
-				'new_status', NEW.status
-			);
-			PERFORM pg_notify('email_status_changed', payload::text);
-			RETURN NEW;
-		END;
-		$$ LANGUAGE plpgsql;
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to create notify function for email status: %w", err)
-	}
-
-	// Create trigger for transactional_emails status changes
-	_, err = db.Exec(`
-		DROP TRIGGER IF EXISTS email_status_changed_trigger ON transactional_emails;
-		CREATE TRIGGER email_status_changed_trigger
-		AFTER UPDATE OF status ON transactional_emails
-		FOR EACH ROW
-		WHEN (OLD.status IS DISTINCT FROM NEW.status)
-		EXECUTE FUNCTION notify_email_status_change();
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to create email status trigger: %w", err)
-	}
-
-	// Create the notify function for delivery events
-	_, err = db.Exec(`
-		CREATE OR REPLACE FUNCTION notify_delivery_event()
-		RETURNS TRIGGER AS $$
-		DECLARE
-			payload JSON;
-			org_id INT;
-		BEGIN
-			-- Get org_id from the related email
-			SELECT te.org_id INTO org_id
-			FROM transactional_emails te
-			WHERE te.id = NEW.email_id;
-
-			payload := json_build_object(
-				'table', TG_TABLE_NAME,
-				'action', TG_OP,
-				'email_id', NEW.email_id,
-				'org_id', org_id,
-				'event_type', NEW.event_type,
-				'data', json_build_object(
-					'details', NEW.details,
-					'ip_address', NEW.ip_address,
-					'user_agent', NEW.user_agent
-				)
-			);
-			PERFORM pg_notify('delivery_event_created', payload::text);
-			RETURN NEW;
-		END;
-		$$ LANGUAGE plpgsql;
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to create notify function for delivery events: %w", err)
-	}
-
-	// Create trigger for transactional_delivery_events
-	_, err = db.Exec(`
-		DROP TRIGGER IF EXISTS delivery_event_created_trigger ON transactional_delivery_events;
-		CREATE TRIGGER delivery_event_created_trigger
-		AFTER INSERT ON transactional_delivery_events
-		FOR EACH ROW
-		EXECUTE FUNCTION notify_delivery_event();
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to create delivery event trigger: %w", err)
-	}
-
-	fmt.Println("PostgreSQL triggers for delivery tracking created successfully")
-	return nil
-}
-
 // DeliveryTracker handles delivery event processing
 type DeliveryTracker struct {
 	db       *sql.DB
@@ -278,7 +189,6 @@ func (t *DeliveryTracker) handleEmailStatusChange(payload NotifyPayload) error {
 		t.updateOrgStats(payload.OrgID, "delivered")
 
 	case "bounced":
-		// Email bounced - may need to update suppression list
 		t.handleBounce(payload)
 
 	case "failed":
@@ -297,7 +207,8 @@ func (t *DeliveryTracker) handleDeliveryEvent(payload NotifyPayload) error {
 	fmt.Printf("Delivery event created: email_id=%d, event=%s\n",
 		payload.EmailID, payload.EventType)
 
-	// Handle specific event types
+	// Handle specific event types; others (for example the worker's "deferred")
+	// need no tracker work.
 	switch payload.EventType {
 	case "opened":
 		// Update open count
@@ -322,7 +233,6 @@ func (t *DeliveryTracker) handleDeliveryEvent(payload NotifyPayload) error {
 		}
 
 	case "complained":
-		// Handle complaint - add to suppression list
 		t.handleComplaint(payload)
 	}
 
@@ -339,63 +249,14 @@ func (t *DeliveryTracker) updateOrgStats(orgID int64, statType string) {
 	fmt.Printf("Updating org stats: org_id=%d, stat=%s\n", orgID, statType)
 }
 
-// handleBounce processes bounce events
+// handleBounce records bounce stats. Suppression is written by the SNS path
+// (ProcessDeliveryEvent), which knows the exact affected recipients.
 func (t *DeliveryTracker) handleBounce(payload NotifyPayload) {
-	// Get the recipient email
-	var toAddresses string
-	var bounceType string
-	err := t.db.QueryRow(`
-		SELECT to_addresses, bounce_type FROM transactional_emails WHERE id = $1
-	`, payload.EmailID).Scan(&toAddresses, &bounceType)
-	if err != nil {
-		fmt.Printf("Failed to get email for bounce handling: %v\n", err)
-		return
-	}
-
-	// For hard bounces, add to suppression list
-	if bounceType == "hard" {
-		// Add each recipient to suppression list
-		recipients := splitAddresses(toAddresses)
-		for _, recipient := range recipients {
-			_, err := t.db.Exec(`
-				INSERT INTO suppression_list (org_id, email, reason, source)
-				VALUES ($1, $2, 'Hard bounce', 'bounce')
-				ON CONFLICT (org_id, email) DO NOTHING
-			`, payload.OrgID, recipient)
-			if err != nil {
-				fmt.Printf("Failed to add to suppression list: %v\n", err)
-			}
-		}
-	}
-
 	t.updateOrgStats(payload.OrgID, "bounced")
 }
 
-// handleComplaint processes complaint events
+// handleComplaint records complaint stats; suppression is written by the SNS path.
 func (t *DeliveryTracker) handleComplaint(payload NotifyPayload) {
-	// Get the recipient email
-	var toAddresses string
-	err := t.db.QueryRow(`
-		SELECT to_addresses FROM transactional_emails WHERE id = $1
-	`, payload.EmailID).Scan(&toAddresses)
-	if err != nil {
-		fmt.Printf("Failed to get email for complaint handling: %v\n", err)
-		return
-	}
-
-	// Add to suppression list
-	recipients := splitAddresses(toAddresses)
-	for _, recipient := range recipients {
-		_, err := t.db.Exec(`
-			INSERT INTO suppression_list (org_id, email, reason, source)
-			VALUES ($1, $2, 'Spam complaint', 'complaint')
-			ON CONFLICT (org_id, email) DO NOTHING
-		`, payload.OrgID, recipient)
-		if err != nil {
-			fmt.Printf("Failed to add to suppression list: %v\n", err)
-		}
-	}
-
 	t.updateOrgStats(payload.OrgID, "complained")
 }
 
@@ -417,45 +278,4 @@ func (t *DeliveryTracker) queueWebhookDelivery(orgID, emailID int64, eventType s
 		fmt.Printf("Would queue %d webhook(s) for event: email.%s, email_id=%d\n",
 			count, eventType, emailID)
 	}
-}
-
-// splitAddresses splits a comma-separated address list
-func splitAddresses(addresses string) []string {
-	if addresses == "" {
-		return nil
-	}
-	var result []string
-	for _, addr := range splitString(addresses, ",") {
-		addr = trimSpace(addr)
-		if addr != "" {
-			result = append(result, addr)
-		}
-	}
-	return result
-}
-
-func splitString(s, sep string) []string {
-	var result []string
-	start := 0
-	for i := 0; i <= len(s)-len(sep); i++ {
-		if s[i:i+len(sep)] == sep {
-			result = append(result, s[start:i])
-			start = i + len(sep)
-			i += len(sep) - 1
-		}
-	}
-	result = append(result, s[start:])
-	return result
-}
-
-func trimSpace(s string) string {
-	start := 0
-	end := len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
-		end--
-	}
-	return s[start:end]
 }

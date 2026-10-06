@@ -74,7 +74,22 @@ func (s *ReceivingService) ProcessDeliveryEvent(ctx context.Context, auth *Recei
 		return err
 	}
 	if !known {
-		return fmt.Errorf("provider send has not been recorded yet")
+		// A young event may race the send being recorded: fail so SNS retries.
+		sentAt, parseErr := time.Parse(time.RFC3339, n.Mail.Timestamp)
+		if parseErr != nil || time.Since(sentAt) < unmatchedFeedbackGrace {
+			return fmt.Errorf("provider send has not been recorded yet")
+		}
+		// Older feedback is for mail Mailat never recorded (another app on the same
+		// identity, or a lost record). Ack it so SNS stops retrying, but still honor
+		// permanent bounces and complaints. No status updates and no webhook.
+		if err = insertFeedbackSuppressions(ctx, tx, auth.OrgID, recipients, source, n.Mail.MessageId); err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		log.Printf("unmatched SES %s for org=%d", n.NotificationType, auth.OrgID)
+		return nil
 	}
 	// Complaints/bounces are terminal; a late delivery notification must not undo them.
 	if _, err = tx.ExecContext(ctx, `UPDATE received_emails SET send_status=$1::varchar,ses_message_id=COALESCE(ses_message_id,$3),updated_at=NOW() WHERE org_id=$2 AND (ses_message_id=$3 OR (ses_message_id IS NULL AND uuid::text=$4)) AND direction='outbound' AND send_status!='complained' AND ($1::varchar='complained' OR send_status!='bounced')`, status, auth.OrgID, n.Mail.MessageId, mailboxUUID); err != nil {
@@ -92,13 +107,8 @@ func (s *ReceivingService) ProcessDeliveryEvent(ctx context.Context, auth *Recei
 			return err
 		}
 	}
-	for _, address := range recipients {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO suppression_list(org_id,email,reason,source) VALUES($1,$2,$3::text,$3::text) ON CONFLICT(org_id,email) DO NOTHING`, auth.OrgID, address, source); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO suppressions(org_id,email,reason,source_type,source_id) VALUES($1,$2,$3,'ses',$4) ON CONFLICT(org_id,email) DO NOTHING`, auth.OrgID, address, source, n.Mail.MessageId); err != nil {
-			return err
-		}
+	if err = insertFeedbackSuppressions(ctx, tx, auth.OrgID, recipients, source, n.Mail.MessageId); err != nil {
+		return err
 	}
 	// Resolve the immutable public mailbox ID even if the Sent copy was deleted.
 	rows, err := tx.QueryContext(ctx, `SELECT e.uuid::text,i.user_id,e.identity_id FROM received_emails e JOIN identities i ON i.id=e.identity_id WHERE e.org_id=$1 AND e.direction='outbound' AND(e.ses_message_id=$2 OR e.uuid::text=$3)
@@ -147,6 +157,24 @@ func (s *ReceivingService) ProcessDeliveryEvent(ctx context.Context, auth *Recei
 		return err
 	}
 
+	return nil
+}
+
+// unmatchedFeedbackGrace is how long feedback for an unknown send keeps failing
+// (so SNS redelivers) before it is treated as mail Mailat never recorded.
+const unmatchedFeedbackGrace = time.Hour
+
+// insertFeedbackSuppressions records permanent bounces and complaints in both the
+// transactional (suppression_list) and marketing (suppressions) lists.
+func insertFeedbackSuppressions(ctx context.Context, tx *sql.Tx, orgID int64, recipients []string, source, providerMessageID string) error {
+	for _, address := range recipients {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO suppression_list(org_id,email,reason,source) VALUES($1,$2,$3::text,$3::text) ON CONFLICT(org_id,email) DO NOTHING`, orgID, address, source); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO suppressions(org_id,email,reason,source_type,source_id) VALUES($1,$2,$3,'ses',$4) ON CONFLICT(org_id,email) DO NOTHING`, orgID, address, source, providerMessageID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
