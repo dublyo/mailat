@@ -122,13 +122,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var recovery sync.WaitGroup
-	recovery.Add(5)
+	recovery.Add(6)
 	go func() { defer recovery.Done(); eventoutbox.Run(ctx, db) }()
 	go func() { defer recovery.Done(); service.RunDMARCReportBackfill(ctx, db, cfg) }()
 	go func() { defer recovery.Done(); worker.NewEmailHandler(db, cfg).RunPending(ctx) }()
 	go func() { defer recovery.Done(); service.RunCampaignSender(ctx, db, cfg) }()
-	// Email steps fail permanently until the automation email sender is wired.
-	go func() { defer recovery.Done(); service.RunAutomationExecutor(ctx, db, cfg, nil) }()
+	// Email steps queue rows in the step transaction; the mailer sends them after commit.
+	go func() {
+		defer recovery.Done()
+		service.RunAutomationExecutor(ctx, db, cfg, service.NewAutomationMailer(db, cfg))
+	}()
+	go func() { defer recovery.Done(); service.RunAutomationMailer(ctx, db, cfg) }()
 
 	// Start worker if enabled
 	var w *worker.Worker

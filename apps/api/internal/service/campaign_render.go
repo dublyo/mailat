@@ -32,6 +32,18 @@ type campaignSnapshot struct {
 	TrackClicks   bool
 	OrgName       string
 	PostalAddress string
+	// Automation marks an automation message: ID is the automation and the
+	// recipient ID an automation_messages row, so tokens point there.
+	Automation bool
+}
+
+// trackingData is the signed tracking payload for one recipient of snap.
+func (snap campaignSnapshot) trackingData(recipientID int64) TrackingData {
+	d := TrackingData{R: recipientID, C: snap.ID, O: snap.OrgID}
+	if snap.Automation {
+		d.K = trackingKindAutomation
+	}
+	return d
 }
 
 type renderMode int
@@ -98,7 +110,11 @@ func renderCampaignMessage(snap campaignSnapshot, rcpt eligibleRecipient, opts r
 	var unsubToken string
 	switch opts.Mode {
 	case renderSend:
-		unsubToken = encodeUnsubscribeToken(opts.Secret, UnsubscribeData{ContactID: rcpt.ContactID, OrgID: snap.OrgID, RecipientID: rcpt.ID})
+		data := UnsubscribeData{ContactID: rcpt.ContactID, OrgID: snap.OrgID, RecipientID: rcpt.ID}
+		if snap.Automation {
+			data.RecipientID, data.AutomationMessageID = 0, rcpt.ID
+		}
+		unsubToken = encodeUnsubscribeToken(opts.Secret, data)
 	case renderTest:
 		unsubToken = encodeUnsubscribeToken(opts.Secret, UnsubscribeData{OrgID: snap.OrgID, Test: true})
 	}
@@ -114,7 +130,9 @@ func renderCampaignMessage(snap campaignSnapshot, rcpt eligibleRecipient, opts r
 		// template URL (never the recipient's data); the click handler fills
 		// the variables in at redirect time.
 		htmlBody = rewriteTrackedLinks(htmlBody, func(index int, target string) string {
-			return apiURL + "/api/v1/tracking/click/" + ClickToken(opts.Secret, rcpt.ID, snap.ID, snap.OrgID, index, target)
+			d := snap.trackingData(rcpt.ID)
+			d.L, d.U = index, target
+			return apiURL + "/api/v1/tracking/click/" + encodeTrackingToken(opts.Secret, d)
 		})
 	}
 	htmlBody = p.apply(htmlBody, true)
@@ -127,7 +145,7 @@ func renderCampaignMessage(snap campaignSnapshot, rcpt eligibleRecipient, opts r
 		// The footer is added after rewriting so its links are never tracked.
 		tail := closers + htmlFooter(snap.OrgName, snap.PostalAddress, unsubPage)
 		if tracking && snap.TrackOpens {
-			tail += `<img src="` + html.EscapeString(apiURL+"/api/v1/tracking/open/"+OpenToken(opts.Secret, rcpt.ID, snap.ID, snap.OrgID)+".gif") + `" width="1" height="1" alt="" style="display:none">`
+			tail += `<img src="` + html.EscapeString(apiURL+"/api/v1/tracking/open/"+encodeTrackingToken(opts.Secret, snap.trackingData(rcpt.ID))+".gif") + `" width="1" height="1" alt="" style="display:none">`
 		}
 		htmlBody = htmlBody[:at] + tail + htmlBody[at:]
 	}

@@ -39,7 +39,12 @@ type TrackingData struct {
 	O int64  `json:"o"`           // organizations.id
 	L int    `json:"l,omitempty"` // link index in document order
 	U string `json:"u,omitempty"` // click target
+	// K is the token kind: empty for campaigns, trackingKindAutomation for
+	// automation messages (R is then automation_messages.id, C the automation).
+	K string `json:"k,omitempty"`
 }
+
+const trackingKindAutomation = "a"
 
 func NewTrackingService(db *sql.DB, cfg *config.Config) *TrackingService {
 	return &TrackingService{db: db, cfg: cfg}
@@ -79,7 +84,7 @@ func decodeTrackingToken(secret, token string) (*TrackingData, error) {
 		return nil, errInvalidTrackingToken
 	}
 	var d TrackingData
-	if err := json.Unmarshal(payload, &d); err != nil || d.R <= 0 || d.C <= 0 || d.O <= 0 {
+	if err := json.Unmarshal(payload, &d); err != nil || d.R <= 0 || d.C <= 0 || d.O <= 0 || (d.K != "" && d.K != trackingKindAutomation) {
 		return nil, errInvalidTrackingToken
 	}
 	return &d, nil
@@ -140,6 +145,13 @@ type trackedRecipient struct {
 // campaign and org do not all match returns sql.ErrNoRows.
 func lockTrackedRecipient(ctx context.Context, tx *sql.Tx, d *TrackingData) (*trackedRecipient, error) {
 	var t trackedRecipient
+	if d.K == trackingKindAutomation {
+		err := tx.QueryRowContext(ctx, `
+			SELECT contact_id, open_count, click_count, first_opened_at IS NOT NULL, first_clicked_at IS NOT NULL, track_opens, track_clicks
+			FROM automation_messages WHERE id=$1 AND org_id=$2 AND automation_id=$3 FOR UPDATE`, d.R, d.O, d.C).
+			Scan(&t.contactID, &t.openCount, &t.clickCount, &t.opened, &t.clicked, &t.trackOpens, &t.trackClicks)
+		return &t, err
+	}
 	err := tx.QueryRowContext(ctx, `
 		SELECT r.contact_id, r.open_count, r.click_count, r.first_opened_at IS NOT NULL, r.first_clicked_at IS NOT NULL,
 			c.track_opens, c.track_clicks
@@ -152,6 +164,9 @@ func lockTrackedRecipient(ctx context.Context, tx *sql.Tx, d *TrackingData) (*tr
 // recordOpen counts an open on a locked recipient. Campaign open_count is
 // unique per recipient; the recipient's own count grows on every open.
 func recordOpen(ctx context.Context, tx *sql.Tx, d *TrackingData, t *trackedRecipient, ip, ua string) error {
+	if d.K == trackingKindAutomation {
+		return recordAutomationEvent(ctx, tx, d, t, "open", ip, ua)
+	}
 	if t.openCount < maxStoredTrackingEvents {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO campaign_events(campaign_id,recipient_id,event_type,user_agent,ip_address) VALUES($1,$2,'open',$3,$4)`,
 			d.C, d.R, truncateRunes(ua, 512), truncateRunes(ip, 45)); err != nil {
@@ -168,6 +183,34 @@ func recordOpen(ctx context.Context, tx *sql.Tx, d *TrackingData, t *trackedReci
 		t.opened = true
 	}
 	t.openCount++
+	return nil
+}
+
+// recordAutomationEvent counts an open or click on a locked automation
+// message; events are stored up to maxStoredTrackingEvents per type.
+func recordAutomationEvent(ctx context.Context, tx *sql.Tx, d *TrackingData, t *trackedRecipient, kind, ip, ua string) error {
+	n, column := t.openCount, "open"
+	var target, link any
+	if kind == "click" {
+		n, column, target, link = t.clickCount, "click", d.U, d.L
+	}
+	if n < maxStoredTrackingEvents {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO automation_message_events(message_id,automation_id,event_type,url,link_index,user_agent,ip_address)
+			VALUES($1,$2,$3,$4,$5,$6,$7)`, d.R, d.C, kind, target, link, truncateRunes(ua, 512), truncateRunes(ip, 45)); err != nil {
+			return fmt.Errorf("failed to record %s: %w", kind, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE automation_messages SET `+column+`_count=`+column+`_count+1,
+		first_`+column+`ed_at=COALESCE(first_`+column+`ed_at,now()), updated_at=now() WHERE id=$1 AND org_id=$2`, d.R, d.O); err != nil {
+		return fmt.Errorf("failed to update automation message: %w", err)
+	}
+	if kind == "click" {
+		t.clicked = true
+		t.clickCount++
+	} else {
+		t.opened = true
+		t.openCount++
+	}
 	return nil
 }
 
@@ -226,9 +269,15 @@ func (s *TrackingService) clickTarget(ctx context.Context, d *TrackingData) stri
 	}
 	var rcpt eligibleRecipient
 	var attrs []byte
-	if err := s.db.QueryRowContext(ctx, `SELECT r.email, COALESCE(c.first_name,''), COALESCE(c.last_name,''), COALESCE(c.attributes,'{}'::jsonb)
+	query := `SELECT r.email, COALESCE(c.first_name,''), COALESCE(c.last_name,''), COALESCE(c.attributes,'{}'::jsonb)
 		FROM campaign_recipients r JOIN contacts c ON c.id=r.contact_id AND c.org_id=r.org_id
-		WHERE r.id=$1 AND r.org_id=$2 AND r.campaign_id=$3`, d.R, d.O, d.C).
+		WHERE r.id=$1 AND r.org_id=$2 AND r.campaign_id=$3`
+	if d.K == trackingKindAutomation {
+		query = `SELECT m.email, COALESCE(c.first_name,''), COALESCE(c.last_name,''), COALESCE(c.attributes,'{}'::jsonb)
+			FROM automation_messages m JOIN contacts c ON c.id=m.contact_id AND c.org_id=m.org_id
+			WHERE m.id=$1 AND m.org_id=$2 AND m.automation_id=$3`
+	}
+	if err := s.db.QueryRowContext(ctx, query, d.R, d.O, d.C).
 		Scan(&rcpt.Email, &rcpt.FirstName, &rcpt.LastName, &attrs); err == nil {
 		_ = json.Unmarshal(attrs, &rcpt.Attributes)
 	} else {
@@ -270,18 +319,24 @@ func (s *TrackingService) ProcessClickEvent(ctx context.Context, token string, i
 		return target, nil
 	}
 	stored := t.clickCount < maxStoredTrackingEvents
-	if stored {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO campaign_events(campaign_id,recipient_id,event_type,url,link_index,user_agent,ip_address) VALUES($1,$2,'click',$3,$4,$5,$6)`,
-			d.C, d.R, d.U, d.L, truncateRunes(userAgent, 512), truncateRunes(ipAddress, 45)); err != nil {
-			return target, fmt.Errorf("failed to record click: %w", err)
+	if d.K == trackingKindAutomation {
+		if err = recordAutomationEvent(ctx, tx, d, t, "click", ipAddress, userAgent); err != nil {
+			return target, err
 		}
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE campaign_recipients SET click_count=click_count+1, first_clicked_at=COALESCE(first_clicked_at,now()), updated_at=now() WHERE id=$1 AND org_id=$2`, d.R, d.O); err != nil {
-		return target, fmt.Errorf("failed to update recipient: %w", err)
-	}
-	if !t.clicked {
-		if _, err = tx.ExecContext(ctx, `UPDATE campaigns SET click_count=click_count+1, updated_at=now() WHERE id=$1 AND org_id=$2`, d.C, d.O); err != nil {
-			return target, fmt.Errorf("failed to update campaign: %w", err)
+	} else {
+		if stored {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO campaign_events(campaign_id,recipient_id,event_type,url,link_index,user_agent,ip_address) VALUES($1,$2,'click',$3,$4,$5,$6)`,
+				d.C, d.R, d.U, d.L, truncateRunes(userAgent, 512), truncateRunes(ipAddress, 45)); err != nil {
+				return target, fmt.Errorf("failed to record click: %w", err)
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE campaign_recipients SET click_count=click_count+1, first_clicked_at=COALESCE(first_clicked_at,now()), updated_at=now() WHERE id=$1 AND org_id=$2`, d.R, d.O); err != nil {
+			return target, fmt.Errorf("failed to update recipient: %w", err)
+		}
+		if !t.clicked {
+			if _, err = tx.ExecContext(ctx, `UPDATE campaigns SET click_count=click_count+1, updated_at=now() WHERE id=$1 AND org_id=$2`, d.C, d.O); err != nil {
+				return target, fmt.Errorf("failed to update campaign: %w", err)
+			}
 		}
 	}
 	if !t.opened && t.trackOpens {

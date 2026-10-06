@@ -32,6 +32,8 @@ type UnsubscribeData struct {
 	EmailID   int64 `json:"e,omitempty"`
 	// RecipientID is the campaign_recipients row (campaign tokens only).
 	RecipientID int64 `json:"r,omitempty"`
+	// AutomationMessageID is the automation_messages row (automation tokens only).
+	AutomationMessageID int64 `json:"am,omitempty"`
 	// Test tokens come from campaign test sends and change nothing.
 	Test bool `json:"t,omitempty"`
 }
@@ -99,6 +101,8 @@ func (s *ComplianceService) ProcessOneClickUnsubscribe(ctx context.Context, toke
 	source, sourceID := "email", fmt.Sprintf("%d", data.EmailID)
 	if data.RecipientID > 0 {
 		source, sourceID = "campaign", fmt.Sprintf("%d", data.RecipientID)
+	} else if data.AutomationMessageID > 0 {
+		source, sourceID = "automation", fmt.Sprintf("%d", data.AutomationMessageID)
 	}
 	return s.unsubscribeContact(ctx, data, source, sourceID, "one-click", ipAddress, userAgent, "One-click unsubscribe from email")
 }
@@ -133,8 +137,12 @@ func (s *ComplianceService) unsubscribeContact(ctx context.Context, data *Unsubs
 	`, data.ContactID, data.OrgID).Scan(&email)
 	if err == sql.ErrNoRows {
 		contactFound = false
-		if data.RecipientID > 0 {
-			err = tx.QueryRowContext(ctx, `SELECT email FROM campaign_recipients WHERE id = $1 AND org_id = $2`, data.RecipientID, data.OrgID).Scan(&email)
+		if data.RecipientID > 0 || data.AutomationMessageID > 0 {
+			query, id := `SELECT email FROM campaign_recipients WHERE id = $1 AND org_id = $2`, data.RecipientID
+			if data.AutomationMessageID > 0 {
+				query, id = `SELECT email FROM automation_messages WHERE id = $1 AND org_id = $2`, data.AutomationMessageID
+			}
+			err = tx.QueryRowContext(ctx, query, id, data.OrgID).Scan(&email)
 			if err == sql.ErrNoRows {
 				err = nil
 			}
@@ -171,6 +179,12 @@ func (s *ComplianceService) unsubscribeContact(ctx context.Context, data *Unsubs
 		}
 		if err != nil && err != sql.ErrNoRows {
 			return fmt.Errorf("failed to link unsubscribe to campaign: %w", err)
+		}
+	}
+	if data.AutomationMessageID > 0 {
+		if _, err = tx.ExecContext(ctx, `UPDATE automation_messages SET unsubscribed_at = NOW(), updated_at = NOW()
+			WHERE id = $1 AND org_id = $2 AND unsubscribed_at IS NULL`, data.AutomationMessageID, data.OrgID); err != nil {
+			return fmt.Errorf("failed to link unsubscribe to automation: %w", err)
 		}
 	}
 	if err = tx.Commit(); err != nil {

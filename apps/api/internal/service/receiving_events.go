@@ -71,7 +71,7 @@ func (s *ReceivingService) ProcessDeliveryEvent(ctx context.Context, auth *Recei
 		}
 	}
 	var known bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM received_emails WHERE org_id=$1 AND (ses_message_id=$2 OR (ses_message_id IS NULL AND uuid::text=$3)) AND direction='outbound') OR EXISTS(SELECT 1 FROM transactional_emails WHERE org_id=$1 AND provider_message_id=$2) OR EXISTS(SELECT 1 FROM emails WHERE org_id=$1 AND provider_message_id=$2) OR EXISTS(SELECT 1 FROM compose_submission_keys k JOIN users u ON u.id=k.user_id WHERE u.org_id=$1 AND (k.ses_message_id=$2 OR (k.ses_message_id IS NULL AND k.email_uuid::text=$3))) OR EXISTS(SELECT 1 FROM campaign_recipients WHERE org_id=$1 AND (provider_message_id=$2 OR (provider_message_id IS NULL AND message_uuid=$4::uuid)))`, auth.OrgID, n.Mail.MessageId, mailboxUUID, headerUUIDParam(mailboxUUID)).Scan(&known)
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM received_emails WHERE org_id=$1 AND (ses_message_id=$2 OR (ses_message_id IS NULL AND uuid::text=$3)) AND direction='outbound') OR EXISTS(SELECT 1 FROM transactional_emails WHERE org_id=$1 AND provider_message_id=$2) OR EXISTS(SELECT 1 FROM emails WHERE org_id=$1 AND provider_message_id=$2) OR EXISTS(SELECT 1 FROM compose_submission_keys k JOIN users u ON u.id=k.user_id WHERE u.org_id=$1 AND (k.ses_message_id=$2 OR (k.ses_message_id IS NULL AND k.email_uuid::text=$3))) OR EXISTS(SELECT 1 FROM campaign_recipients WHERE org_id=$1 AND (provider_message_id=$2 OR (provider_message_id IS NULL AND message_uuid=$4::uuid))) OR EXISTS(SELECT 1 FROM automation_messages WHERE org_id=$1 AND (provider_message_id=$2 OR (provider_message_id IS NULL AND message_uuid=$4::uuid)))`, auth.OrgID, n.Mail.MessageId, mailboxUUID, headerUUIDParam(mailboxUUID)).Scan(&known)
 	if err != nil {
 		return err
 	}
@@ -113,6 +113,9 @@ func (s *ReceivingService) ProcessDeliveryEvent(ctx context.Context, auth *Recei
 		return err
 	}
 	if err = applyCampaignFeedback(ctx, tx, auth.OrgID, notificationID, n, mailboxUUID); err != nil {
+		return err
+	}
+	if err = applyAutomationFeedback(ctx, tx, auth.OrgID, n, mailboxUUID); err != nil {
 		return err
 	}
 	// Resolve the immutable public mailbox ID even if the Sent copy was deleted.
@@ -265,6 +268,54 @@ func applyCampaignFeedback(ctx context.Context, tx *sql.Tx, orgID int64, notific
 			MessageUUID: messageUUID, DedupeKey: notificationID + ":" + messageUUID, Data: data}); err != nil {
 			return fmt.Errorf("record campaign feedback event: %w", err)
 		}
+	}
+	return nil
+}
+
+// applyAutomationFeedback records SES feedback on the matching automation
+// message: delivery_status only moves up (delivered < bounced < complained)
+// and any feedback proves SES accepted it, so sending or unknown becomes sent.
+// Suppression of bounced and complained addresses is handled by the caller.
+func applyAutomationFeedback(ctx context.Context, tx *sql.Tx, orgID int64, n *model.SESNotification, headerUUID string) error {
+	target := ""
+	switch {
+	case n.NotificationType == "Delivery":
+		target = "delivered"
+	case n.NotificationType == "Bounce" && n.Bounce.BounceType == "Permanent":
+		target = "bounced"
+	case n.NotificationType == "Complaint":
+		target = "complained"
+	}
+	var id int64
+	var status string
+	var current sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT id, status, delivery_status FROM automation_messages
+		WHERE org_id=$1 AND (provider_message_id=$2 OR (provider_message_id IS NULL AND message_uuid=$3::uuid))
+		ORDER BY id LIMIT 1 FOR UPDATE`, orgID, n.Mail.MessageId, headerUUIDParam(headerUUID)).Scan(&id, &status, &current)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load automation message: %w", err)
+	}
+	if campaignDeliveryRank[target] <= campaignDeliveryRank[current.String] {
+		target = ""
+	}
+	promote := status == "sending" || status == "unknown"
+	if _, err = tx.ExecContext(ctx, `UPDATE automation_messages SET
+			provider_message_id=COALESCE(provider_message_id,$3),
+			status=CASE WHEN $4 THEN 'sent' ELSE status END,
+			sent_at=CASE WHEN $4 THEN COALESCE(sent_at,now()) ELSE sent_at END,
+			error=CASE WHEN $4 THEN NULL ELSE error END,
+			lease_owner=CASE WHEN $4 THEN NULL ELSE lease_owner END,
+			lease_expires_at=CASE WHEN $4 THEN NULL ELSE lease_expires_at END,
+			delivery_status=COALESCE(NULLIF($5,''),delivery_status),
+			delivered_at=CASE WHEN $5='delivered' THEN now() ELSE delivered_at END,
+			bounced_at=CASE WHEN $5='bounced' THEN now() ELSE bounced_at END,
+			complained_at=CASE WHEN $5='complained' THEN now() ELSE complained_at END,
+			updated_at=now()
+		WHERE id=$1 AND org_id=$2`, id, orgID, n.Mail.MessageId, promote, target); err != nil {
+		return fmt.Errorf("update automation message: %w", err)
 	}
 	return nil
 }
