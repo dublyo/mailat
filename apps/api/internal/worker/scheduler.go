@@ -431,7 +431,7 @@ func (h *ScheduledTaskHandler) pauseWarmupForBounceRate(ctx context.Context, org
 	// Also pause any sending campaigns
 	h.db.ExecContext(ctx, `
 		UPDATE campaigns
-		SET status = 'paused', updated_at = NOW()
+		SET status = 'paused', status_reason = 'bounce_rate_high', updated_at = NOW()
 		WHERE org_id = $1 AND status = 'sending'
 	`, orgID)
 }
