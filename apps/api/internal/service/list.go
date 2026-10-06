@@ -28,6 +28,13 @@ func (s *ListService) CreateList(ctx context.Context, orgID int64, req *model.Cr
 	if req.ConfirmationMode != "single" && req.ConfirmationMode != "double" {
 		return nil, fmt.Errorf("confirmationMode must be single or double")
 	}
+	listType := req.Type
+	if listType == "" {
+		listType = "static"
+	}
+	if listType != "static" && listType != "dynamic" {
+		return nil, fmt.Errorf("type must be static or dynamic")
+	}
 	// Handle nullable segment rules
 	var segmentRulesJSON interface{}
 	if req.SegmentRules != nil {
@@ -37,10 +44,11 @@ func (s *ListService) CreateList(ctx context.Context, orgID int64, req *model.Cr
 		}
 		segmentRulesJSON = jsonBytes
 	}
-
-	listType := req.Type
-	if listType == "" {
-		listType = "static"
+	if listType == "dynamic" {
+		raw, _ := segmentRulesJSON.([]byte)
+		if err := ValidateSegmentRules(ctx, s.db, orgID, raw); err != nil {
+			return nil, err
+		}
 	}
 
 	// Handle nullable description
@@ -188,7 +196,16 @@ func (s *ListService) UpdateList(ctx context.Context, orgID int64, listUUID stri
 
 	var segmentRulesJSON interface{}
 	if req.SegmentRules != nil {
-		segmentRulesJSON, _ = json.Marshal(req.SegmentRules)
+		raw, err := json.Marshal(req.SegmentRules)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal segment rules: %w", err)
+		}
+		if existing.Type == "dynamic" {
+			if err = ValidateSegmentRules(ctx, tx, orgID, raw); err != nil {
+				return nil, err
+			}
+		}
+		segmentRulesJSON = raw
 	}
 
 	_, err = tx.ExecContext(ctx, `
@@ -217,7 +234,7 @@ func (s *ListService) DeleteList(ctx context.Context, orgID int64, listUUID stri
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM campaigns c
 		JOIN lists l ON l.id = c.list_id
-		WHERE l.org_id = $1 AND l.uuid = $2 AND c.status IN ('scheduled', 'sending')
+		WHERE l.org_id = $1 AND l.uuid = $2 AND c.status IN ('scheduled', 'sending', 'paused')
 	`, orgID, listUUID).Scan(&campaignCount)
 	if err != nil {
 		return fmt.Errorf("failed to check campaign usage: %w", err)
