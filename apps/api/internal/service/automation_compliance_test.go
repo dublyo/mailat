@@ -48,6 +48,10 @@ func TestAutomationErasureExportAndGuards(t *testing.T) {
 	if got := export["automations"].([]map[string]interface{}); len(got) != 1 || got[0]["automationName"] != "Flow" || got[0]["status"] != "active" {
 		t.Fatalf("export: %+v", got)
 	}
+	if got := export["automationEmails"].([]map[string]interface{}); len(got) != 1 || got[0]["automationName"] != "Flow" ||
+		got[0]["status"] != "pending" || got[0]["stepId"] != "e" || got[0]["subject"] == "" {
+		t.Fatalf("export emails: %+v", got)
+	}
 
 	lists := NewListService(db, s.cfg)
 	templates := &TransactionalService{db: db, cfg: s.cfg}

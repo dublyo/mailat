@@ -521,6 +521,44 @@ func (s *ComplianceService) ExportContactData(ctx context.Context, orgID int64, 
 		return nil, fmt.Errorf("failed to export automations: %w", err)
 	}
 
+	// Automation email lives in automation_messages, not emails.
+	messageRows, err := s.db.QueryContext(ctx, `
+		SELECT a.name, m.node_id, COALESCE(NULLIF(m.subject_override,''), t.subject, ''), m.status, m.delivery_status,
+			m.sent_at, m.created_at, m.open_count, m.click_count, m.unsubscribed_at
+		FROM automation_messages m JOIN automations a ON a.id = m.automation_id
+		LEFT JOIN email_templates t ON t.id = m.template_id
+		WHERE m.contact_id = $1 AND m.org_id = $2 ORDER BY m.created_at DESC, m.id DESC`, contactID, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to export automation emails: %w", err)
+	}
+	defer messageRows.Close()
+	automationEmails := []map[string]interface{}{}
+	for messageRows.Next() {
+		var name, nodeID, subject, status string
+		var deliveryStatus sql.NullString
+		var sentAt, unsubscribedAt *time.Time
+		var createdAt time.Time
+		var opens, clicks int
+		if err := messageRows.Scan(&name, &nodeID, &subject, &status, &deliveryStatus, &sentAt, &createdAt, &opens, &clicks, &unsubscribedAt); err != nil {
+			return nil, fmt.Errorf("failed to export automation emails: %w", err)
+		}
+		automationEmails = append(automationEmails, map[string]interface{}{
+			"automationName": name,
+			"stepId":         nodeID,
+			"subject":        subject,
+			"status":         status,
+			"deliveryStatus": deliveryStatus.String,
+			"sentAt":         sentAt,
+			"createdAt":      createdAt,
+			"openCount":      opens,
+			"clickCount":     clicks,
+			"unsubscribedAt": unsubscribedAt,
+		})
+	}
+	if err := messageRows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to export automation emails: %w", err)
+	}
+
 	// Include the disclosure and request history without exporting token digests.
 	var signupHistory json.RawMessage
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(jsonb_build_object('formId',f.uuid,'email',r.email,'firstName',r.first_name,'status',r.status,'confirmationMode',r.confirmation_mode,'disclosure',r.disclosure,'formVersion',r.form_version,'createdAt',r.created_at,'confirmedAt',r.confirmed_at)),'[]'::jsonb) FROM signup_requests r JOIN signup_forms f ON f.id=r.form_id WHERE f.org_id=$1 AND lower(r.email)=lower($2)`, orgID, contact.Email).Scan(&signupHistory); err != nil {
@@ -542,12 +580,13 @@ func (s *ComplianceService) ExportContactData(ctx context.Context, orgID int64, 
 			"consentTimestamp": contact.ConsentTimestamp,
 			"createdAt":        contact.CreatedAt,
 		},
-		"lists":          lists,
-		"consentHistory": consentHistory,
-		"signupHistory":  signupHistory,
-		"emailHistory":   emails,
-		"automations":    automations,
-		"exportedAt":     time.Now(),
+		"lists":            lists,
+		"consentHistory":   consentHistory,
+		"signupHistory":    signupHistory,
+		"emailHistory":     emails,
+		"automations":      automations,
+		"automationEmails": automationEmails,
+		"exportedAt":       time.Now(),
 	}, nil
 }
 
