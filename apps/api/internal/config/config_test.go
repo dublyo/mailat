@@ -203,3 +203,21 @@ func TestParseProxyNets(t *testing.T) {
 		t.Fatalf("empty: %v %v", nets, err)
 	}
 }
+
+// Settings read by Load must reach a Compose deployment and be documented in
+// both example files.
+func TestArrivalAndLiveSettingsDocumented(t *testing.T) {
+	keys := []string{"AUTO_REPLY_DAILY_LIMIT", "FORWARD_MAX_BYTES", "FORWARD_DAILY_LIMIT", "INVITE_TTL_HOURS",
+		"VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "PUSH_ENDPOINT_HOST_SUFFIXES", "SSE_MAX_CONNECTIONS"}
+	for _, file := range []string{".env.example", ".env.production.example", "docker-compose.prod.yml"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", file))
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		for _, key := range keys {
+			if !regexp.MustCompile(`(?m)^\s*-?\s*` + key + `=`).Match(data) {
+				t.Errorf("%s does not set %s", file, key)
+			}
+		}
+	}
+}

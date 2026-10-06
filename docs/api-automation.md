@@ -34,10 +34,11 @@ every route has been exercised against its external provider. In particular,
 routes use JMAP; SES integrations should use `/inbox/received`, `/inbox/changes`
 and `/inbox/filters`. Auto-replies and verified forwards run when mail
 arrives through SES, and shared mailboxes deliver an independent copy to each
-member who can read them (members see only shared mailboxes they belong to). Sieve scripts are no longer supported (existing rows are kept but never
-run); inbox filters are the only rule engine. Use the domain sending-setup and explicit inbox receiving-setup routes for
-SES configuration (the legacy `/settings/aws/*` provisioning endpoints were
-removed).
+member who can read them (members see only shared mailboxes they belong to).
+Sieve scripts are no longer supported (existing rows are kept but never run);
+inbox filters are the only rule engine. Use the domain sending-setup and
+explicit inbox receiving-setup routes for SES configuration (the legacy
+`/settings/aws/*` provisioning endpoints were removed).
 
 Send `Authorization: Bearer <key>`. Keys belong to their creating user and
 organization. Choose only the scopes a workflow needs:
@@ -55,12 +56,21 @@ organization. Choose only the scopes a workflow needs:
 | Automation lists, stats and enrollments (includes contact emails) | `automations:read` |
 | Enroll contacts, cancel and retry enrollments | `automations:enroll` |
 
+Domain, identity, receiving, branding, shared-mailbox creation and
+member/invite routes carry `x-mailat-required-role` in the OpenAPI
+reference. A key reaches them only while the user who created it is
+an owner or admin; a member's key gets 403 even with the right scope. Contacts,
+lists, campaigns, automations and templates have no role check.
+
 Key expiry, active user status and a PostgreSQL-backed per-minute request counter
 are checked on every call. A 429 includes `Retry-After` in seconds. API keys cannot
 create stronger keys, administer sessions, change passwords or bypass MFA. The
-OpenAPI reference marks human-only routes. Browser SSE uses a 60-second stream
-ticket; ordinary API credentials are never accepted in a query string. Headless
-SSE clients can use an `email:read` bearer key.
+OpenAPI reference marks human-only routes. Browser SSE uses a 60-second,
+single-use stream ticket, fetched again for every reconnect; ordinary API
+credentials are never accepted in a query string. Headless SSE clients can use
+an `email:read` bearer key. Pass `cursor` (the last event id or a
+`/inbox/changes` cursor) to resume without gaps; a `resync` event means the
+cursor is too old and the client should reload and adopt the new one.
 
 Most JSON responses use `{code: 0, message, data}`; failures use the HTTP status
 and `{code, message}`. An operation that returns no data may omit `data`. Follow

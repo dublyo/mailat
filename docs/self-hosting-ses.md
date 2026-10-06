@@ -71,11 +71,19 @@ Delivery events update recorded attempts and suppression state with organization
 
 ## Authentication and mailbox ownership
 
-`GET /api/v1/auth/register-status` reports whether initial registration is available. Registration creates the first owner and closes once a user exists; subsequent users use the invitation flow. Do not expose an unclaimed installation publicly for an extended period. Login uses `POST /api/v1/auth/login`; browser requests use `Authorization: Bearer <JWT>`.
+`GET /api/v1/auth/register-status` reports whether initial registration is available. Registration creates the first owner and closes once a user exists; everyone else joins through an invite. Do not expose an unclaimed installation publicly for an extended period. Login uses `POST /api/v1/auth/login`; browser requests use `Authorization: Bearer <JWT>`.
 
 API keys have the `ue_` prefix and are accepted through the same Authorization header. Keys are associated with a user; legacy keys fall back to the organization's first user. Sender authorization applies to both authenticated users and these keys. Keep keys private and rotate/revoke them through the API-key controls when appropriate.
 
-Mailbox queries, message mutations, draft operations, labels, and attachment downloads are scoped to the user's identities. A unified inbox combines that user's identities; it is not an organization-wide mailbox browser. SSE uses the authenticated `/api/v1/sse/connect` route; browser reconnects should refetch mailbox state because the stream is not a durable replay log.
+Mailbox queries, message mutations, draft operations, labels, and attachment downloads are scoped to the mailbox copies the user owns: mail to their personal identities and their own copy of mail to shared mailboxes they read. A unified inbox combines those; it is not an organization-wide mailbox browser, and owners and admins cannot read another member's mail. Live updates use the authenticated `/api/v1/sse/connect` route (see [Live updates and web push](#live-updates-and-web-push)).
+
+### Members, roles, and shared mailboxes
+
+Users are `owner`, `admin` or `member`. Owners and admins invite people from Settings (`POST /api/v1/org/invites`); admins can invite and remove members only, and only the owner changes roles. The invite email is sent through SES from the inviter's own identity and links to `${WEB_URL}/invite#token=...`; the link is valid for `INVITE_TTL_HOURS` (default 168, at most 720), single use, and replaced on resend (60-second cooldown, five sends per invite). The invitee sets a name and password, then can link OAuth later. With `DISABLE_APP_LIMITS=false`, active users plus open invites count against the organization's `max_users`. While the SES account is in the sandbox, invites reach only verified addresses.
+
+Domain, identity, receiving, branding, shared-mailbox creation and member/invite management need the owner or admin role, checked on every request so a demotion applies at once. API keys can reach those routes only when their owner is an owner or admin, and API keys themselves are managed only from an owner or admin session. Contacts, lists, campaigns, automations and templates remain open to every member. Removing a member revokes their sessions, API keys and push subscriptions, deletes their shared-mailbox copies, and moves their personal identities to another member or disables them; their received mail is kept but no one can read it.
+
+A shared mailbox is a shared identity, such as `support@your-domain`. Each member with read access gets an independent copy of every message that arrives after they join (read state, labels and deletion are per member), and members with send access can compose as the shared address. A shared mailbox has at most 50 members, and its last reader cannot be removed. Every copy stores its own text and HTML bodies in PostgreSQL (attachments and raw MIME in S3 are shared), so large teams multiply database storage for that mailbox.
 
 ## Draft, compose, and attachment contracts
 
@@ -139,7 +147,7 @@ Sieve scripts are not supported. Existing rows are kept but never run; use inbox
 
 ### Live updates and web push
 
-Open mailboxes update live over Server-Sent Events. Every committed mailbox change is recorded in `mailbox_changes` and announced with PostgreSQL `NOTIFY`, so all API replicas see it; `LISTEN` needs a direct (session-mode) PostgreSQL connection, not a transaction-pooling proxy. If the listener drops, streams fall back to polling every 5 seconds. Browsers fetch a single-use stream ticket for each connection, and a stream stays open as long as its session. `SSE_MAX_CONNECTIONS` (default 5000) caps streams per replica; each user keeps at most 10.
+Open mailboxes update live over Server-Sent Events. Every committed mailbox change is recorded in `mailbox_changes` and announced with PostgreSQL `NOTIFY`, so all API replicas see it; `LISTEN` needs a direct (session-mode) PostgreSQL connection, not a transaction-pooling proxy. If the listener drops, streams fall back to polling every 5 seconds. Browsers fetch a single-use stream ticket for each connection, and a stream stays open as long as its session. After a reconnect the client resumes from its last cursor, so nothing committed in between is missed; a cursor that is too old asks the client to reload. The API sends `X-Accel-Buffering: no`; any reverse proxy in front of it must pass `text/event-stream` responses through unbuffered. `SSE_MAX_CONNECTIONS` (default 5000) caps streams per replica; each user keeps at most 10.
 
 Desktop notifications for new inbox mail use web push with VAPID keys. Generate a pair once with `cd apps/api && go run ./cmd/vapid-keys` and set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` (a `mailto:` or `https:` contact). Set all three or none; a partial or mismatched set stops startup, and with none push is disabled. Keep the private key secret. Rotating the keys retires existing subscriptions, so users enable notifications again in Settings. Subscriptions are accepted only for push-service hosts in `PUSH_ENDPOINT_HOST_SUFFIXES` (Chrome/Edge, Firefox, Safari and Windows by default), and deliveries go only to public addresses without redirects.
 
@@ -157,6 +165,8 @@ FROM contacts
 GROUP BY org_id, lower(email)
 HAVING count(*) > 1;
 ```
+
+Migration `016_multi_user_live` builds two indexes on `received_emails` inside its transaction, which blocks new mail and mailbox changes until it finishes. Small installations will not notice; on a large mailbox table, upgrade in a short maintenance window. SNS retries receiving notifications that time out meanwhile. Migration `015_mail_arrival` turns off existing Sieve scripts and marks them unsupported.
 
 **Do not blindly downgrade the API or rerun an older schema initializer against this database.** Older initialization can recreate a global Message-ID unique index, which conflicts with multiple legitimate mailbox copies. A container image rollback is not a database rollback. Verify schema compatibility or restore a coordinated pre-upgrade backup; restoring it also loses changes made after that backup. Disabling `AUTO_MIGRATE` does not make an incompatible old binary safe.
 
