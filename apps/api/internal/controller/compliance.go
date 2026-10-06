@@ -23,14 +23,17 @@ func (c *ComplianceController) publicLimited(r *ghttp.Request) bool {
 	return rateLimited(r, c.limiter, service.RulePublicComplianceIP, middleware.ClientIP(r))
 }
 
-// OneClickUnsubscribe handles RFC 8058 one-click unsubscribe (POST only)
+// OneClickUnsubscribe handles RFC 8058 one-click unsubscribe (POST only).
+// Mailbox providers send these POSTs from a few shared servers, so a validly
+// signed token is never IP-limited; the signature proves authority and the
+// operation is idempotent. Invalid tokens still count against the IP limit.
 // POST /api/v1/unsubscribe/:token
 func (c *ComplianceController) OneClickUnsubscribe(r *ghttp.Request) {
-	if c.publicLimited(r) {
-		return
-	}
 	token := r.Get("token").String()
-	if token == "" {
+	if !c.complianceService.ValidUnsubscribeToken(token) {
+		if c.publicLimited(r) {
+			return
+		}
 		response.BadRequest(r, "Invalid unsubscribe link")
 		return
 	}

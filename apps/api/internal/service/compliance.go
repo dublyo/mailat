@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -88,6 +89,13 @@ func (s *ComplianceService) GenerateListUnsubscribeHeader(contactID int64, orgID
 	listUnsubscribePost := "List-Unsubscribe=One-Click"
 
 	return listUnsubscribe, listUnsubscribePost
+}
+
+// ValidUnsubscribeToken reports whether token carries a valid signature. It
+// lets the one-click endpoint skip per-IP limits for genuine links.
+func (s *ComplianceService) ValidUnsubscribeToken(token string) bool {
+	_, err := s.decodeUnsubscribeData(token)
+	return err == nil
 }
 
 // ProcessOneClickUnsubscribe handles RFC 8058 one-click unsubscribe
@@ -536,6 +544,10 @@ func (s *ComplianceService) DeleteContactData(ctx context.Context, orgID int64, 
 		return err
 	}
 
+	// Whole-address match: bob@x.test must not hit jimbob@x.test or bob@x.test.au.
+	// strpos stays as a cheap prefilter before the regex.
+	addrPattern := `(^|[^a-z0-9._%+-])` + regexp.QuoteMeta(addr) + `(?![a-z0-9-]|\.[a-z0-9])`
+
 	// Campaign/marketing mail: keep counters and statuses, drop content and recipients.
 	emailIDs, err := collect("emails", `
 		UPDATE emails SET contact_id = NULL, to_emails = ARRAY['[redacted]'], cc_emails = '{}', bcc_emails = '{}',
@@ -543,8 +555,8 @@ func (s *ComplianceService) DeleteContactData(ctx context.Context, orgID int64, 
 			metadata = '{}', headers = '{}', updated_at = NOW()
 		WHERE org_id = $1 AND (contact_id = ANY($2)
 			OR EXISTS(SELECT 1 FROM unnest(COALESCE(to_emails,'{}') || COALESCE(cc_emails,'{}') || COALESCE(bcc_emails,'{}')) a
-				WHERE strpos(lower(a), $3) > 0))
-		RETURNING id::text`, orgID, pq.Array(ids), addr)
+				WHERE strpos(lower(a), $3) > 0 AND lower(a) ~ $4))
+		RETURNING id::text`, orgID, pq.Array(ids), addr, addrPattern)
 	if err != nil {
 		return err
 	}
@@ -556,9 +568,9 @@ func (s *ComplianceService) DeleteContactData(ctx context.Context, orgID int64, 
 	// stop deliveries that have not started. One already "delivering" may still go out.
 	eventIDs, err := collect("webhook events", `
 		UPDATE webhook_events SET payload = jsonb_build_object('redacted', true, 'reason', 'gdpr_erasure')
-		WHERE org_id = $1 AND (strpos(lower(payload::text), $2) > 0
+		WHERE org_id = $1 AND ((strpos(lower(payload::text), $2) > 0 AND lower(payload::text) ~ $4)
 			OR EXISTS(SELECT 1 FROM unnest($3::text[]) u WHERE strpos(payload::text, u) > 0))
-		RETURNING id::text`, orgID, addr, pq.Array(uuids))
+		RETURNING id::text`, orgID, addr, pq.Array(uuids), addrPattern)
 	if err != nil {
 		return err
 	}
@@ -570,7 +582,7 @@ func (s *ComplianceService) DeleteContactData(ctx context.Context, orgID int64, 
 	}
 	if err = exec("legacy webhook calls", `
 		UPDATE webhook_calls c SET payload = '{"redacted":true}', response_body = NULL
-		FROM webhooks w WHERE w.id = c.webhook_id AND w.org_id = $1 AND strpos(lower(c.payload::text), $2) > 0`, orgID, addr); err != nil {
+		FROM webhooks w WHERE w.id = c.webhook_id AND w.org_id = $1 AND strpos(lower(c.payload::text), $2) > 0 AND lower(c.payload::text) ~ $3`, orgID, addr, addrPattern); err != nil {
 		return err
 	}
 

@@ -47464,13 +47464,20 @@
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
       },
       "get": {
-        "description": "InitiateOAuth starts a sign-in with a provider. A one-use state is stored\n(hashed) for 10 minutes and bound to this browser with an HttpOnly cookie.\nFailures redirect to /login?oauthError=\u003ccode\u003e.\nGET /api/v1/oauth/:provider",
+        "description": "InitiateOAuth starts a sign-in with a provider. A one-use state is stored\n(hashed) for 10 minutes and bound to this browser with an HttpOnly cookie.\nThe optional nonce (16-128 URL-safe characters) rides in that cookie and is\nreturned as \u0026nonce= in the login fragment. Failures redirect to\n/login?oauthError=\u003ccode\u003e.\nGET /api/v1/oauth/:provider",
         "operationId": "get_api_v1_oauth_provider",
         "parameters": [
           {
             "in": "path",
             "name": "provider",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "nonce",
             "schema": {
               "type": "string"
             }
@@ -65431,7 +65438,7 @@
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
       },
       "post": {
-        "description": "OneClickUnsubscribe handles RFC 8058 one-click unsubscribe (POST only)\nPOST /api/v1/unsubscribe/:token",
+        "description": "OneClickUnsubscribe handles RFC 8058 one-click unsubscribe (POST only).\nMailbox providers send these POSTs from a few shared servers, so a validly\nsigned token is never IP-limited; the signature proves authority and the\noperation is idempotent. Invalid tokens still count against the IP limit.\nPOST /api/v1/unsubscribe/:token",
         "operationId": "post_api_v1_unsubscribe_token",
         "parameters": [
           {

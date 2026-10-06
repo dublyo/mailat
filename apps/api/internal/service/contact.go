@@ -377,6 +377,15 @@ func (s *ContactService) UpdateContact(ctx context.Context, orgID int64, actor C
 	}
 
 	if newEmail != "" && newEmail != email {
+		// Legacy rows may differ only in case, which the unique index misses;
+		// one address must stay one contact.
+		var taken bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM contacts WHERE org_id = $1 AND lower(email) = $2 AND id <> $3)`, orgID, newEmail, id).Scan(&taken); err != nil {
+			return nil, fmt.Errorf("failed to check email: %w", err)
+		}
+		if taken {
+			return nil, ErrDuplicateEmail
+		}
 		add("email", newEmail)
 	}
 	if req.FirstName != "" {

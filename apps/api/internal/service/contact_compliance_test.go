@@ -206,6 +206,10 @@ func TestUpdateContactStatusGuard(t *testing.T) {
 	count(t, f.db, 1, `SELECT count(*) FROM suppressions WHERE email='active@x.test' AND reason='unsubscribe' AND source_type='admin'`)
 
 	wantCode(t, update(2, model.UpdateContactRequest{Email: "UNSUB@x.test"}), ErrDuplicateEmail)
+	// A legacy mixed-case row is not caught by the unique index but is still a duplicate.
+	mustExec(t, f.db, `INSERT INTO contacts(id,org_id,email,status,updated_at) VALUES(7,1,'Legacy@X.test','active',now())`)
+	wantCode(t, update(2, model.UpdateContactRequest{Email: "legacy@x.test"}), ErrDuplicateEmail)
+	count(t, f.db, 1, `SELECT count(*) FROM contacts WHERE lower(email)='legacy@x.test'`)
 	var ce *ContactError
 	if err := update(2, model.UpdateContactRequest{FirstName: strings.Repeat("a", 101)}); !errors.As(err, &ce) || ce.Status != 400 {
 		t.Fatalf("long name: %v", err)
@@ -352,20 +356,23 @@ func TestGDPRErasureCompleteness(t *testing.T) {
 		INSERT INTO emails(id,org_id,message_id,identity_id,from_email,to_emails,cc_emails,subject,html_content,text_content,domain_id,contact_id,updated_at) VALUES
 			(1,1,'m1',1,'news@one.test',ARRAY['Eve <Erase.Me@example.test>'],'{}','Hi Eve','<p>Eve</p>','Eve',1,10,now()),
 			(2,1,'m2',1,'news@one.test',ARRAY['keep@example.test'],ARRAY['erase.me@example.test'],'Team note','<p>x</p>','x',1,12,now()),
-			(3,1,'m3',1,'news@one.test',ARRAY['keep@example.test'],'{}','Untouched','<p>k</p>','k',1,12,now());
-		INSERT INTO delivery_events(email_id,event_type,data) VALUES(1,'opened','{"recipient":"erase.me@example.test"}'),(3,'opened','{"recipient":"keep@example.test"}');
+			(3,1,'m3',1,'news@one.test',ARRAY['keep@example.test'],'{}','Untouched','<p>k</p>','k',1,12,now()),
+			(4,1,'m4',1,'news@one.test',ARRAY['Jim <jimerase.me@example.test>'],ARRAY['erase.me@example.test.au'],'Neighbour','<p>n</p>','n',1,12,now());
+		INSERT INTO delivery_events(email_id,event_type,data) VALUES(1,'opened','{"recipient":"erase.me@example.test"}'),(3,'opened','{"recipient":"keep@example.test"}'),(4,'opened','{"recipient":"jimerase.me@example.test"}');
 		INSERT INTO webhooks(id,org_id,name,url,secret,updated_at) VALUES(1,1,'Hook','https://hook.test','s',now());
 		INSERT INTO webhook_events(id,org_id,event_type,dedupe_key,payload) VALUES
 			('10000000-0000-0000-0000-000000000001',1,'contact.created','a','{"email":"ERASE.ME@example.test"}'),
 			('10000000-0000-0000-0000-000000000002',1,'contact.updated','b','{"contact_id":"00000000-0000-0000-0000-0000000000bb"}'),
-			('10000000-0000-0000-0000-000000000003',1,'contact.created','c','{"email":"keep@example.test"}');
+			('10000000-0000-0000-0000-000000000003',1,'contact.created','c','{"email":"keep@example.test"}'),
+			('10000000-0000-0000-0000-000000000004',1,'contact.created','d','{"email":"jimerase.me@example.test","cc":"erase.me@example.test.au"}');
 		INSERT INTO webhook_deliveries(id,event_id,webhook_id,status) VALUES
 			('20000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001',1,'pending'),
 			('20000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000002',1,'delivered'),
-			('20000000-0000-0000-0000-000000000003','10000000-0000-0000-0000-000000000003',1,'pending');
+			('20000000-0000-0000-0000-000000000003','10000000-0000-0000-0000-000000000003',1,'pending'),
+			('20000000-0000-0000-0000-000000000004','10000000-0000-0000-0000-000000000004',1,'pending');
 		INSERT INTO webhook_delivery_attempts(delivery_id,attempt,replay,response_body,duration_ms) VALUES
 			('20000000-0000-0000-0000-000000000002',1,0,'echo erase.me@example.test',5);
-		INSERT INTO webhook_calls(webhook_id,event_type,payload,response_body) VALUES(1,'contact.created','{"email":"Erase.Me@example.test"}','ok erase.me@example.test');
+		INSERT INTO webhook_calls(webhook_id,event_type,payload,response_body) VALUES(1,'contact.created','{"email":"Erase.Me@example.test"}','ok erase.me@example.test'),(1,'contact.created','{"email":"robERASE.me@example.test"}','ok');
 		INSERT INTO signup_forms(id,org_id,list_id,created_by,name,title,consent_text,button_text,updated_at) VALUES(1,1,1,1,'F','T','C','B',now());
 		INSERT INTO signup_requests(form_id,email,token_hash,status,confirmation_mode,disclosure,form_version,expires_at) VALUES(1,'Erase.Me@example.test','h','pending','double','d',1,now()+interval '1 day');
 		INSERT INTO suppressions(org_id,email,reason,source_type) VALUES(1,'ERASE.ME@example.test','unsubscribe','test');`)
@@ -375,8 +382,14 @@ func TestGDPRErasureCompleteness(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, table := range []string{"contacts", "list_contacts", "consent_audit", "automation_enrollments", "automation_logs", "emails", "delivery_events", "webhook_events", "webhook_delivery_attempts", "webhook_calls", "signup_requests", "suppressions", "audit_logs"} {
-		count(t, f.db, 0, `SELECT count(*) FROM `+table+` x WHERE x::text ILIKE '%erase.me%'`)
+		count(t, f.db, 0, `SELECT count(*) FROM `+table+` x WHERE lower(x::text) ~ '(^|[^a-z0-9._%+-])erase\.me@example\.test(?![a-z0-9-]|\.[a-z0-9])'`)
 	}
+	// Addresses that merely contain the erased one are someone else's data.
+	count(t, f.db, 1, `SELECT count(*) FROM emails WHERE subject='Neighbour' AND contact_id=12 AND to_emails=ARRAY['Jim <jimerase.me@example.test>']`)
+	count(t, f.db, 1, `SELECT count(*) FROM delivery_events WHERE email_id=4 AND data->>'recipient'='jimerase.me@example.test'`)
+	count(t, f.db, 1, `SELECT count(*) FROM webhook_events WHERE id='10000000-0000-0000-0000-000000000004' AND payload->>'email'='jimerase.me@example.test'`)
+	count(t, f.db, 1, `SELECT count(*) FROM webhook_deliveries WHERE id='20000000-0000-0000-0000-000000000004' AND status='pending'`)
+	count(t, f.db, 1, `SELECT count(*) FROM webhook_calls WHERE payload->>'email'='robERASE.me@example.test'`)
 	count(t, f.db, 0, `SELECT count(*) FROM webhook_events WHERE payload::text LIKE '%0000000000bb%'`)
 	count(t, f.db, 1, `SELECT count(*) FROM contacts`)
 	count(t, f.db, 0, `SELECT count(*) FROM automation_enrollments WHERE contact_id IN (10,11)`)
