@@ -114,6 +114,9 @@ func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID, user
 		if len(req.IdempotencyKey) > 128 {
 			return nil, &provider.MailValidationError{Message: "idempotency key is too long"}
 		}
+		if isSystemSubmissionKey(req.IdempotencyKey) {
+			return nil, errReservedSubmissionKey
+		}
 	}
 
 	// Validate sender domain ownership
@@ -252,119 +255,30 @@ func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID, user
 		return nil, err
 	}
 
-	// Generate Message-ID
-	messageID := s.generateMessageID(domainName)
-
-	// Create email record
-	emailUUID := uuid.New().String()
-	var emailID int64
-
 	tagsJSON, _ := json.Marshal(req.Tags)
 	metadataJSON, _ := json.Marshal(req.Metadata)
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	if req.IdempotencyKey != "" {
-		claim, err := tx.ExecContext(ctx, `INSERT INTO email_submission_keys(org_id,submission_key,request_hash) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, orgID, req.IdempotencyKey, requestHash)
-		if err != nil {
-			return nil, err
-		}
-		affected, _ := claim.RowsAffected()
-		if affected == 0 {
-			tx.Rollback()
-			return s.loadSubmission(ctx, orgID, req.IdempotencyKey, requestHash)
-		}
-	}
-	if err := s.checkRateLimits(ctx, orgID); err != nil {
-		return nil, err
-	}
-	err = tx.QueryRowContext(ctx, `
-  INSERT INTO transactional_emails (
-			uuid, org_id, identity_id, message_id, from_address, to_addresses,
-			cc_addresses, bcc_addresses, reply_to, subject, html_body, text_body,
-			tags, metadata, status, idempotency_key, scheduled_for, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
-		RETURNING id
-	`, emailUUID, orgID, identityID, messageID, fromEmail, strings.Join(req.To, ","),
-		strings.Join(req.Cc, ","), strings.Join(req.Bcc, ","), req.ReplyTo,
-		subject, htmlBody, textBody, string(tagsJSON), string(metadataJSON),
-		"queued", req.IdempotencyKey, scheduledFor,
-	).Scan(&emailID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create email record: %w", err)
-	}
-
-	var mailboxID int64
-	err = tx.QueryRowContext(ctx, `INSERT INTO received_emails(uuid,org_id,domain_id,identity_id,message_id,from_email,from_name,to_emails,cc_emails,bcc_emails,reply_to,subject,text_body,html_body,snippet,has_attachments,folder,is_read,direction,send_status,submitter_user_id,updated_at)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'outbox',true,'outbound','queued',$17,NOW()) RETURNING id`, emailUUID, orgID, domainID, identityID, messageID, normalizedFrom, fromAddress.Name, pq.Array(req.To), pq.Array(req.Cc), pq.Array(req.Bcc), req.ReplyTo, subject, textBody, htmlBody, composeSnippet(textBody), len(attachments) > 0, ownerID).Scan(&mailboxID)
-	if err != nil {
-		return nil, err
-	}
-	if err = insertMailboxAttachments(ctx, tx, mailboxID, attachments); err != nil {
-		return nil, err
-	}
-	payload := worker.NewEmailSendPayload(emailID, orgID, fromEmail, req.To, subject, htmlBody, textBody, messageID)
-	payload.Cc, payload.Bcc, payload.ReplyTo = req.Cc, req.Bcc, req.ReplyTo
-	payload.MessageUUID, payload.UserID, payload.IdentityID = emailUUID, ownerID, identityID
-	payload.ScheduledFor = scheduledFor
-	for _, a := range attachments {
-		disposition := "attachment"
-		if a.inline {
-			disposition = "inline"
-		}
-		payload.Attachments = append(payload.Attachments, worker.AttachmentInfo{Name: a.name, Type: a.contentType, Data: a.data, Size: a.size, CID: a.contentID, Disposition: disposition})
-	}
-	payloadJSON, err := payload.Marshal()
-	if err != nil {
-		return nil, err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE transactional_emails SET send_payload=$2 WHERE id=$1`, emailID, string(payloadJSON)); err != nil {
-		return nil, err
-	}
-
-	// Create initial delivery event
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO transactional_delivery_events (email_id, event_type, details)
-		VALUES ($1, 'queued', 'Email accepted for delivery')
-	`, emailID)
-	if err != nil {
-		fmt.Printf("Warning: failed to create delivery event: %v\n", err)
-	}
-
-	if req.IdempotencyKey != "" {
-		if _, err = tx.ExecContext(ctx, `UPDATE email_submission_keys SET email_uuid=$3,status='ready' WHERE org_id=$1 AND submission_key=$2`, orgID, req.IdempotencyKey, emailUUID); err != nil {
-			return nil, err
-		}
+	response, payload, err := s.enqueueDurable(ctx, tx, durableSend{
+		OrgID: orgID, IdentityID: identityID, DomainID: domainID, OwnerID: ownerID,
+		From: fromEmail, FromAddress: normalizedFrom, FromName: fromAddress.Name,
+		To: req.To, Cc: req.Cc, Bcc: req.Bcc, ReplyTo: req.ReplyTo,
+		Subject: subject, HTML: htmlBody, Text: textBody,
+		Tags: string(tagsJSON), Metadata: string(metadataJSON),
+		Attachments: attachments, MessageID: s.generateMessageID(domainName),
+		IdempotencyKey: req.IdempotencyKey, RequestHash: requestHash,
+		ScheduledFor: scheduledFor, RecordSentCopy: true,
+	})
+	if err != nil || payload == nil {
+		return response, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-
-	// The durable payload is already committed. A failed enqueue leaves queued work
-	// for the recovery runner; provider submission still has one atomic claim.
-	if s.queueClient != nil {
-		if scheduledFor != nil {
-			_, err = s.queueClient.EnqueueEmailSendScheduled(payload, *scheduledFor)
-		} else {
-			_, err = s.queueClient.EnqueueEmailSend(payload)
-		}
-	}
-	if scheduledFor == nil && (s.queueClient == nil || err != nil) {
-		go func() {
-			_ = worker.NewEmailHandlerWithProvider(s.db, s.cfg, s.emailProvider).ProcessEmail(context.Background(), payload)
-		}()
-	}
-
-	response := &model.SendEmailResponse{
-		ID:         emailUUID,
-		MessageID:  messageID,
-		Status:     "queued",
-		AcceptedAt: time.Now(),
-	}
-
+	s.Dispatch(payload)
 	return response, nil
 }
 
@@ -824,9 +738,13 @@ func (s *TransactionalService) isEmailSuppressed(ctx context.Context, orgID int6
 
 // loadSubmission cannot return another organization's cached response.
 func (s *TransactionalService) loadSubmission(ctx context.Context, orgID int64, key, hash string) (*model.SendEmailResponse, error) {
+	return loadSubmissionFrom(ctx, s.db, orgID, key, hash)
+}
+
+func loadSubmissionFrom(ctx context.Context, q queryer, orgID int64, key, hash string) (*model.SendEmailResponse, error) {
 	var result model.SendEmailResponse
 	var storedHash string
-	err := s.db.QueryRowContext(ctx, `SELECT k.request_hash,e.uuid,e.message_id,e.status,e.created_at FROM email_submission_keys k JOIN transactional_emails e ON e.uuid=k.email_uuid AND e.org_id=k.org_id WHERE k.org_id=$1 AND k.submission_key=$2`, orgID, key).Scan(&storedHash, &result.ID, &result.MessageID, &result.Status, &result.AcceptedAt)
+	err := q.QueryRowContext(ctx, `SELECT k.request_hash,e.uuid,e.message_id,e.status,e.created_at FROM email_submission_keys k JOIN transactional_emails e ON e.uuid=k.email_uuid AND e.org_id=k.org_id WHERE k.org_id=$1 AND k.submission_key=$2`, orgID, key).Scan(&storedHash, &result.ID, &result.MessageID, &result.Status, &result.AcceptedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -842,6 +760,9 @@ func (s *TransactionalService) loadSubmission(ctx context.Context, orgID int64, 
 func validateSubmissionKey(key string) error {
 	if len(key) < 8 || len(key) > 128 || strings.ContainsAny(key, "\r\n") {
 		return &provider.MailValidationError{Message: "an Idempotency-Key of 8 to 128 characters is required"}
+	}
+	if isSystemSubmissionKey(key) {
+		return errReservedSubmissionKey
 	}
 	return nil
 }

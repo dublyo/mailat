@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/dublyo/mailat/api/internal/config"
@@ -13,13 +14,16 @@ const monthlyUsageMonth = `date_trunc('month',now() AT TIME ZONE 'UTC')::date`
 
 // reserveMonthlySend enforces only an explicit operator quota, keyed by
 // calendar month rather than a sliding Redis expiration or a daily fraction.
+// ErrMonthlySendQuota means the organization's monthly send limit is used up.
+var ErrMonthlySendQuota = errors.New("monthly application send quota exceeded")
+
 func reserveMonthlySend(ctx context.Context, db *sql.DB, cfg *config.Config, orgID int64) error {
 	granted, err := reserveMonthlySends(ctx, db, cfg, orgID, 1)
 	if err != nil {
 		return err
 	}
 	if granted == 0 {
-		return fmt.Errorf("monthly application send quota exceeded")
+		return ErrMonthlySendQuota
 	}
 	return nil
 }
