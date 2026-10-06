@@ -362,3 +362,17 @@ test('after a failed send, Send now updates and sends the saved campaign instead
   assert.deepEqual(updates, ['new-uuid'])
   assert.deepEqual(sends, ['new-uuid', 'new-uuid'])
 })
+
+test('every statusReason the API documents has a readable label', async () => {
+  const spec = JSON.parse(await readFile(path.join(webRoot, '../api/internal/apidocs/openapi.json'), 'utf8'))
+  const description = spec.components.schemas['model.Campaign'].properties.statusReason.description
+  const reasons = description.split(':')[1].match(/[a-z]+(?:_[a-z]+)+/g)
+  assert.ok(reasons.length >= 15, description)
+  const module = { exports: {} }
+  new Function('require', 'module', 'exports', await bundle('lib/campaignStatus.ts', []))(require, module, module.exports)
+  const { STATUS_REASON_LABELS, statusReasonLabel } = module.exports
+  for (const reason of reasons) {
+    assert.ok(STATUS_REASON_LABELS[reason], `no label for ${reason}`)
+    assert.equal(statusReasonLabel(reason), STATUS_REASON_LABELS[reason])
+  }
+})

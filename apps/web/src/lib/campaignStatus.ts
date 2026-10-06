@@ -11,6 +11,10 @@ export const STATUS_REASON_LABELS: Record<string, string> = {
   complaint_rate_high: 'Complaint rate too high',
   invalid_segment: 'Segment rules are invalid',
   ses_daily_quota: 'Waiting for the SES daily quota',
+  ses_throttled: 'SES is throttling sends; retrying shortly',
+  no_postal_address: 'Set the organization postal address, then resume',
+  unsubscribe_url_invalid: 'Server API_URL or WEB_URL is not a full URL; unsubscribe links would break',
+  list_unavailable: 'The campaign list no longer exists',
   legacy_requires_review: 'Needs review before sending',
   no_eligible_recipients: 'No eligible recipients',
 }
