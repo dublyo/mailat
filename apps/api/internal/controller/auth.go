@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/gogf/gf/v2/net/ghttp"
 
@@ -13,10 +14,11 @@ import (
 
 type AuthController struct {
 	authService *service.AuthService
+	limiter     *service.RateLimiter
 }
 
-func NewAuthController(authService *service.AuthService) *AuthController {
-	return &AuthController{authService: authService}
+func NewAuthController(authService *service.AuthService, limiter *service.RateLimiter) *AuthController {
+	return &AuthController{authService: authService, limiter: limiter}
 }
 
 // RegisterStatus checks if registration is open
@@ -30,9 +32,14 @@ func (c *AuthController) RegisterStatus(r *ghttp.Request) {
 	response.Success(r, map[string]bool{"open": open})
 }
 
-// Register creates a new user and organization
+// Register creates the first owner and organization. The email must be a
+// valid address and the password 8–72 bytes. Limited to 5 attempts per client
+// IP per hour (429 with Retry-After).
 // POST /api/v1/auth/register
 func (c *AuthController) Register(r *ghttp.Request) {
+	if rateLimited(r, c.limiter, service.RuleRegisterIP, middleware.ClientIP(r)) {
+		return
+	}
 	var req model.RegisterRequest
 	bodyBytes := r.GetBody()
 	if err := json.Unmarshal(bodyBytes, &req); err != nil {
@@ -63,9 +70,14 @@ func (c *AuthController) Register(r *ghttp.Request) {
 	response.SuccessWithMessage(r, "Registration successful", result)
 }
 
-// Login authenticates a user
+// Login authenticates a user. Attempts are limited per client IP (20 per 15
+// minutes) and per account email (10 per 15 minutes); over the limit the API
+// returns 429 with Retry-After.
 // POST /api/v1/auth/login
 func (c *AuthController) Login(r *ghttp.Request) {
+	if rateLimited(r, c.limiter, service.RuleLoginIP, middleware.ClientIP(r)) {
+		return
+	}
 	var req model.LoginRequest
 	bodyBytes := r.GetBody()
 	if err := json.Unmarshal(bodyBytes, &req); err != nil {
@@ -80,6 +92,10 @@ func (c *AuthController) Login(r *ghttp.Request) {
 	}
 	if req.Password == "" {
 		response.BadRequest(r, "password is required")
+		return
+	}
+	// Checked before bcrypt so a locked account costs no hashing work.
+	if rateLimited(r, c.limiter, service.RuleLoginAccount, strings.ToLower(strings.TrimSpace(req.Email))) {
 		return
 	}
 
@@ -199,7 +215,12 @@ func requireHumanAdmin(r *ghttp.Request) bool {
 }
 
 // CompleteChallenge accepts a one-use password/OAuth challenge, never an API key.
+// Limited to 20 attempts per client IP per 15 minutes, in addition to five
+// attempts per challenge.
 func (c *AuthController) CompleteChallenge(r *ghttp.Request) {
+	if rateLimited(r, c.limiter, service.Rule2FAChallengeIP, middleware.ClientIP(r)) {
+		return
+	}
 	var req struct {
 		ChallengeToken string `json:"challengeToken" v:"required"`
 		Code           string `json:"code" v:"required"`

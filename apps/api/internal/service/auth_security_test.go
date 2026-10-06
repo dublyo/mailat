@@ -94,7 +94,7 @@ func TestTOTPSetupCanOnlyBeEnabledOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); _, err := svc.VerifyAndEnable(ctx, 1, code); results <- err }()
+		go func() { defer wg.Done(); _, err := svc.VerifyAndEnable(ctx, 1, code, ""); results <- err }()
 	}
 	wg.Wait()
 	close(results)

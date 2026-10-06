@@ -15,26 +15,39 @@ type SecurityController struct {
 	twoFactorService *service.TwoFactorService
 	auditLogService  *service.AuditLogService
 	sessionService   *service.SessionService
+	limiter          *service.RateLimiter
 }
 
-func NewSecurityController(twoFactorService *service.TwoFactorService, auditLogService *service.AuditLogService, sessionService *service.SessionService) *SecurityController {
+func NewSecurityController(twoFactorService *service.TwoFactorService, auditLogService *service.AuditLogService, sessionService *service.SessionService, limiter *service.RateLimiter) *SecurityController {
 	return &SecurityController{
 		twoFactorService: twoFactorService,
 		auditLogService:  auditLogService,
 		sessionService:   sessionService,
+		limiter:          limiter,
 	}
+}
+
+// manageLimited applies the per-user limit shared by 2FA management and
+// password changes (10 per 15 minutes).
+func (c *SecurityController) manageLimited(r *ghttp.Request, userID int64) bool {
+	return rateLimited(r, c.limiter, service.Rule2FAManageUser, strconv.FormatInt(userID, 10))
 }
 
 // ====================
 // TWO-FACTOR AUTHENTICATION
 // ====================
 
-// Setup2FA starts the 2FA setup process
+// Setup2FA starts the 2FA setup process. The response carries the secret, the
+// otpauth URI (qrCodeUrl), a PNG QR code as a data URL (qrCodeDataUrl) and the
+// grouped manual code. Rate-limited per user.
 // POST /api/v1/security/2fa/setup
 func (c *SecurityController) Setup2FA(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+	if c.manageLimited(r, claims.UserID) {
 		return
 	}
 
@@ -59,12 +72,17 @@ func (c *SecurityController) Setup2FA(r *ghttp.Request) {
 	response.Success(r, setup)
 }
 
-// Verify2FA verifies a TOTP code and enables 2FA
+// Verify2FA verifies a TOTP code and enables 2FA. All other sessions of the
+// user are signed out; the calling session stays active. Returns the one-time
+// backupCodes. Rate-limited per user.
 // POST /api/v1/security/2fa/verify
 func (c *SecurityController) Verify2FA(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+	if c.manageLimited(r, claims.UserID) {
 		return
 	}
 
@@ -81,7 +99,8 @@ func (c *SecurityController) Verify2FA(r *ghttp.Request) {
 		return
 	}
 
-	backupCodes, err := c.twoFactorService.VerifyAndEnable(r.Context(), claims.UserID, req.Code)
+	// Enabling the factor signs out every other session of this user.
+	backupCodes, err := c.twoFactorService.VerifyAndEnable(r.Context(), claims.UserID, req.Code, middleware.SessionHash(r.Context()))
 	if err != nil {
 		c.auditLogService.LogAsync(&service.AuditLogInput{
 			OrgID:       claims.OrgID,
@@ -114,12 +133,17 @@ func (c *SecurityController) Verify2FA(r *ghttp.Request) {
 	})
 }
 
-// Disable2FA disables 2FA for the user
+// Disable2FA disables 2FA for the user. Requires the account password and a
+// current, not previously used TOTP code (or an unused backup code).
+// Rate-limited per user.
 // POST /api/v1/security/2fa/disable
 func (c *SecurityController) Disable2FA(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+	if c.manageLimited(r, claims.UserID) {
 		return
 	}
 
@@ -173,12 +197,16 @@ func (c *SecurityController) Disable2FA(r *ghttp.Request) {
 	response.SuccessWithMessage(r, "2FA disabled successfully", nil)
 }
 
-// RegenerateBackupCodes generates new backup codes
+// RegenerateBackupCodes replaces the backup codes. Requires the account
+// password and a current, not previously used TOTP code. Rate-limited per user.
 // POST /api/v1/security/2fa/backup-codes
 func (c *SecurityController) RegenerateBackupCodes(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+	if c.manageLimited(r, claims.UserID) {
 		return
 	}
 
@@ -353,6 +381,9 @@ func (c *SecurityController) ChangePassword(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+	if c.manageLimited(r, claims.UserID) {
 		return
 	}
 

@@ -1,6 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
-import { api } from '@/lib/api'
+import { api, type TwoFactorSetup, type TwoFactorStatus } from '@/lib/api'
+
+// Browser-local copies of account data. They are cleared on logout so a shared
+// browser does not show the previous user's settings or rules.
+const LOCAL_SETTINGS_KEYS = ['userSettings', 'userFilters', 'blockedSenders'] as const
 
 export interface UserSettings {
   // General
@@ -81,6 +85,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const filters = ref<Filter[]>([])
   const blockedSenders = ref<BlockedSender[]>([])
   const sessions = ref<Session[]>([])
+  const twoFactor = ref<TwoFactorStatus | null>(null)
   const isLoading = ref(false)
   const isSaving = ref(false)
   const error = ref<string | null>(null)
@@ -300,41 +305,74 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  // 2FA
-  async function enable2FA(method: 'authenticator' | 'webauthn') {
+  // 2FA (server state is authoritative; the settings row copy is not used)
+  async function fetch2FAStatus() {
     try {
-      const result = await api.post<{ secret?: string; qrCode?: string }>('/api/v1/auth/2fa/enable', { method })
-      return result
+      twoFactor.value = await api.get<TwoFactorStatus>('/api/v1/security/2fa/status')
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to enable 2FA'
+      error.value = e instanceof Error ? e.message : 'Could not load two-factor status'
+    }
+  }
+
+  async function enable2FA(): Promise<TwoFactorSetup | null> {
+    try {
+      return await api.post<TwoFactorSetup>('/api/v1/security/2fa/setup')
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to start two-factor setup'
       return null
     }
   }
 
-  async function verify2FA(code: string) {
+  // Returns the one-time backup codes. Other sessions are signed out by the server.
+  async function verify2FA(code: string): Promise<string[] | null> {
     try {
-      await api.post('/api/v1/auth/2fa/verify', { code })
-      settings.value.twoFactorEnabled = true
-      settings.value.twoFactorMethod = 'authenticator'
-      saveToStorage()
+      const result = await api.post<{ backupCodes: string[] }>('/api/v1/security/2fa/verify', { code })
+      const backupCodes = result?.backupCodes ?? []
+      twoFactor.value = { enabled: true, backupCodesCount: backupCodes.length }
+      return backupCodes
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Invalid verification code'
+      return null
+    }
+  }
+
+  async function disable2FA(password: string, code: string) {
+    try {
+      await api.post('/api/v1/security/2fa/disable', { password, code })
+      twoFactor.value = { enabled: false, backupCodesCount: 0 }
       return true
-    } catch {
-      error.value = 'Invalid verification code'
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to disable two-factor authentication'
       return false
     }
   }
 
-  async function disable2FA(code: string) {
+  async function regenerateBackupCodes(password: string, code: string): Promise<string[] | null> {
     try {
-      await api.post('/api/v1/auth/2fa/disable', { code })
-      settings.value.twoFactorEnabled = false
-      settings.value.twoFactorMethod = null
-      saveToStorage()
-      return true
-    } catch {
-      error.value = 'Failed to disable 2FA'
-      return false
+      const result = await api.post<{ backupCodes: string[] }>('/api/v1/security/2fa/backup-codes', { password, code })
+      const backupCodes = result?.backupCodes ?? []
+      twoFactor.value = { enabled: true, backupCodesCount: backupCodes.length }
+      return backupCodes
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to generate new backup codes'
+      return null
     }
+  }
+
+  // Called on logout: forget every browser-local copy of account data.
+  function clearLocalSettings() {
+    for (const key of LOCAL_SETTINGS_KEYS) {
+      try { localStorage.removeItem(key) } catch { /* storage unavailable */ }
+    }
+    settingsRequest++
+    settings.value = { ...defaultSettings }
+    filters.value = []
+    blockedSenders.value = []
+    sessions.value = []
+    twoFactor.value = null
+    settingsLoaded.value = false
+    settingsOwner = null
+    error.value = null
   }
 
   // Browser notifications
@@ -384,6 +422,7 @@ export const useSettingsStore = defineStore('settings', () => {
     filters,
     blockedSenders,
     sessions,
+    twoFactor,
     isLoading,
     isSaving,
     error,
@@ -402,9 +441,12 @@ export const useSettingsStore = defineStore('settings', () => {
     revokeSession,
     revokeAllOtherSessions,
     changePassword,
+    fetch2FAStatus,
     enable2FA,
     verify2FA,
     disable2FA,
+    regenerateBackupCodes,
+    clearLocalSettings,
     requestBrowserNotifications,
     applyTheme,
   }

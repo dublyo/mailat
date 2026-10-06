@@ -4,6 +4,7 @@ import { api, authApi, type User } from '@/lib/api'
 import { useReceivedInboxStore } from './receivedInbox'
 import { useInboxStore } from './inbox'
 import { useDomainsStore } from './domains'
+import { useSettingsStore } from './settings'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
@@ -11,6 +12,9 @@ export const useAuthStore = defineStore('auth', () => {
   const isLoading = ref(false)
   const challengeToken = ref<string | null>(null)
   const isInitialized = ref(false)
+  // Set when the session could not be checked (network or server error). The
+  // token is kept so a retry can restore the session without signing in again.
+  const authError = ref<string | null>(null)
 
   const isAuthenticated = computed(() => !!user.value && !!token.value)
 
@@ -63,6 +67,8 @@ export const useAuthStore = defineStore('auth', () => {
     useReceivedInboxStore().reset()
     useInboxStore().closeCompose()
     useDomainsStore().reset()
+    useSettingsStore().clearLocalSettings()
+    authError.value = null
     user.value = null
     token.value = null
     api.setToken(null)
@@ -80,8 +86,16 @@ export const useAuthStore = defineStore('auth', () => {
 
     try {
       user.value = await authApi.me()
-    } catch {
-      logout()
+      authError.value = null
+    } catch (e) {
+      // Only a rejected credential ends the session. An outage or 5xx must not
+      // sign the user out of every tab.
+      const status = (e as { status?: number }).status
+      if (status === 401 || status === 403) {
+        logout()
+      } else {
+        authError.value = 'Mailat could not reach the server to restore your session.'
+      }
     } finally {
       isInitialized.value = true
     }
@@ -98,6 +112,7 @@ export const useAuthStore = defineStore('auth', () => {
     verifyChallenge,
     register,
     logout,
-    checkAuth
+    checkAuth,
+    authError
   }
 })

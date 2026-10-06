@@ -3,7 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { Eye, EyeOff } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
-import { api, authApi } from '@/lib/api'
+import { api, authApi, oauthApi } from '@/lib/api'
 import Button from '@/components/common/Button.vue'
 import Spinner from '@/components/common/Spinner.vue'
 
@@ -18,8 +18,38 @@ const verificationCode = ref('')
 const error = ref('')
 const isLoading = ref(false)
 const registrationOpen = ref(false)
+const providers = ref<string[]>([])
+const retrying = ref(false)
+
+const providerLabels: Record<string, string> = { google: 'Google', github: 'GitHub', microsoft: 'Microsoft' }
+
+// The API redirects here with a fixed code only; provider text is never shown.
+const oauthErrors: Record<string, string> = {
+  invalid_state: 'That sign-in attempt expired or was started in another browser. Please try again.',
+  provider_error: 'The sign-in provider could not complete the request. Please try again.',
+  not_linked: 'This account is not connected to a Mailat user. Sign in with your password, then connect it in Settings → Security.',
+  email_unverified: 'The provider has not verified this email address, so it cannot create the first account.',
+  registration_closed: 'Registration is closed. Ask your administrator for an invite.',
+  rate_limited: 'Too many sign-in attempts. Please wait a few minutes and try again.',
+}
+
+async function retrySession() {
+  retrying.value = true
+  try {
+    await authStore.checkAuth()
+    if (authStore.isAuthenticated) await router.replace(route.query.redirect as string || '/inbox')
+  } finally {
+    retrying.value = false
+  }
+}
 
 onMounted(async () => {
+  const oauthError = route.query.oauthError
+  if (typeof oauthError === 'string') {
+    error.value = oauthErrors[oauthError] || oauthErrors.provider_error
+    const { oauthError: _removed, ...query } = route.query
+    await router.replace({ path: route.path, query, hash: route.hash })
+  }
   const params = new URLSearchParams(route.hash.replace(/^#/, ''))
   const challenge = params.get('challenge')
   const session = params.get('session')
@@ -38,6 +68,11 @@ onMounted(async () => {
     registrationOpen.value = res.open
   } catch {
     // ignore — just hide register link
+  }
+  try {
+    providers.value = (await oauthApi.providers())?.providers ?? []
+  } catch {
+    providers.value = []
   }
 })
 
@@ -75,7 +110,14 @@ const handleSubmit = async () => {
         <h1 class="text-2xl font-normal text-center mb-2">Sign in</h1>
         <p class="text-gmail-gray text-center mb-8">to continue to Mailat</p>
 
-        <div v-if="error" class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+        <div v-if="authStore.authError" class="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-sm flex items-center justify-between gap-3" role="status">
+          <span>{{ authStore.authError }}</span>
+          <button type="button" class="font-medium text-gmail-blue hover:underline shrink-0" :disabled="retrying" @click="retrySession">
+            {{ retrying ? 'Retrying…' : 'Retry' }}
+          </button>
+        </div>
+
+        <div v-if="error" class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm" role="alert">
           {{ error }}
         </div>
 
@@ -145,6 +187,22 @@ const handleSubmit = async () => {
             {{ authStore.challengeToken ? 'Verify and sign in' : 'Sign in' }}
           </Button>
         </form>
+
+        <div v-if="providers.length && !authStore.challengeToken" class="mt-6">
+          <div class="flex items-center gap-3 text-xs text-gmail-gray mb-4">
+            <span class="flex-1 border-t border-gmail-border"></span>or<span class="flex-1 border-t border-gmail-border"></span>
+          </div>
+          <div class="space-y-2">
+            <a
+              v-for="provider in providers"
+              :key="provider"
+              :href="oauthApi.loginUrl(provider)"
+              class="block w-full text-center px-4 py-3 border border-gmail-border rounded-lg text-sm font-medium hover:bg-gmail-lightGray"
+            >
+              Continue with {{ providerLabels[provider] || provider }}
+            </a>
+          </div>
+        </div>
 
         <div v-if="registrationOpen" class="mt-6 text-center">
           <span class="text-gmail-gray">Don't have an account? </span>

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -29,12 +30,41 @@ func NewAuthService(db *sql.DB, cfg *config.Config) *AuthService {
 	return &AuthService{db: db, cfg: cfg}
 }
 
+// dummyPasswordHash equalizes Login timing for unknown accounts and accounts
+// without a password (OAuth-only), so response time does not reveal which
+// emails exist. Same cost as real hashes.
+var dummyPasswordHash = func() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("mailat-timing-equalizer"), bcrypt.DefaultCost)
+	if err != nil {
+		panic("generate dummy password hash: " + err.Error())
+	}
+	return h
+}()
+
+// validateRegistration enforces the registration policy: a single valid
+// address and a password bcrypt can hash without truncation (8–72 bytes).
+func validateRegistration(email, password string) (string, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	address, err := mail.ParseAddress(email)
+	if err != nil || address.Address != email || len(email) > 255 {
+		return "", fmt.Errorf("enter a valid email address")
+	}
+	if len(password) < 8 || len(password) > 72 {
+		return "", fmt.Errorf("password must be 8 to 72 bytes long")
+	}
+	return email, nil
+}
+
 // Register creates the first admin user and organization.
 // Registration is one-time only — once an owner exists, new users must be invited.
 func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) (*model.AuthResponse, error) {
+	email, err := validateRegistration(req.Email, req.Password)
+	if err != nil {
+		return nil, err
+	}
 	// One-time registration: reject if any users already exist
 	var userCount int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&userCount)
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&userCount)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check existing users")
 	}
@@ -99,7 +129,7 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 		INSERT INTO users (uuid, org_id, email, password_hash, name, role, status, email_verified, updated_at)
 		VALUES ($1, $2, $3, $4, $5, 'owner', 'active', false, NOW())
 		RETURNING id, uuid, org_id, email, name, role, status, email_verified, created_at, updated_at
-	`, userUUID, orgID, strings.ToLower(req.Email), string(passwordHash), req.Name).Scan(
+	`, userUUID, orgID, email, string(passwordHash), req.Name).Scan(
 		&user.ID, &user.UUID, &user.OrgID, &user.Email, &user.Name,
 		&user.Role, &user.Status, &user.EmailVerified, &user.CreatedAt, &user.UpdatedAt,
 	)
@@ -129,7 +159,12 @@ func (s *AuthService) Login(ctx context.Context, req *model.LoginRequest) (*mode
 	var id, version int64
 	var passwordHash string
 	err := s.db.QueryRowContext(ctx, `SELECT id,password_hash,auth_version FROM users WHERE email=$1 AND status='active'`, strings.ToLower(strings.TrimSpace(req.Email))).Scan(&id, &passwordHash, &version)
-	if err != nil || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)) != nil {
+	if err != nil || passwordHash == "" {
+		// Spend the same bcrypt work as a real comparison before failing.
+		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(req.Password))
+		return nil, fmt.Errorf("invalid email or password")
+	}
+	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)) != nil {
 		return nil, fmt.Errorf("invalid email or password")
 	}
 	return s.authenticateUser(ctx, id, &version)

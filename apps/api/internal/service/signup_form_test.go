@@ -55,7 +55,7 @@ func submitSignup(t *testing.T, s *SignupFormService, f *model.SignupForm, email
 	if e != nil {
 		return e
 	}
-	_, e = s.Submit(context.Background(), f.UUID, "192.0.2.1", &model.SubmitSignupRequest{Email: email, FirstName: "New", Consent: true, Challenge: p.Challenge})
+	_, e = s.Submit(context.Background(), f.UUID, "192.0.2.1", "fixture-agent", &model.SubmitSignupRequest{Email: email, FirstName: "New", Consent: true, Challenge: p.Challenge})
 	return e
 }
 func signupToken(t *testing.T, c *signupCapture) string {
@@ -89,6 +89,9 @@ func TestSignupSingleDoubleAndSuppression(t *testing.T) {
 	}
 	signupCount(t, db, `SELECT count(*) FROM list_contacts`, 1)
 	signupCount(t, db, `SELECT count(*) FROM consent_audit WHERE source='signup_form'`, 1)
+	// Consent evidence carries the submitting client, on the audit row and the contact.
+	signupCount(t, db, `SELECT count(*) FROM consent_audit WHERE source='signup_form' AND ip_address='192.0.2.1' AND user_agent='fixture-agent'`, 1)
+	signupCount(t, db, `SELECT count(*) FROM contacts WHERE consent_ip='192.0.2.1' AND consent_user_agent='fixture-agent'`, 1)
 	signupCount(t, db, `SELECT count(*) FROM webhook_events WHERE event_type='contact.subscribed'`, 1)
 	var id string
 	db.QueryRow(`SELECT uuid FROM contacts LIMIT 1`).Scan(&id)
@@ -108,13 +111,14 @@ func TestSignupSingleDoubleAndSuppression(t *testing.T) {
 	signupCount(t, db, `SELECT count(*) FROM contacts WHERE email='double@reader.test'`, 0)
 	token := signupToken(t, cap)
 	signupCount(t, db, `SELECT count(*) FROM signup_requests WHERE token_hash=$1`, 0, token)
-	if _, e = s.Confirm(ctx, token, "192.0.2.1"); e != nil {
+	if _, e = s.Confirm(ctx, token, "192.0.2.1", "fixture-agent"); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = s.Confirm(ctx, token, "192.0.2.1"); e == nil {
+	if _, e = s.Confirm(ctx, token, "192.0.2.1", "fixture-agent"); e == nil {
 		t.Fatal("replay")
 	}
 	signupCount(t, db, `SELECT count(*) FROM list_contacts`, 2)
+	signupCount(t, db, `SELECT count(*) FROM consent_audit a JOIN contacts c ON c.id=a.contact_id WHERE c.email='double@reader.test' AND a.ip_address='192.0.2.1' AND a.user_agent='fixture-agent'`, 1)
 	db.Exec(`UPDATE contacts SET status='unsubscribed' WHERE email='double@reader.test'`)
 	before := len(cap.messages)
 	if e = submitSignup(t, s, f, "double@reader.test"); e != nil {
@@ -141,16 +145,16 @@ func TestSignupIsolationPolicyAndValidation(t *testing.T) {
 	}
 	p, _ := s.Public(ctx, f.UUID)
 	for _, req := range []*model.SubmitSignupRequest{{Email: "person@reader.test", Challenge: p.Challenge}, {Email: "Bad <person@reader.test>", Consent: true, Challenge: p.Challenge}} {
-		if _, e := s.Submit(ctx, f.UUID, "192.0.2.1", req); e == nil {
+		if _, e := s.Submit(ctx, f.UUID, "192.0.2.1", "fixture-agent", req); e == nil {
 			t.Fatal("invalid submission")
 		}
 	}
-	if _, e := s.Submit(ctx, f.UUID, "192.0.2.1", &model.SubmitSignupRequest{Email: "bot@reader.test", Consent: true, Challenge: p.Challenge, Website: "spam"}); e != nil {
+	if _, e := s.Submit(ctx, f.UUID, "192.0.2.1", "fixture-agent", &model.SubmitSignupRequest{Email: "bot@reader.test", Consent: true, Challenge: p.Challenge, Website: "spam"}); e != nil {
 		t.Fatal(e)
 	}
 	signupCount(t, db, `SELECT count(*) FROM signup_requests`, 0)
 	db.Exec(`UPDATE signup_forms SET version=version+1,identity_id=NULL WHERE id=$1`, f.ID)
-	if _, e := s.Submit(ctx, f.UUID, "192.0.2.1", &model.SubmitSignupRequest{Email: "person@reader.test", Consent: true, Challenge: p.Challenge}); e == nil {
+	if _, e := s.Submit(ctx, f.UUID, "192.0.2.1", "fixture-agent", &model.SubmitSignupRequest{Email: "person@reader.test", Consent: true, Challenge: p.Challenge}); e == nil {
 		t.Fatal("stale disclosure")
 	}
 	if _, e := ls.UpdateList(ctx, 1, list.UUID, &model.UpdateListRequest{ConfirmationMode: "double"}); e == nil {
@@ -186,7 +190,7 @@ func TestSignupFailureExpiryConcurrencyAndRate(t *testing.T) {
 	}
 	token := signupToken(t, cap)
 	db.Exec(`UPDATE signup_requests SET expires_at=now()-interval '1 second' WHERE token_hash=$1`, signupDigest(token))
-	if _, e := s.Confirm(ctx, token, "192.0.2.1"); e == nil {
+	if _, e := s.Confirm(ctx, token, "192.0.2.1", "fixture-agent"); e == nil {
 		t.Fatal("expired token")
 	}
 	if e := submitSignup(t, s, f, "later@reader.test"); e != nil {
@@ -194,7 +198,7 @@ func TestSignupFailureExpiryConcurrencyAndRate(t *testing.T) {
 	}
 	token = signupToken(t, cap)
 	db.Exec(`INSERT INTO suppressions(org_id,email,reason,source_type) VALUES(1,'later@reader.test','complaint','test')`)
-	if _, e := s.Confirm(ctx, token, "192.0.2.1"); e != nil {
+	if _, e := s.Confirm(ctx, token, "192.0.2.1", "fixture-agent"); e != nil {
 		t.Fatal(e)
 	}
 	signupCount(t, db, `SELECT count(*) FROM contacts WHERE email='later@reader.test'`, 0)
@@ -208,7 +212,7 @@ func TestSignupFailureExpiryConcurrencyAndRate(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, e := s.Submit(ctx, f.UUID, "192.0.2.2", &model.SubmitSignupRequest{Email: "parallel@reader.test", Consent: true, Challenge: p.Challenge})
+			_, e := s.Submit(ctx, f.UUID, "192.0.2.2", "fixture-agent", &model.SubmitSignupRequest{Email: "parallel@reader.test", Consent: true, Challenge: p.Challenge})
 			errs <- e
 		}()
 	}
@@ -273,7 +277,7 @@ func TestSignupUnpublishExistingContactsAndErasure(t *testing.T) {
 	signupCount(t, db, `SELECT count(*) FROM list_contacts`, 1)
 	token := signupToken(t, cap)
 	db.Exec(`UPDATE signup_forms SET published=false WHERE id=$1`, otherForm.ID)
-	if _, err = s.Confirm(ctx, token, "192.0.2.1"); err == nil {
+	if _, err = s.Confirm(ctx, token, "192.0.2.1", "fixture-agent"); err == nil {
 		t.Fatal("unpublished confirmation accepted")
 	}
 	db.Exec(`UPDATE signup_forms SET published=true WHERE id=$1`, otherForm.ID)
@@ -281,7 +285,7 @@ func TestSignupUnpublishExistingContactsAndErasure(t *testing.T) {
 		t.Fatal(err)
 	}
 	signupCount(t, db, `SELECT count(*) FROM list_contacts`, 1)
-	if _, err = s.Confirm(ctx, token, "192.0.2.1"); err != nil {
+	if _, err = s.Confirm(ctx, token, "192.0.2.1", "fixture-agent"); err != nil {
 		t.Fatal(err)
 	}
 	signupCount(t, db, `SELECT count(*) FROM signup_requests WHERE confirmation_mode='double' AND status='subscribed'`, 1)
@@ -297,7 +301,7 @@ func TestSignupUnpublishExistingContactsAndErasure(t *testing.T) {
 	if err = compliance.ProcessOneClickUnsubscribe(ctx, unsub, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.Confirm(ctx, token, "192.0.2.1"); err == nil {
+	if _, err = s.Confirm(ctx, token, "192.0.2.1", "fixture-agent"); err == nil {
 		t.Fatal("replayed after unsubscribe")
 	}
 	signupCount(t, db, `SELECT count(*) FROM contacts WHERE status='active'`, 0)

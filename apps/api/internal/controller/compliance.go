@@ -10,15 +10,25 @@ import (
 
 type ComplianceController struct {
 	complianceService *service.ComplianceService
+	limiter           *service.RateLimiter
 }
 
-func NewComplianceController(complianceService *service.ComplianceService) *ComplianceController {
-	return &ComplianceController{complianceService: complianceService}
+func NewComplianceController(complianceService *service.ComplianceService, limiter *service.RateLimiter) *ComplianceController {
+	return &ComplianceController{complianceService: complianceService, limiter: limiter}
+}
+
+// publicLimited applies the shared per-IP limit for public token endpoints
+// (60 per 15 minutes).
+func (c *ComplianceController) publicLimited(r *ghttp.Request) bool {
+	return rateLimited(r, c.limiter, service.RulePublicComplianceIP, middleware.ClientIP(r))
 }
 
 // OneClickUnsubscribe handles RFC 8058 one-click unsubscribe (POST only)
 // POST /api/v1/unsubscribe/:token
 func (c *ComplianceController) OneClickUnsubscribe(r *ghttp.Request) {
+	if c.publicLimited(r) {
+		return
+	}
 	token := r.Get("token").String()
 	if token == "" {
 		response.BadRequest(r, "Invalid unsubscribe link")
@@ -58,6 +68,9 @@ func (c *ComplianceController) GetUnsubscribePage(r *ghttp.Request) {
 // ConfirmUnsubscribe handles confirmed unsubscribe from landing page
 // DELETE /api/v1/unsubscribe/:token
 func (c *ComplianceController) ConfirmUnsubscribe(r *ghttp.Request) {
+	if c.publicLimited(r) {
+		return
+	}
 	token := r.Get("token").String()
 	if token == "" {
 		response.BadRequest(r, "Invalid unsubscribe link")
@@ -106,6 +119,9 @@ func (c *ComplianceController) GetPreferences(r *ghttp.Request) {
 // unsubscribes and suppresses the address.
 // PUT /api/v1/preferences/:token
 func (c *ComplianceController) UpdatePreferences(r *ghttp.Request) {
+	if c.publicLimited(r) {
+		return
+	}
 	token := r.Get("token").String()
 	if token == "" {
 		response.BadRequest(r, "Invalid preferences link")

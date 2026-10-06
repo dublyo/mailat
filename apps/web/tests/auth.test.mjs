@@ -22,10 +22,10 @@ const storesBuild = await build({
   bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external',
   plugins: [{ name: 'auth-fixture', setup(builder) {
     builder.onResolve({ filter: /^@\/lib\/api$/ }, () => ({ path: 'api', namespace: 'fixture' }))
-    builder.onResolve({ filter: /^\.\/(receivedInbox|inbox)$/ }, () => ({ path: 'other-stores', namespace: 'fixture' }))
+    builder.onResolve({ filter: /^\.\/(receivedInbox|inbox|settings)$/ }, () => ({ path: 'other-stores', namespace: 'fixture' }))
     builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: args.path === 'api'
       ? 'export const { api, authApi, domainApi, identityApi, receivedInboxApi } = globalThis.__authFixture'
-      : 'export const useReceivedInboxStore = () => ({ reset() {} }); export const useInboxStore = () => ({ closeCompose() {} })', loader: 'js' }))
+      : 'export const useReceivedInboxStore = () => ({ reset() {} }); export const useInboxStore = () => ({ closeCompose() {} }); export const useSettingsStore = () => ({ clearLocalSettings() { globalThis.__settingsCleared = (globalThis.__settingsCleared || 0) + 1 } })', loader: 'js' }))
   } }],
 })
 function apiFixture() {
@@ -192,4 +192,35 @@ test('disconnect discards an in-flight stream ticket after logout', async () => 
     pending.resolve({ token: 'late-ticket' }); await connection
     assert.equal(opened, 0)
   } finally { api.post = originalPost; globalThis.EventSource = original }
+})
+
+test('session check keeps the token on a server error and offers a retry', async () => {
+  const { auth, endpoints, state } = storesFixture()
+  const saved = new Map([['token', 'first-account']])
+  globalThis.localStorage = { getItem: key => saved.get(key) || null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) }
+  endpoints.authApi.me = async () => { throw Object.assign(new Error('Internal failure'), { status: 500 }) }
+  await auth.checkAuth()
+  assert.equal(state.token, 'first-account')
+  assert.equal(auth.token, 'first-account')
+  assert.equal(auth.isInitialized, true)
+  assert.ok(auth.authError)
+  endpoints.authApi.me = async () => ({ id: 1, email: 'fixture@example.test' })
+  await auth.checkAuth()
+  assert.equal(auth.isAuthenticated, true)
+  assert.equal(auth.authError, null)
+})
+
+test('session check signs out on a rejected credential and clears local settings', async () => {
+  for (const status of [401, 403]) {
+    const { auth, endpoints, state } = storesFixture()
+    const saved = new Map([['token', 'first-account']])
+    globalThis.localStorage = { getItem: key => saved.get(key) || null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) }
+    globalThis.__settingsCleared = 0
+    endpoints.authApi.me = async () => { throw Object.assign(new Error('Session expired'), { status }) }
+    await auth.checkAuth()
+    assert.equal(state.token, null)
+    assert.equal(auth.token, null)
+    assert.equal(auth.authError, null)
+    assert.equal(globalThis.__settingsCleared, 1)
+  }
 })

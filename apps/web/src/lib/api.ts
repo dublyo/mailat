@@ -290,6 +290,41 @@ export const authApi = {
   streamToken: () => api.post<{ token: string; expiresAt: string }>('/api/v1/auth/stream-token'),
 }
 
+// ============ Two-factor and sign-in providers ============
+
+export interface TwoFactorSetup {
+  secret: string
+  qrCodeUrl: string
+  qrCodeDataUrl: string
+  manualCode: string
+}
+
+export interface TwoFactorStatus {
+  enabled: boolean
+  backupCodesCount: number
+}
+
+export interface OAuthConnection {
+  id: number
+  provider: string
+  providerUserId: string
+  email?: string
+  name?: string
+  avatarUrl?: string
+  createdAt: string
+}
+
+export const oauthApi = {
+  providers: () => api.get<{ providers: string[] }>('/api/v1/oauth/providers'),
+  connections: () => api.get<OAuthConnection[] | null>('/api/v1/oauth/connections'),
+  // The browser then navigates to authUrl; the provider returns to Settings with a ticket.
+  connect: (provider: string) => api.post<{ authUrl: string }>(`/api/v1/oauth/${encodeURIComponent(provider)}/connect`),
+  disconnect: (provider: string) => api.delete(`/api/v1/oauth/${encodeURIComponent(provider)}`),
+  confirmLink: (ticket: string) => api.post<{ provider: string }>('/api/v1/oauth/link/confirm', { ticket }),
+  // Sign-in starts with a top-level navigation to the API origin.
+  loginUrl: (provider: string) => `${API_BASE}/api/v1/oauth/${encodeURIComponent(provider)}`,
+}
+
 // ============ Inbox API ============
 
 export const inboxApi = {
@@ -777,12 +812,11 @@ export const settingsApi = {
   revokeAllSessions: () => api.post('/api/v1/auth/sessions/revoke-all'),
 
   // 2FA
-  enable2FA: (method: string) =>
-    api.post<{ secret?: string; qrCode?: string }>('/api/v1/auth/2fa/enable', { method }),
+  enable2FA: () => api.post<TwoFactorSetup>('/api/v1/security/2fa/setup'),
 
-  verify2FA: (code: string) => api.post('/api/v1/auth/2fa/verify', { code }),
+  verify2FA: (code: string) => api.post<{ backupCodes: string[] }>('/api/v1/security/2fa/verify', { code }),
 
-  disable2FA: (code: string) => api.post('/api/v1/auth/2fa/disable', { code }),
+  disable2FA: (password: string, code: string) => api.post('/api/v1/security/2fa/disable', { password, code }),
 
   // AWS Setup
   validateAWSCredentials: (data: { region: string; accessKeyId: string; secretAccessKey: string }) =>

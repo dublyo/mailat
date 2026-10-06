@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { User, Shield, Bell, Palette, Filter, Webhook, Check, X, Plus } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
+import { User, Shield, Bell, Palette, Filter, Webhook, Check, X, Plus, Copy, Download } from 'lucide-vue-next'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import Modal from '@/components/common/Modal.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
-import { webhookApi, type Webhook as WebhookType, type WebhookDelivery, type WebhookAttempt } from '@/lib/api'
+import { webhookApi, oauthApi, type OAuthConnection, type TwoFactorSetup, type Webhook as WebhookType, type WebhookDelivery, type WebhookAttempt } from '@/lib/api'
 
 const authStore = useAuthStore()
 const settingsStore = useSettingsStore()
+const route = useRoute()
+const router = useRouter()
 
 // Helper to format dates
 function formatDate(dateStr: string): string {
@@ -30,7 +33,8 @@ function formatDate(dateStr: string): string {
 
 type SettingsTab = 'general' | 'security' | 'notifications' | 'appearance' | 'filters' | 'integrations'
 
-const activeTab = ref<SettingsTab>('general')
+const settingsTabs: SettingsTab[] = ['general', 'security', 'notifications', 'appearance', 'filters', 'integrations']
+const activeTab = ref<SettingsTab>(settingsTabs.includes(route.query.tab as SettingsTab) ? route.query.tab as SettingsTab : 'general')
 
 const tabs = [
   { id: 'general', label: 'General', icon: User },
@@ -58,10 +62,34 @@ const filterActions = ref('')
 const showBlockModal = ref(false)
 const blockEmail = ref('')
 
-// 2FA modal
+// 2FA enable modal: scan the QR (or type the manual code), verify, then save backup codes
 const show2FAModal = ref(false)
+const twoFAStep = ref<'scan' | 'codes'>('scan')
+const twoFASetup = ref<TwoFactorSetup | null>(null)
 const twoFACode = ref('')
-const qrCodeUrl = ref('')
+const twoFAError = ref('')
+const twoFABusy = ref(false)
+const backupCodes = ref<string[]>([])
+const backupCodesSaved = ref(false)
+const copyNotice = ref('')
+// Disable and regenerate both need the password and a current code
+const factorAction = ref<'disable' | 'regenerate' | null>(null)
+const factorPassword = ref('')
+const factorCode = ref('')
+
+// Sign-in providers (shown only when the server has providers configured)
+const oauthProviders = ref<string[]>([])
+const oauthConnections = ref<OAuthConnection[]>([])
+const oauthNotice = ref('')
+const oauthError = ref('')
+const oauthBusy = ref('')
+const providerLabels: Record<string, string> = { google: 'Google', github: 'GitHub', microsoft: 'Microsoft' }
+const linkErrors: Record<number, string> = {
+  403: 'This connection was started by a different Mailat user. Sign in as that user, or connect again.',
+  409: 'That account is already connected to another Mailat user, or this provider is already connected here.',
+  410: 'This connection request expired. Connect the account again.',
+  429: 'Too many attempts. Please wait a few minutes and try again.',
+}
 
 // Webhooks
 const webhooks = ref<WebhookType[]>([])
@@ -183,11 +211,65 @@ async function testWebhook(uuid: string) {
   finally { webhookBusy.value = '' }
 }
 
-onMounted(() => {
+async function fetchSignInProviders() {
+  try {
+    oauthProviders.value = (await oauthApi.providers())?.providers ?? []
+    if (oauthProviders.value.length) oauthConnections.value = (await oauthApi.connections()) ?? []
+  } catch {
+    oauthError.value = 'Could not load sign-in providers.'
+  }
+}
+
+async function connectProvider(provider: string) {
+  oauthBusy.value = provider
+  oauthError.value = ''
+  try {
+    const { authUrl } = await oauthApi.connect(provider)
+    window.location.href = authUrl
+  } catch (e) {
+    oauthError.value = e instanceof Error ? e.message : 'Could not start the connection.'
+    oauthBusy.value = ''
+  }
+}
+
+async function disconnectProvider(provider: string) {
+  oauthBusy.value = provider
+  oauthError.value = ''
+  try {
+    await oauthApi.disconnect(provider)
+    oauthConnections.value = oauthConnections.value.filter(c => c.provider !== provider)
+    oauthNotice.value = `${providerLabels[provider] || provider} sign-in disconnected.`
+  } catch (e) {
+    oauthError.value = e instanceof Error ? e.message : 'Could not disconnect this provider.'
+  } finally {
+    oauthBusy.value = ''
+  }
+}
+
+// The provider returns to /settings?tab=security&oauthLink=<ticket>. The
+// signed-in user confirms it here; the ticket is removed from the URL first.
+async function confirmOAuthLink(ticket: string) {
+  const { oauthLink: _ticket, ...query } = route.query
+  await router.replace({ path: route.path, query })
+  activeTab.value = 'security'
+  try {
+    const { provider } = await oauthApi.confirmLink(ticket)
+    oauthNotice.value = `${providerLabels[provider] || provider} sign-in connected.`
+  } catch (e) {
+    const status = (e as { status?: number }).status
+    oauthError.value = (status && linkErrors[status]) || 'Could not connect this account. Try again.'
+  }
+}
+
+onMounted(async () => {
   settingsStore.fetchSettings()
   settingsStore.fetchSessions()
+  settingsStore.fetch2FAStatus()
   fetchWebhooks()
   fetchDeliveries()
+  const ticket = route.query.oauthLink
+  if (typeof ticket === 'string' && ticket) await confirmOAuthLink(ticket)
+  fetchSignInProviders()
 })
 
 // Computed for easy access
@@ -234,18 +316,95 @@ async function handleChangePassword() {
 
 // 2FA
 async function handleEnable2FA() {
-  const result = await settingsStore.enable2FA('authenticator')
-  if (result?.qrCode) {
-    qrCodeUrl.value = result.qrCode
-    show2FAModal.value = true
-  }
+  twoFAError.value = ''
+  twoFACode.value = ''
+  twoFAStep.value = 'scan'
+  twoFASetup.value = null
+  show2FAModal.value = true
+  twoFASetup.value = await settingsStore.enable2FA()
+  if (!twoFASetup.value) twoFAError.value = settingsStore.error || 'Could not start two-factor setup.'
 }
 
 async function handleVerify2FA() {
-  const success = await settingsStore.verify2FA(twoFACode.value)
-  if (success) {
-    show2FAModal.value = false
-    twoFACode.value = ''
+  twoFABusy.value = true
+  twoFAError.value = ''
+  try {
+    const codes = await settingsStore.verify2FA(twoFACode.value.trim())
+    if (!codes) {
+      twoFAError.value = settingsStore.error || 'Invalid verification code'
+      return
+    }
+    showBackupCodes(codes)
+    // The server signed out other sessions; refresh the list.
+    settingsStore.fetchSessions()
+  } finally {
+    twoFABusy.value = false
+  }
+}
+
+function showBackupCodes(codes: string[]) {
+  backupCodes.value = codes
+  backupCodesSaved.value = false
+  copyNotice.value = ''
+  twoFAStep.value = 'codes'
+  twoFASetup.value = null
+  show2FAModal.value = true
+}
+
+function close2FAModal() {
+  // Backup codes are shown once; require an explicit acknowledgement.
+  if (twoFAStep.value === 'codes' && !backupCodesSaved.value) return
+  show2FAModal.value = false
+  twoFASetup.value = null
+  backupCodes.value = []
+  twoFACode.value = ''
+}
+
+async function copyText(text: string, notice: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    copyNotice.value = notice
+  } catch {
+    copyNotice.value = 'Copy failed. Select the text and copy it manually.'
+  }
+}
+
+function downloadBackupCodes() {
+  const body = ['Mailat backup codes', 'Each code works once.', '', ...backupCodes.value, ''].join('\r\n')
+  const url = URL.createObjectURL(new Blob([body], { type: 'text/plain;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'mailat-backup-codes.txt'
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function openFactorAction(action: 'disable' | 'regenerate') {
+  factorAction.value = action
+  factorPassword.value = ''
+  factorCode.value = ''
+  twoFAError.value = ''
+}
+
+async function submitFactorAction() {
+  twoFABusy.value = true
+  twoFAError.value = ''
+  try {
+    if (factorAction.value === 'disable') {
+      if (await settingsStore.disable2FA(factorPassword.value, factorCode.value.trim())) factorAction.value = null
+      else twoFAError.value = settingsStore.error || 'Could not disable two-factor authentication.'
+    } else {
+      const codes = await settingsStore.regenerateBackupCodes(factorPassword.value, factorCode.value.trim())
+      if (codes) {
+        factorAction.value = null
+        showBackupCodes(codes)
+      } else {
+        twoFAError.value = settingsStore.error || 'Could not generate new backup codes.'
+      }
+    }
+  } finally {
+    factorPassword.value = ''
+    twoFABusy.value = false
   }
 }
 
@@ -416,20 +575,23 @@ async function handleSignOutAll() {
             <section class="pt-6 border-t border-gmail-border">
               <h3 class="text-sm font-medium text-gmail-gray mb-4">Two-Factor Authentication</h3>
               <div class="space-y-4">
-                <div class="flex items-center justify-between p-4 bg-gmail-lightGray rounded-lg">
-                  <div>
-                    <p class="font-medium">Authenticator App</p>
-                    <p class="text-sm text-gmail-gray">Use an app like Google Authenticator</p>
+                <div class="p-4 bg-gmail-lightGray rounded-lg">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="font-medium">Authenticator App</p>
+                      <p class="text-sm text-gmail-gray">Use an app like Google Authenticator, 1Password or Authy</p>
+                    </div>
+                    <span v-if="!settingsStore.twoFactor" class="text-sm text-gmail-gray">Checking…</span>
+                    <Button v-else-if="!settingsStore.twoFactor.enabled" @click="handleEnable2FA">Enable</Button>
+                    <span v-else class="text-green-600 text-sm font-medium flex items-center gap-1">
+                      <Check class="w-4 h-4" /> Enabled
+                    </span>
                   </div>
-                  <Button
-                    v-if="!settingsStore.settings.twoFactorEnabled"
-                    @click="handleEnable2FA"
-                  >
-                    Enable
-                  </Button>
-                  <span v-else class="text-green-600 text-sm font-medium flex items-center gap-1">
-                    <Check class="w-4 h-4" /> Enabled
-                  </span>
+                  <div v-if="settingsStore.twoFactor?.enabled" class="mt-3 pt-3 border-t border-gmail-border flex flex-wrap items-center gap-3 text-sm">
+                    <span class="text-gmail-gray">{{ settingsStore.twoFactor.backupCodesCount }} unused backup code{{ settingsStore.twoFactor.backupCodesCount === 1 ? '' : 's' }}</span>
+                    <button class="text-gmail-blue hover:underline" @click="openFactorAction('regenerate')">New backup codes</button>
+                    <button class="text-gmail-red hover:underline" @click="openFactorAction('disable')">Turn off</button>
+                  </div>
                 </div>
                 <div class="flex items-center justify-between p-4 bg-gmail-lightGray rounded-lg">
                   <div>
@@ -437,6 +599,35 @@ async function handleSignOutAll() {
                     <p class="text-sm text-gmail-gray">Use hardware security keys like YubiKey</p>
                   </div>
                   <Button variant="secondary">Add Key</Button>
+                </div>
+              </div>
+            </section>
+
+            <section v-if="oauthProviders.length || oauthNotice || oauthError" class="pt-6 border-t border-gmail-border">
+              <h3 class="text-sm font-medium text-gmail-gray mb-4">Sign-in providers</h3>
+              <div v-if="oauthNotice" class="mb-3 p-3 bg-green-50 text-green-800 rounded-lg text-sm" role="status">{{ oauthNotice }}</div>
+              <div v-if="oauthError" class="mb-3 p-3 bg-red-50 text-red-800 rounded-lg text-sm" role="alert">{{ oauthError }}</div>
+              <div class="space-y-2">
+                <div
+                  v-for="provider in oauthProviders"
+                  :key="provider"
+                  class="flex items-center justify-between p-3 border border-gmail-border rounded-lg"
+                >
+                  <div>
+                    <p class="font-medium text-sm">{{ providerLabels[provider] || provider }}</p>
+                    <p class="text-xs text-gmail-gray">
+                      {{ oauthConnections.find(c => c.provider === provider)?.email || (oauthConnections.some(c => c.provider === provider) ? 'Connected' : 'Not connected') }}
+                    </p>
+                  </div>
+                  <button
+                    v-if="oauthConnections.some(c => c.provider === provider)"
+                    class="text-gmail-red text-sm hover:underline disabled:opacity-50"
+                    :disabled="oauthBusy === provider"
+                    @click="disconnectProvider(provider)"
+                  >
+                    Disconnect
+                  </button>
+                  <Button v-else variant="secondary" :disabled="oauthBusy === provider" @click="connectProvider(provider)">Connect</Button>
                 </div>
               </div>
             </section>
@@ -933,34 +1124,102 @@ async function handleSignOutAll() {
     </Modal>
 
     <!-- 2FA Modal -->
-    <Modal :open="show2FAModal" @close="show2FAModal = false" title="Enable Two-Factor Authentication">
-      <div class="space-y-4">
+    <Modal :open="show2FAModal" @close="close2FAModal" :title="twoFAStep === 'codes' ? 'Save your backup codes' : 'Enable Two-Factor Authentication'">
+      <div v-if="twoFAStep === 'scan'" class="space-y-4">
         <p class="text-sm text-gmail-gray">
-          Scan the QR code with your authenticator app, then enter the verification code below.
+          Scan the QR code with your authenticator app, or enter the setup key by hand. Then type the 6-digit code it shows.
         </p>
-        <div v-if="qrCodeUrl" class="flex justify-center p-4 bg-white rounded-lg">
-          <img :src="qrCodeUrl" alt="2FA QR Code" class="w-48 h-48" />
+        <div v-if="twoFASetup" class="flex justify-center p-4 bg-white rounded-lg">
+          <img :src="twoFASetup.qrCodeDataUrl" alt="QR code for your authenticator app" class="w-48 h-48" />
         </div>
-        <div v-else class="flex justify-center p-8">
+        <div v-else-if="!twoFAError" class="flex justify-center p-8">
           <div class="w-48 h-48 bg-gmail-lightGray rounded-lg flex items-center justify-center">
-            <span class="text-gmail-gray">Loading QR Code...</span>
+            <span class="text-gmail-gray">Loading QR code…</span>
           </div>
         </div>
-        <div>
-          <label class="block text-sm font-medium mb-1">Verification Code</label>
+        <div v-if="twoFASetup">
+          <label class="block text-sm font-medium mb-1">Setup key</label>
+          <div class="flex items-center gap-2">
+            <code class="flex-1 px-3 py-2 bg-gmail-lightGray rounded-lg font-mono text-sm break-all">{{ twoFASetup.manualCode }}</code>
+            <button type="button" class="p-2 text-gmail-gray hover:text-gmail-blue" title="Copy setup key" aria-label="Copy setup key" @click="copyText(twoFASetup.secret, 'Setup key copied.')">
+              <Copy class="w-4 h-4" />
+            </button>
+          </div>
+          <p v-if="copyNotice" class="text-xs text-gmail-gray mt-1">{{ copyNotice }}</p>
+        </div>
+        <form v-if="twoFASetup" @submit.prevent="handleVerify2FA">
+          <label class="block text-sm font-medium mb-1" for="twofa-code">Verification code</label>
           <input
+            id="twofa-code"
             type="text"
             v-model="twoFACode"
+            inputmode="numeric"
+            autocomplete="one-time-code"
             placeholder="000000"
             maxlength="6"
             class="w-full px-4 py-2 border border-gmail-border rounded-lg focus:outline-none focus:border-gmail-blue text-center text-2xl tracking-widest font-mono"
           />
-        </div>
+          <p class="text-xs text-gmail-gray mt-2">Turning this on signs you out on every other device.</p>
+        </form>
+        <div v-if="twoFAError" class="p-3 bg-red-100 text-red-800 rounded-lg text-sm" role="alert">{{ twoFAError }}</div>
         <div class="flex justify-end gap-3 pt-4">
-          <Button variant="secondary" @click="show2FAModal = false">Cancel</Button>
-          <Button @click="handleVerify2FA" :disabled="twoFACode.length !== 6">Verify & Enable</Button>
+          <Button variant="secondary" @click="close2FAModal">Cancel</Button>
+          <Button @click="handleVerify2FA" :disabled="!twoFASetup || twoFACode.trim().length !== 6 || twoFABusy">Verify & Enable</Button>
         </div>
       </div>
+      <div v-else class="space-y-4">
+        <p class="text-sm text-gmail-gray">
+          Each code signs you in once if you lose your authenticator. They are shown only now; store them somewhere safe.
+        </p>
+        <ul class="grid grid-cols-2 gap-2 p-4 bg-gmail-lightGray rounded-lg font-mono text-sm">
+          <li v-for="code in backupCodes" :key="code">{{ code }}</li>
+        </ul>
+        <div class="flex gap-3">
+          <Button variant="secondary" @click="copyText(backupCodes.join('\n'), 'Backup codes copied.')">
+            <Copy class="w-4 h-4 mr-1" /> Copy
+          </Button>
+          <Button variant="secondary" @click="downloadBackupCodes">
+            <Download class="w-4 h-4 mr-1" /> Download
+          </Button>
+        </div>
+        <p v-if="copyNotice" class="text-xs text-gmail-gray">{{ copyNotice }}</p>
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" v-model="backupCodesSaved" class="gmail-checkbox" />
+          I saved these codes
+        </label>
+        <div class="flex justify-end pt-2">
+          <Button :disabled="!backupCodesSaved" @click="close2FAModal">Done</Button>
+        </div>
+      </div>
+    </Modal>
+
+    <!-- Disable 2FA / regenerate backup codes -->
+    <Modal :open="factorAction !== null" @close="factorAction = null" :title="factorAction === 'disable' ? 'Turn off two-factor authentication' : 'Generate new backup codes'">
+      <form @submit.prevent="submitFactorAction" class="space-y-4">
+        <p class="text-sm text-gmail-gray">
+          {{ factorAction === 'disable'
+            ? 'Confirm with your password and a code from your authenticator app or an unused backup code.'
+            : 'Confirm with your password and a code from your authenticator app. Your current backup codes stop working.' }}
+        </p>
+        <div>
+          <label class="block text-sm font-medium mb-1" for="factor-password">Password</label>
+          <input id="factor-password" type="password" v-model="factorPassword" autocomplete="current-password" required
+            class="w-full px-4 py-2 border border-gmail-border rounded-lg focus:outline-none focus:border-gmail-blue" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1" for="factor-code">Verification code</label>
+          <input id="factor-code" type="text" v-model="factorCode" autocomplete="one-time-code" required
+            :placeholder="factorAction === 'disable' ? '000000 or backup code' : '000000'"
+            class="w-full px-4 py-2 border border-gmail-border rounded-lg focus:outline-none focus:border-gmail-blue font-mono" />
+        </div>
+        <div v-if="twoFAError" class="p-3 bg-red-100 text-red-800 rounded-lg text-sm" role="alert">{{ twoFAError }}</div>
+        <div class="flex justify-end gap-3 pt-2">
+          <Button type="button" variant="secondary" @click="factorAction = null">Cancel</Button>
+          <Button type="submit" :disabled="!factorPassword || !factorCode.trim() || twoFABusy">
+            {{ factorAction === 'disable' ? 'Turn off' : 'Generate codes' }}
+          </Button>
+        </div>
+      </form>
     </Modal>
 
     <!-- Filter Modal -->

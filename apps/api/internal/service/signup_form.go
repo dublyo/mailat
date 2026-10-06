@@ -300,7 +300,10 @@ func (s *SignupFormService) blocked(ctx context.Context, tx *sql.Tx, org int64, 
 	err = tx.QueryRowContext(ctx, `SELECT `+suppressedSQL("$1", "$2::text"), org, email).Scan(&blocked)
 	return blocked, err
 }
-func (s *SignupFormService) subscribe(ctx context.Context, tx *sql.Tx, f *model.SignupForm, requestID, email, name, disclosure, mode string) (bool, error) {
+
+// subscribe records consent with the IP and user agent of the request that
+// gave it: the form submit for single opt-in, the confirmation for double.
+func (s *SignupFormService) subscribe(ctx context.Context, tx *sql.Tx, f *model.SignupForm, requestID, email, name, disclosure, mode, ip, ua string) (bool, error) {
 	blocked, err := s.blocked(ctx, tx, f.OrgID, email)
 	if err != nil || blocked {
 		return false, err
@@ -309,7 +312,7 @@ func (s *SignupFormService) subscribe(ctx context.Context, tx *sql.Tx, f *model.
 	var contactUUID string
 	err = tx.QueryRowContext(ctx, `SELECT id,uuid FROM contacts WHERE org_id=$1 AND lower(email)=$2 ORDER BY id LIMIT 1`, f.OrgID, email).Scan(&contactID, &contactUUID)
 	if err == sql.ErrNoRows {
-		err = tx.QueryRowContext(ctx, `INSERT INTO contacts(org_id,email,first_name,last_name,status,consent_source,consent_timestamp,updated_at) VALUES($1,$2,$3,'','active','signup_form',now(),now()) RETURNING id,uuid`, f.OrgID, email, name).Scan(&contactID, &contactUUID)
+		err = tx.QueryRowContext(ctx, `INSERT INTO contacts(org_id,email,first_name,last_name,status,consent_source,consent_timestamp,consent_ip,consent_user_agent,updated_at) VALUES($1,$2,$3,'','active','signup_form',now(),$4,$5,now()) RETURNING id,uuid`, f.OrgID, email, name, ip, ua).Scan(&contactID, &contactUUID)
 	}
 	if err != nil {
 		return false, err
@@ -323,7 +326,7 @@ func (s *SignupFormService) subscribe(ctx context.Context, tx *sql.Tx, f *model.
 		return false, err
 	}
 	if added > 0 {
-		_, err = tx.ExecContext(ctx, `INSERT INTO consent_audit(contact_id,org_id,action,source,list_id,details,ip_address,user_agent) VALUES($1,$2,'subscribe','signup_form',$3,$4,'','')`, contactID, f.OrgID, f.ListID, fmt.Sprintf("Form %s; policy %s; disclosure: %s", f.UUID, mode, disclosure))
+		_, err = tx.ExecContext(ctx, `INSERT INTO consent_audit(contact_id,org_id,action,source,list_id,details,ip_address,user_agent) VALUES($1,$2,'subscribe','signup_form',$3,$4,$5,$6)`, contactID, f.OrgID, f.ListID, fmt.Sprintf("Form %s; policy %s; disclosure: %s", f.UUID, mode, disclosure), ip, ua)
 		if err != nil {
 			return false, err
 		}
@@ -335,7 +338,8 @@ func (s *SignupFormService) subscribe(ctx context.Context, tx *sql.Tx, f *model.
 	_, err = tx.ExecContext(ctx, `UPDATE lists SET contact_count=(SELECT count(*) FROM list_contacts WHERE list_id=$1),updated_at=now() WHERE id=$1`, f.ListID)
 	return err == nil, err
 }
-func (s *SignupFormService) Submit(ctx context.Context, id, ip string, r *model.SubmitSignupRequest) (*model.SignupResult, error) {
+func (s *SignupFormService) Submit(ctx context.Context, id, ip, ua string, r *model.SubmitSignupRequest) (*model.SignupResult, error) {
+	ua = consentUserAgent(ua)
 	accepted := &model.SignupResult{Message: "Thanks! Your request has been received. If confirmation is needed, check your inbox."}
 	if err := s.rate(ctx, "ip:"+ip, 30); err != nil {
 		return nil, err
@@ -428,7 +432,7 @@ func (s *SignupFormService) Submit(ctx context.Context, id, ip string, r *model.
 		return nil, err
 	}
 	if f.ConfirmationMode == "single" {
-		ok, e := s.subscribe(ctx, tx, f, requestID, email, name, f.ConsentText, "single")
+		ok, e := s.subscribe(ctx, tx, f, requestID, email, name, f.ConsentText, "single", ip, ua)
 		if e != nil {
 			return nil, e
 		}
@@ -466,7 +470,8 @@ func (s *SignupFormService) Submit(ctx context.Context, id, ip string, r *model.
 	}
 	return accepted, nil
 }
-func (s *SignupFormService) Confirm(ctx context.Context, token, ip string) (*model.SignupResult, error) {
+func (s *SignupFormService) Confirm(ctx context.Context, token, ip, ua string) (*model.SignupResult, error) {
+	ua = consentUserAgent(ua)
 	if err := s.rate(ctx, "confirm:"+ip, 60); err != nil {
 		return nil, err
 	}
@@ -508,7 +513,7 @@ func (s *SignupFormService) Confirm(ctx context.Context, token, ip string) (*mod
 	if err != nil {
 		return nil, err
 	}
-	ok, err := s.subscribe(ctx, tx, f, id, email, name, disclosure, mode)
+	ok, err := s.subscribe(ctx, tx, f, id, email, name, disclosure, mode, ip, ua)
 	if err != nil {
 		return nil, err
 	}
@@ -524,6 +529,14 @@ func (s *SignupFormService) Confirm(ctx context.Context, token, ip string) (*mod
 		return nil, err
 	}
 	return &model.SignupResult{Message: "Thanks! Your confirmation has been processed. You can close this page."}, nil
+}
+
+// consentUserAgent bounds the stored user agent; it is evidence, not input.
+func consentUserAgent(ua string) string {
+	if len(ua) > 512 {
+		ua = ua[:512]
+	}
+	return strings.ToValidUTF8(ua, "")
 }
 func (s *SignupFormService) RunCleanup(ctx context.Context) {
 	ticker := time.NewTicker(time.Hour)

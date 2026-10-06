@@ -523,6 +523,9 @@ func customize(op object, verb, path string) {
 		"POST /domains":                  object{"name": "example.com"},
 		"POST /identities":               object{"domainId": "00000000-0000-4000-8000-000000000001", "email": "hello@example.com", "displayName": "Example"},
 		"POST /inbox/filters/:uuid/test": object{"from": "sender@example.net", "to": []string{"hello@example.com"}, "subject": "Invoice 42", "body": "Invoice details", "hasAttachments": false},
+		"POST /oauth/link/confirm":       object{"ticket": "4f9c2a7e0b1d3c5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6"},
+		"POST /security/2fa/disable":     object{"password": "current-password", "code": "123456"},
+		"POST /auth/2fa/disable":         object{"password": "current-password", "code": "123456"},
 	}
 	if body, ok := op["requestBody"].(object); ok {
 		if content, ok := body["content"].(object); ok {
@@ -531,6 +534,16 @@ func customize(op object, verb, path string) {
 					media["example"] = example
 				}
 			}
+		}
+	}
+	// Database-backed per-IP/account/user limits (fixed windows of 15 minutes
+	// or 1 hour, not the per-minute API key window).
+	authLimited := map[string]bool{"POST /auth/login": true, "POST /auth/register": true, "POST /auth/2fa/challenge": true, "POST /auth/2fa/enable": true, "POST /auth/2fa/verify": true, "POST /auth/2fa/disable": true, "POST /security/2fa/setup": true, "POST /security/2fa/verify": true, "POST /security/2fa/disable": true, "POST /security/2fa/backup-codes": true, "POST /auth/change-password": true, "POST /oauth/link/confirm": true, "POST /unsubscribe/:token": true, "DELETE /unsubscribe/:token": true, "PUT /preferences/:token": true, "POST /forwards/:id/verify": true}
+	if responses, ok := op["responses"].(object); ok && authLimited[verb+" "+path] {
+		if limited, ok := responses["429"].(object); ok {
+			limited["description"] = "Too many attempts from this client, account or user; respect Retry-After"
+			limited["headers"] = object{"Retry-After": object{"description": "Seconds until the current rate-limit window ends.", "schema": object{"type": "integer", "minimum": 1}}}
+			limited["content"].(object)["application/json"].(object)["example"] = object{"code": 429, "message": "Too many attempts. Try again in 12 minutes."}
 		}
 	}
 	if path == "/compose/reply/:id" || path == "/compose/forward/:id" {

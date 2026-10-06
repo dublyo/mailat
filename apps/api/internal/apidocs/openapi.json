@@ -5419,6 +5419,9 @@
           "manualCode": {
             "type": "string"
           },
+          "qrCodeDataUrl": {
+            "type": "string"
+          },
           "qrCodeUrl": {
             "type": "string"
           },
@@ -7097,7 +7100,7 @@
     },
     "/api/v1/auth/2fa/challenge": {
       "post": {
-        "description": "CompleteChallenge accepts a one-use password/OAuth challenge, never an API key.",
+        "description": "CompleteChallenge accepts a one-use password/OAuth challenge, never an API key.\nLimited to 20 attempts per client IP per 15 minutes, in addition to five\nattempts per challenge.",
         "operationId": "post_api_v1_auth_2fa_challenge",
         "requestBody": {
           "content": {
@@ -7294,6 +7297,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -7312,10 +7319,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -7359,11 +7366,15 @@
     },
     "/api/v1/auth/2fa/disable": {
       "post": {
-        "description": "Disable2FA disables 2FA for the user\nPOST /api/v1/security/2fa/disable",
+        "description": "Disable2FA disables 2FA for the user. Requires the account password and a\ncurrent, not previously used TOTP code (or an unused backup code).\nRate-limited per user.\nPOST /api/v1/security/2fa/disable",
         "operationId": "post_api_v1_auth_2fa_disable",
         "requestBody": {
           "content": {
             "application/json": {
+              "example": {
+                "code": "123456",
+                "password": "current-password"
+              },
               "schema": {
                 "properties": {
                   "code": {
@@ -7544,6 +7555,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -7562,10 +7577,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -7613,7 +7628,7 @@
     },
     "/api/v1/auth/2fa/enable": {
       "post": {
-        "description": "Setup2FA starts the 2FA setup process\nPOST /api/v1/security/2fa/setup",
+        "description": "Setup2FA starts the 2FA setup process. The response carries the secret, the\notpauth URI (qrCodeUrl), a PNG QR code as a data URL (qrCodeDataUrl) and the\ngrouped manual code. Rate-limited per user.\nPOST /api/v1/security/2fa/setup",
         "operationId": "post_api_v1_auth_2fa_enable",
         "responses": {
           "200": {
@@ -7788,6 +7803,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -7806,10 +7825,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -7857,7 +7876,7 @@
     },
     "/api/v1/auth/2fa/verify": {
       "post": {
-        "description": "Verify2FA verifies a TOTP code and enables 2FA\nPOST /api/v1/security/2fa/verify",
+        "description": "Verify2FA verifies a TOTP code and enables 2FA. All other sessions of the\nuser are signed out; the calling session stays active. Returns the one-time\nbackupCodes. Rate-limited per user.\nPOST /api/v1/security/2fa/verify",
         "operationId": "post_api_v1_auth_2fa_verify",
         "requestBody": {
           "content": {
@@ -8050,6 +8069,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -8068,10 +8091,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -8309,6 +8332,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -8327,10 +8354,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -8378,7 +8405,7 @@
     },
     "/api/v1/auth/login": {
       "post": {
-        "description": "Login authenticates a user\nPOST /api/v1/auth/login",
+        "description": "Login authenticates a user. Attempts are limited per client IP (20 per 15\nminutes) and per account email (10 per 15 minutes); over the limit the API\nreturns 429 with Retry-After.\nPOST /api/v1/auth/login",
         "operationId": "post_api_v1_auth_login",
         "requestBody": {
           "content": {
@@ -8563,6 +8590,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -8581,10 +8612,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -9108,7 +9139,7 @@
     },
     "/api/v1/auth/register": {
       "post": {
-        "description": "Register creates a new user and organization\nPOST /api/v1/auth/register",
+        "description": "Register creates the first owner and organization. The email must be a\nvalid address and the password 8–72 bytes. Limited to 5 attempts per client\nIP per hour (429 with Retry-After).\nPOST /api/v1/auth/register",
         "operationId": "post_api_v1_auth_register",
         "requestBody": {
           "content": {
@@ -9293,6 +9324,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -9311,10 +9346,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -28442,7 +28477,7 @@
     },
     "/api/v1/forwards/{id}/verify": {
       "post": {
-        "description": "VerifyEmailForward verifies an email forward\nPOST /api/v1/forwards/:id/verify",
+        "description": "VerifyEmailForward verifies an email forward. Public; limited to 60 requests\nper client IP per 15 minutes.\nPOST /api/v1/forwards/:id/verify",
         "operationId": "post_api_v1_forwards_id_verify",
         "parameters": [
           {
@@ -28634,6 +28669,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -28652,10 +28691,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -28699,7 +28738,7 @@
     },
     "/api/v1/health": {
       "get": {
-        "description": "Health returns the API health status\nGET /api/v1/health",
+        "description": "Health reports dependency status for monitoring. data.status is \"healthy\"\nor \"unhealthy\" and data.version is the build; checks values are \"ok\" or\n\"unavailable\". Unhealthy responses use HTTP 503 with the same data.\nGET /api/v1/health",
         "operationId": "get_api_v1_health",
         "responses": {
           "200": {
@@ -28715,6 +28754,10 @@
                       "properties": {
                         "checks": {
                           "additionalProperties": {
+                            "enum": [
+                              "ok",
+                              "unavailable"
+                            ],
                             "type": "string"
                           },
                           "type": "object"
@@ -28956,6 +28999,10 @@
                       "properties": {
                         "checks": {
                           "additionalProperties": {
+                            "enum": [
+                              "ok",
+                              "unavailable"
+                            ],
                             "type": "string"
                           },
                           "type": "object"
@@ -28989,7 +29036,7 @@
                 }
               }
             },
-            "description": "A database or Redis health check failed; code remains 0 and data.status is unhealthy."
+            "description": "A database or Redis check failed: code 503, data.status is unhealthy and data.version is still present. Failure details are only logged server-side."
           }
         },
         "security": [],
@@ -45800,6 +45847,272 @@
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
       }
     },
+    "/api/v1/oauth/link/confirm": {
+      "post": {
+        "description": "ConfirmLink completes a provider link for the signed-in user with the\none-use ticket from the Settings redirect. 403 link_mismatch when the ticket\nwas issued to another user, 409 already_linked when the identity belongs to\nanother account (or a different identity of this provider is connected),\n410 invalid_ticket when it expired or was used. Human sessions only.\nPOST /api/v1/oauth/link/confirm",
+        "operationId": "post_api_v1_oauth_link_confirm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "ticket": "4f9c2a7e0b1d3c5e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6"
+              },
+              "schema": {
+                "properties": {
+                  "ticket": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "properties": {
+                        "provider": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the current rate-limit window ends.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "ConfirmLink",
+        "tags": [
+          "oauth"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "mailat",
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+      }
+    },
     "/api/v1/oauth/providers": {
       "get": {
         "description": "GetProviders returns the list of configured OAuth providers\nGET /api/v1/oauth/providers",
@@ -46285,7 +46598,7 @@
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
       },
       "get": {
-        "description": "InitiateOAuth starts the OAuth flow for a provider\nGET /api/v1/oauth/:provider",
+        "description": "InitiateOAuth starts a sign-in with a provider. A one-use state is stored\n(hashed) for 10 minutes and bound to this browser with an HttpOnly cookie.\nFailures redirect to /login?oauthError=\u003ccode\u003e.\nGET /api/v1/oauth/:provider",
         "operationId": "get_api_v1_oauth_provider",
         "parameters": [
           {
@@ -46299,7 +46612,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Redirect to the configured destination",
+            "description": "Browser redirect to the provider, to the SPA (session fragment or Settings link ticket), or to /login?oauthError=\u003cinvalid_state|provider_error|not_linked|email_unverified|registration_closed|rate_limited\u003e",
             "headers": {
               "Location": {
                 "schema": {
@@ -46515,7 +46828,7 @@
     },
     "/api/v1/oauth/{provider}/callback": {
       "get": {
-        "description": "HandleCallback handles the OAuth callback from a provider\nGET /api/v1/oauth/:provider/callback",
+        "description": "HandleCallback completes a provider round trip. Sign-in only succeeds for an\nidentity already linked to a user, or for a verified identity on an empty\ninstance (first owner). It never links by email. A link flow redirects to\nSettings with a ticket that the signed-in user must confirm. Errors redirect\nto /login?oauthError= with one of invalid_state, provider_error, not_linked,\nemail_unverified, registration_closed or rate_limited.\nGET /api/v1/oauth/:provider/callback",
         "operationId": "get_api_v1_oauth_provider_callback",
         "parameters": [
           {
@@ -46542,13 +46855,6 @@
           },
           {
             "in": "query",
-            "name": "error_description",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
             "name": "state",
             "schema": {
               "type": "string"
@@ -46557,7 +46863,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Redirect to the configured destination",
+            "description": "Browser redirect to the provider, to the SPA (session fragment or Settings link ticket), or to /login?oauthError=\u003cinvalid_state|provider_error|not_linked|email_unverified|registration_closed|rate_limited\u003e",
             "headers": {
               "Location": {
                 "schema": {
@@ -46773,7 +47079,7 @@
     },
     "/api/v1/oauth/{provider}/connect": {
       "post": {
-        "description": "ConnectProvider connects an OAuth provider to an existing user account\nPOST /api/v1/oauth/:provider/connect",
+        "description": "ConnectProvider starts linking a provider to the signed-in user. Navigate\nthe browser to the returned authUrl; the provider returns to Settings with\na ticket that must be confirmed with POST /oauth/link/confirm.\nPOST /api/v1/oauth/:provider/connect",
         "operationId": "post_api_v1_oauth_provider_connect",
         "parameters": [
           {
@@ -47471,6 +47777,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -47489,10 +47799,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -49601,7 +49911,7 @@
     },
     "/api/v1/ready": {
       "get": {
-        "description": "Ready returns whether the API is ready to serve requests\nGET /api/v1/ready",
+        "description": "Ready reports whether the API can serve requests: Postgres and Redis must\nanswer within 2 seconds, otherwise HTTP 503 with ready=false.\nGET /api/v1/ready",
         "operationId": "get_api_v1_ready",
         "responses": {
           "200": {
@@ -49831,6 +50141,41 @@
               }
             },
             "description": "Internal failure; retain the idempotency key"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "properties": {
+                        "ready": {
+                          "type": "boolean"
+                        },
+                        "timestamp": {
+                          "format": "date-time",
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Postgres or Redis did not answer within 2 seconds; data.ready is false."
           }
         },
         "security": [],
@@ -51708,7 +52053,7 @@
     },
     "/api/v1/security/2fa/backup-codes": {
       "post": {
-        "description": "RegenerateBackupCodes generates new backup codes\nPOST /api/v1/security/2fa/backup-codes",
+        "description": "RegenerateBackupCodes replaces the backup codes. Requires the account\npassword and a current, not previously used TOTP code. Rate-limited per user.\nPOST /api/v1/security/2fa/backup-codes",
         "operationId": "post_api_v1_security_2fa_backup_codes",
         "requestBody": {
           "content": {
@@ -51904,6 +52249,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -51922,10 +52271,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -51973,11 +52322,15 @@
     },
     "/api/v1/security/2fa/disable": {
       "post": {
-        "description": "Disable2FA disables 2FA for the user\nPOST /api/v1/security/2fa/disable",
+        "description": "Disable2FA disables 2FA for the user. Requires the account password and a\ncurrent, not previously used TOTP code (or an unused backup code).\nRate-limited per user.\nPOST /api/v1/security/2fa/disable",
         "operationId": "post_api_v1_security_2fa_disable",
         "requestBody": {
           "content": {
             "application/json": {
+              "example": {
+                "code": "123456",
+                "password": "current-password"
+              },
               "schema": {
                 "properties": {
                   "code": {
@@ -52158,6 +52511,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -52176,10 +52533,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -52227,7 +52584,7 @@
     },
     "/api/v1/security/2fa/setup": {
       "post": {
-        "description": "Setup2FA starts the 2FA setup process\nPOST /api/v1/security/2fa/setup",
+        "description": "Setup2FA starts the 2FA setup process. The response carries the secret, the\notpauth URI (qrCodeUrl), a PNG QR code as a data URL (qrCodeDataUrl) and the\ngrouped manual code. Rate-limited per user.\nPOST /api/v1/security/2fa/setup",
         "operationId": "post_api_v1_security_2fa_setup",
         "responses": {
           "200": {
@@ -52402,6 +52759,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -52420,10 +52781,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -52719,7 +53080,7 @@
     },
     "/api/v1/security/2fa/verify": {
       "post": {
-        "description": "Verify2FA verifies a TOTP code and enables 2FA\nPOST /api/v1/security/2fa/verify",
+        "description": "Verify2FA verifies a TOTP code and enables 2FA. All other sessions of the\nuser are signed out; the calling session stays active. Returns the one-time\nbackupCodes. Rate-limited per user.\nPOST /api/v1/security/2fa/verify",
         "operationId": "post_api_v1_security_2fa_verify",
         "requestBody": {
           "content": {
@@ -52912,6 +53273,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -52930,10 +53295,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -64529,6 +64894,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -64547,10 +64916,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -65013,6 +65382,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -65031,10 +65404,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"

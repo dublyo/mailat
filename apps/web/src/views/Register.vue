@@ -34,6 +34,8 @@ onMounted(async () => {
 
 const passwordRequirements = computed(() => [
   { label: 'At least 8 characters', met: password.value.length >= 8 },
+  // The server hashes with bcrypt, which only accepts up to 72 bytes.
+  { label: 'At most 72 bytes', met: new TextEncoder().encode(password.value).length <= 72 },
   { label: 'Contains uppercase letter', met: /[A-Z]/.test(password.value) },
   { label: 'Contains lowercase letter', met: /[a-z]/.test(password.value) },
   { label: 'Contains number', met: /\d/.test(password.value) },

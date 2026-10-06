@@ -2,14 +2,21 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 
 	"github.com/dublyo/mailat/api/internal/config"
 )
@@ -30,8 +37,10 @@ type OAuthConfig struct {
 	AuthURL      string
 	TokenURL     string
 	UserInfoURL  string
-	Scopes       []string
-	RedirectURL  string
+	// EmailsURL lists GitHub addresses with their verified flag.
+	EmailsURL   string
+	Scopes      []string
+	RedirectURL string
 }
 
 // OAuthUserInfo holds user information from an OAuth provider
@@ -40,6 +49,9 @@ type OAuthUserInfo struct {
 	Email     string `json:"email"`
 	Name      string `json:"name"`
 	AvatarURL string `json:"avatar_url"`
+	// EmailVerified is true only when the provider asserts the address is
+	// verified. Only verified identities may bootstrap the first owner.
+	EmailVerified bool `json:"email_verified"`
 }
 
 // OAuthConnection represents a stored OAuth connection
@@ -104,6 +116,7 @@ func (s *OAuthService) configureProviders() {
 			AuthURL:      "https://github.com/login/oauth/authorize",
 			TokenURL:     "https://github.com/login/oauth/access_token",
 			UserInfoURL:  "https://api.github.com/user",
+			EmailsURL:    "https://api.github.com/user/emails",
 			Scopes:       []string{"user:email"},
 			RedirectURL:  apiURL + "/api/v1/oauth/github/callback",
 		}
@@ -137,24 +150,111 @@ func (s *OAuthService) GetAuthURL(provider OAuthProvider, state string) (string,
 		"scope":         {strings.Join(cfg.Scopes, " ")},
 		"state":         {state},
 	}
-
-	// Add access_type for Google (to get refresh token)
-	if provider == ProviderGoogle {
-		params.Set("access_type", "offline")
-		params.Set("prompt", "consent")
-	}
+	// No offline access: Mailat only reads the profile once per sign-in and
+	// never stores provider tokens.
 
 	return cfg.AuthURL + "?" + params.Encode(), nil
 }
 
-// ExchangeCode exchanges an authorization code for tokens
-func (s *OAuthService) ExchangeCode(ctx context.Context, provider OAuthProvider, code string) (string, string, time.Time, error) {
+// Typed OAuth outcomes. Controllers map them to fixed error codes; provider
+// text is never echoed to the browser.
+var (
+	ErrOAuthInvalidState    = errors.New("invalid or expired OAuth state")
+	ErrOAuthProvider        = errors.New("OAuth provider request failed")
+	ErrOAuthNotLinked       = errors.New("this sign-in is not linked to a Mailat account")
+	ErrOAuthEmailUnverified = errors.New("the provider did not confirm this email address")
+	ErrOAuthInvalidTicket   = errors.New("this link request expired; connect the account again")
+	ErrOAuthLinkMismatch    = errors.New("this link request belongs to a different signed-in user")
+	ErrOAuthAlreadyLinked   = errors.New("this sign-in is already linked to another account")
+	ErrOAuthProviderInUse   = errors.New("a different account from this provider is already connected; disconnect it first")
+)
+
+const oauthStateTTL = 10 * time.Minute
+
+// ProviderConfig exposes a configured provider so tests can point its
+// endpoints at a local stub. It returns nil when the provider is not set up.
+func (s *OAuthService) ProviderConfig(provider OAuthProvider) *OAuthConfig {
+	return s.configs[provider]
+}
+
+func randomOAuthToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func oauthHash(v string) string {
+	h := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(h[:])
+}
+
+// SaveState stores a one-use state for a login (userID 0) or link (userID of
+// the signed-in user) flow and returns the raw state for the provider URL.
+// Only its hash is stored.
+func (s *OAuthService) SaveState(ctx context.Context, purpose string, provider OAuthProvider, userID int64) (string, error) {
+	if purpose != "login" && purpose != "link" {
+		return "", fmt.Errorf("invalid OAuth purpose")
+	}
+	state, err := randomOAuthToken()
+	if err != nil {
+		return "", err
+	}
+	var owner sql.NullInt64
+	if purpose == "link" {
+		owner = sql.NullInt64{Int64: userID, Valid: true}
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO oauth_states(state_hash,purpose,provider,user_id,expires_at) VALUES($1,$2,$3,$4,now()+make_interval(secs => $5))`,
+		oauthHash(state), purpose, string(provider), owner, oauthStateTTL.Seconds())
+	if err != nil {
+		return "", err
+	}
+	return state, nil
+}
+
+// ConsumeState atomically deletes a login or link state for provider and
+// returns its purpose and owner. Expired, replayed or foreign states fail.
+func (s *OAuthService) ConsumeState(ctx context.Context, state string, provider OAuthProvider) (string, int64, error) {
+	if len(state) != 64 {
+		return "", 0, ErrOAuthInvalidState
+	}
+	var purpose string
+	var owner sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `DELETE FROM oauth_states WHERE state_hash=$1 AND provider=$2 AND expires_at>now() AND purpose IN ('login','link') RETURNING purpose,user_id`,
+		oauthHash(state), string(provider)).Scan(&purpose, &owner)
+	if err == sql.ErrNoRows {
+		return "", 0, ErrOAuthInvalidState
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	return purpose, owner.Int64, nil
+}
+
+// RunStateCleanup deletes expired states and tickets every 10 minutes.
+func (s *OAuthService) RunStateCleanup(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := s.db.ExecContext(ctx, `DELETE FROM oauth_states WHERE expires_at<now()`); err != nil && ctx.Err() == nil {
+				log.Printf("oauth state cleanup failed: %v", err)
+			}
+		}
+	}
+}
+
+// ExchangeCode exchanges an authorization code for an access token. The token
+// is used once to read the profile and is never stored.
+func (s *OAuthService) ExchangeCode(ctx context.Context, provider OAuthProvider, code string) (string, error) {
 	cfg, ok := s.configs[provider]
 	if !ok {
-		return "", "", time.Time{}, fmt.Errorf("unsupported OAuth provider: %s", provider)
+		return "", ErrOAuthProvider
 	}
-
-	// Build request
 	data := url.Values{
 		"client_id":     {cfg.ClientID},
 		"client_secret": {cfg.ClientSecret},
@@ -162,263 +262,189 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, provider OAuthProvider,
 		"redirect_uri":  {cfg.RedirectURL},
 		"grant_type":    {"authorization_code"},
 	}
-
 	req, err := http.NewRequestWithContext(ctx, "POST", cfg.TokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
-		return "", "", time.Time{}, fmt.Errorf("failed to create request: %w", err)
+		return "", ErrOAuthProvider
 	}
-
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-
-	resp, err := s.httpClient.Do(req)
+	body, err := s.fetch(req)
 	if err != nil {
-		return "", "", time.Time{}, fmt.Errorf("failed to exchange code: %w", err)
+		return "", err
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", "", time.Time{}, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", "", time.Time{}, fmt.Errorf("token exchange failed: %s", string(body))
-	}
-
 	var tokenResp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-		TokenType    string `json:"token_type"`
+		AccessToken string `json:"access_token"`
 	}
-
-	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return "", "", time.Time{}, fmt.Errorf("failed to parse token response: %w", err)
+	if err := json.Unmarshal(body, &tokenResp); err != nil || tokenResp.AccessToken == "" {
+		return "", ErrOAuthProvider
 	}
-
-	expiry := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-
-	return tokenResp.AccessToken, tokenResp.RefreshToken, expiry, nil
+	return tokenResp.AccessToken, nil
 }
 
-// GetUserInfo fetches user information from the OAuth provider
+// fetch performs a provider request with a bounded body. Provider error text
+// is logged server-side only.
+func (s *OAuthService) fetch(req *http.Request) ([]byte, error) {
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		log.Printf("oauth provider request failed: %v", err)
+		return nil, ErrOAuthProvider
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, ErrOAuthProvider
+	}
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("oauth provider %s returned HTTP %d", req.URL.Host, resp.StatusCode)
+		return nil, ErrOAuthProvider
+	}
+	return body, nil
+}
+
+func (s *OAuthService) getJSON(ctx context.Context, endpoint, accessToken string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, ErrOAuthProvider
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	return s.fetch(req)
+}
+
+// GetUserInfo fetches the provider profile, including whether the provider
+// vouches for the email address.
 func (s *OAuthService) GetUserInfo(ctx context.Context, provider OAuthProvider, accessToken string) (*OAuthUserInfo, error) {
 	cfg, ok := s.configs[provider]
 	if !ok {
-		return nil, fmt.Errorf("unsupported OAuth provider: %s", provider)
+		return nil, ErrOAuthProvider
 	}
-
-	req, err := http.NewRequestWithContext(ctx, "GET", cfg.UserInfoURL, nil)
+	body, err := s.getJSON(ctx, cfg.UserInfoURL, accessToken)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, err
 	}
-
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch user info: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get user info: %s", string(body))
-	}
-
-	// Parse based on provider
+	var info *OAuthUserInfo
 	switch provider {
 	case ProviderGoogle:
-		return s.parseGoogleUserInfo(body)
+		info, err = parseGoogleUserInfo(body)
 	case ProviderGitHub:
-		return s.parseGitHubUserInfo(body, accessToken)
+		var emails []byte
+		if emails, err = s.getJSON(ctx, cfg.EmailsURL, accessToken); err == nil {
+			info, err = parseGitHubUserInfo(body, emails)
+		}
 	case ProviderMicrosoft:
-		return s.parseMicrosoftUserInfo(body)
+		info, err = parseMicrosoftUserInfo(body)
 	default:
-		return nil, fmt.Errorf("unsupported provider: %s", provider)
+		return nil, ErrOAuthProvider
 	}
+	if err != nil || info == nil || info.ID == "" {
+		return nil, ErrOAuthProvider
+	}
+	info.Email = strings.ToLower(strings.TrimSpace(info.Email))
+	return info, nil
 }
 
-func (s *OAuthService) parseGoogleUserInfo(body []byte) (*OAuthUserInfo, error) {
+func parseGoogleUserInfo(body []byte) (*OAuthUserInfo, error) {
 	var data struct {
-		ID      string `json:"id"`
-		Email   string `json:"email"`
-		Name    string `json:"name"`
-		Picture string `json:"picture"`
+		ID            string `json:"id"`
+		Email         string `json:"email"`
+		VerifiedEmail bool   `json:"verified_email"`
+		Name          string `json:"name"`
+		Picture       string `json:"picture"`
 	}
-
 	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, err
 	}
-
-	return &OAuthUserInfo{
-		ID:        data.ID,
-		Email:     data.Email,
-		Name:      data.Name,
-		AvatarURL: data.Picture,
-	}, nil
+	return &OAuthUserInfo{ID: data.ID, Email: data.Email, Name: data.Name, AvatarURL: data.Picture, EmailVerified: data.VerifiedEmail && data.Email != ""}, nil
 }
 
-func (s *OAuthService) parseGitHubUserInfo(body []byte, accessToken string) (*OAuthUserInfo, error) {
+// parseGitHubUserInfo uses only the primary verified address from
+// /user/emails. The public profile email is user-editable and never trusted.
+func parseGitHubUserInfo(body, emailsBody []byte) (*OAuthUserInfo, error) {
 	var data struct {
-		ID        int    `json:"id"`
+		ID        int64  `json:"id"`
 		Login     string `json:"login"`
 		Name      string `json:"name"`
-		Email     string `json:"email"`
 		AvatarURL string `json:"avatar_url"`
 	}
-
 	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, err
 	}
-
-	// GitHub email might be private, fetch from emails endpoint
-	email := data.Email
-	if email == "" {
-		email = s.fetchGitHubEmail(accessToken)
-	}
-
-	name := data.Name
-	if name == "" {
-		name = data.Login
-	}
-
-	return &OAuthUserInfo{
-		ID:        fmt.Sprintf("%d", data.ID),
-		Email:     email,
-		Name:      name,
-		AvatarURL: data.AvatarURL,
-	}, nil
-}
-
-func (s *OAuthService) fetchGitHubEmail(accessToken string) string {
-	req, err := http.NewRequest("GET", "https://api.github.com/user/emails", nil)
-	if err != nil {
-		return ""
-	}
-
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-
 	var emails []struct {
 		Email    string `json:"email"`
 		Primary  bool   `json:"primary"`
 		Verified bool   `json:"verified"`
 	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&emails); err != nil {
-		return ""
+	if err := json.Unmarshal(emailsBody, &emails); err != nil {
+		return nil, err
 	}
-
-	// Return primary verified email
+	info := &OAuthUserInfo{Name: data.Name, AvatarURL: data.AvatarURL}
+	if data.ID > 0 {
+		info.ID = fmt.Sprintf("%d", data.ID)
+	}
+	if info.Name == "" {
+		info.Name = data.Login
+	}
 	for _, e := range emails {
-		if e.Primary && e.Verified {
-			return e.Email
+		if e.Primary && e.Verified && e.Email != "" {
+			info.Email, info.EmailVerified = e.Email, true
+			break
 		}
 	}
-
-	// Return any verified email
-	for _, e := range emails {
-		if e.Verified {
-			return e.Email
-		}
-	}
-
-	return ""
+	return info, nil
 }
 
-func (s *OAuthService) parseMicrosoftUserInfo(body []byte) (*OAuthUserInfo, error) {
+// parseMicrosoftUserInfo never marks the address verified: Graph's mail and
+// userPrincipalName are tenant-controlled, so Microsoft can sign in after
+// linking but can never bootstrap an owner.
+func parseMicrosoftUserInfo(body []byte) (*OAuthUserInfo, error) {
 	var data struct {
 		ID                string `json:"id"`
 		DisplayName       string `json:"displayName"`
 		Mail              string `json:"mail"`
 		UserPrincipalName string `json:"userPrincipalName"`
 	}
-
 	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, err
 	}
-
 	email := data.Mail
 	if email == "" {
 		email = data.UserPrincipalName
 	}
-
-	return &OAuthUserInfo{
-		ID:    data.ID,
-		Email: email,
-		Name:  data.DisplayName,
-	}, nil
+	return &OAuthUserInfo{ID: data.ID, Email: email, Name: data.DisplayName}, nil
 }
 
-// FindOrCreateUser finds an existing user by OAuth connection or creates a new one
-func (s *OAuthService) FindOrCreateUser(ctx context.Context, provider OAuthProvider, userInfo *OAuthUserInfo, accessToken, refreshToken string, tokenExpiry time.Time) (int64, int64, bool, error) {
-	// First, check if there's an existing OAuth connection
-	var userID int64
-	var orgID int64
+// FindLoginUser resolves a provider identity to a user only through an
+// existing connection. It never matches by email. On an empty instance a
+// verified identity bootstraps the owner; otherwise the sign-in is not linked.
+func (s *OAuthService) FindLoginUser(ctx context.Context, provider OAuthProvider, info *OAuthUserInfo) (int64, int64, bool, error) {
+	var userID, orgID int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT oc.user_id, u.org_id
 		FROM oauth_connections oc
 		JOIN users u ON u.id = oc.user_id
 		WHERE oc.provider = $1 AND oc.provider_user_id = $2
-	`, string(provider), userInfo.ID).Scan(&userID, &orgID)
-
+	`, string(provider), info.ID).Scan(&userID, &orgID)
 	if err == nil {
-		// Found existing connection, update tokens
-		s.db.ExecContext(ctx, `
+		// Profile fields only; tokens are never kept.
+		if _, err = s.db.ExecContext(ctx, `
 			UPDATE oauth_connections
-			SET access_token = $3, refresh_token = $4, token_expiry = $5, email = $6, name = $7, avatar_url = $8, updated_at = NOW()
-			WHERE user_id = $1 AND provider = $2
-		`, userID, string(provider), accessToken, refreshToken, tokenExpiry, userInfo.Email, userInfo.Name, userInfo.AvatarURL)
-
-		return userID, orgID, false, nil
-	}
-
-	if err != sql.ErrNoRows {
-		return 0, 0, false, fmt.Errorf("failed to check existing connection: %w", err)
-	}
-
-	// No existing connection. Check if user with this email exists
-	err = s.db.QueryRowContext(ctx, `
-		SELECT id, org_id FROM users WHERE email = $1
-	`, userInfo.Email).Scan(&userID, &orgID)
-
-	if err == nil {
-		// User exists, create OAuth connection
-		_, err = s.db.ExecContext(ctx, `
-			INSERT INTO oauth_connections (user_id, provider, provider_user_id, access_token, refresh_token, token_expiry, email, name, avatar_url, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-		`, userID, string(provider), userInfo.ID, accessToken, refreshToken, tokenExpiry, userInfo.Email, userInfo.Name, userInfo.AvatarURL)
-		if err != nil {
-			return 0, 0, false, fmt.Errorf("failed to create OAuth connection: %w", err)
+			SET email = $3, name = $4, avatar_url = $5, access_token = NULL, refresh_token = NULL, token_expiry = NULL, updated_at = NOW()
+			WHERE provider = $1 AND provider_user_id = $2
+		`, string(provider), info.ID, info.Email, info.Name, info.AvatarURL); err != nil {
+			return 0, 0, false, err
 		}
-
 		return userID, orgID, false, nil
 	}
-
 	if err != sql.ErrNoRows {
-		return 0, 0, false, fmt.Errorf("failed to check existing user: %w", err)
+		return 0, 0, false, err
 	}
 
-	// Create new user and organization
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, 0, false, fmt.Errorf("failed to begin transaction: %w", err)
+		return 0, 0, false, err
 	}
 	defer tx.Rollback()
-
+	// Same lock as password registration: only one first owner can be created.
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(20261004,1)`); err != nil {
 		return 0, 0, false, err
 	}
@@ -427,44 +453,111 @@ func (s *OAuthService) FindOrCreateUser(ctx context.Context, provider OAuthProvi
 		return 0, 0, false, err
 	}
 	if existing > 0 {
-		return 0, 0, false, fmt.Errorf("registration is closed; contact your administrator")
+		return 0, 0, false, ErrOAuthNotLinked
 	}
-
-	// Create organization
-	orgSlug := generateSlug(userInfo.Name)
+	if !info.EmailVerified || info.Email == "" {
+		return 0, 0, false, ErrOAuthEmailUnverified
+	}
+	name := strings.TrimSpace(info.Name)
+	if name == "" {
+		name = strings.Split(info.Email, "@")[0]
+	}
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO organizations (name, slug, updated_at)
-		VALUES ($1, $2, NOW())
+		INSERT INTO organizations (name, slug, monthly_email_limit, max_domains, max_identities, max_contacts, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
 		RETURNING id
-	`, userInfo.Name+"'s Organization", orgSlug).Scan(&orgID)
+	`, name+"'s Workspace", generateSlug(name), s.cfg.DefaultMonthlyEmailLimit, s.cfg.DefaultMaxDomains, s.cfg.DefaultMaxIdentities, s.cfg.DefaultMaxContacts).Scan(&orgID)
 	if err != nil {
-		return 0, 0, false, fmt.Errorf("failed to create organization: %w", err)
+		return 0, 0, false, err
 	}
-
-	// Create user (with empty password since they use OAuth)
+	// No password: the owner signs in with this provider until one is set.
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO users (org_id, email, password_hash, name, role, status, email_verified, email_verified_at, updated_at)
 		VALUES ($1, $2, '', $3, 'owner', 'active', true, NOW(), NOW())
 		RETURNING id
-	`, orgID, userInfo.Email, userInfo.Name).Scan(&userID)
+	`, orgID, info.Email, name).Scan(&userID)
 	if err != nil {
-		return 0, 0, false, fmt.Errorf("failed to create user: %w", err)
+		return 0, 0, false, err
 	}
-
-	// Create OAuth connection
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO oauth_connections (user_id, provider, provider_user_id, access_token, refresh_token, token_expiry, email, name, avatar_url, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-	`, userID, string(provider), userInfo.ID, accessToken, refreshToken, tokenExpiry, userInfo.Email, userInfo.Name, userInfo.AvatarURL)
-	if err != nil {
-		return 0, 0, false, fmt.Errorf("failed to create OAuth connection: %w", err)
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO oauth_connections (user_id, provider, provider_user_id, email, name, avatar_url, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+	`, userID, string(provider), info.ID, info.Email, info.Name, info.AvatarURL); err != nil {
+		return 0, 0, false, err
 	}
-
 	if err = tx.Commit(); err != nil {
-		return 0, 0, false, fmt.Errorf("failed to commit transaction: %w", err)
+		return 0, 0, false, err
 	}
-
 	return userID, orgID, true, nil
+}
+
+// CreateLinkTicket records a provider identity returned to a link flow. The
+// signed-in user must confirm it (ConfirmLink) before a connection exists.
+func (s *OAuthService) CreateLinkTicket(ctx context.Context, userID int64, provider OAuthProvider, info *OAuthUserInfo) (string, error) {
+	ticket, err := randomOAuthToken()
+	if err != nil {
+		return "", err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO oauth_states(state_hash,purpose,provider,user_id,provider_user_id,provider_email,provider_name,expires_at) VALUES($1,'link_confirm',$2,$3,$4,$5,$6,now()+make_interval(secs => $7))`,
+		oauthHash(ticket), string(provider), userID, info.ID, info.Email, info.Name, oauthStateTTL.Seconds())
+	if err != nil {
+		return "", err
+	}
+	return ticket, nil
+}
+
+// ConfirmLink consumes a link ticket for the signed-in user and creates the
+// connection without tokens. A ticket issued to another user is consumed and
+// rejected, which closes link CSRF. Relinking the same identity is a no-op.
+func (s *OAuthService) ConfirmLink(ctx context.Context, userID int64, ticket string) (string, error) {
+	if len(ticket) != 64 {
+		return "", ErrOAuthInvalidTicket
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var owner int64
+	var provider, providerUserID string
+	var email, name sql.NullString
+	err = tx.QueryRowContext(ctx, `DELETE FROM oauth_states WHERE state_hash=$1 AND purpose='link_confirm' AND expires_at>now() RETURNING user_id,provider,provider_user_id,provider_email,provider_name`,
+		oauthHash(ticket)).Scan(&owner, &provider, &providerUserID, &email, &name)
+	if err == sql.ErrNoRows {
+		return "", ErrOAuthInvalidTicket
+	}
+	if err != nil {
+		return "", err
+	}
+	if owner != userID {
+		// Keep the ticket consumed; nothing is linked.
+		if err = tx.Commit(); err != nil {
+			return "", err
+		}
+		return "", ErrOAuthLinkMismatch
+	}
+	var linkedTo int64
+	err = tx.QueryRowContext(ctx, `SELECT user_id FROM oauth_connections WHERE provider=$1 AND provider_user_id=$2`, provider, providerUserID).Scan(&linkedTo)
+	switch {
+	case err == nil && linkedTo == userID:
+		return provider, tx.Commit()
+	case err == nil:
+		return "", ErrOAuthAlreadyLinked
+	case err != sql.ErrNoRows:
+		return "", err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO oauth_connections (user_id, provider, provider_user_id, email, name, updated_at) VALUES ($1, $2, $3, $4, $5, NOW())`,
+		userID, provider, providerUserID, email, name)
+	if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+		if pqErr.Constraint == "oauth_connections_user_id_provider_key" {
+			return "", ErrOAuthProviderInUse
+		}
+		return "", ErrOAuthAlreadyLinked
+	}
+	if err != nil {
+		return "", err
+	}
+	return provider, tx.Commit()
 }
 
 // GetConnections returns all OAuth connections for a user

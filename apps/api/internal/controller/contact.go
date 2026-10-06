@@ -24,8 +24,7 @@ func NewContactController(contactService *service.ContactService) *ContactContro
 func contactError(r *ghttp.Request, err error, fallback func(*ghttp.Request, string)) {
 	var ce *service.ContactError
 	if errors.As(err, &ce) {
-		r.Response.Status = ce.Status
-		r.Response.WriteJsonExit(response.Response{Code: ce.Status, Message: ce.Message, Data: map[string]string{"error": ce.Code}})
+		response.WithStatus(r, ce.Status, ce.Status, ce.Message, map[string]string{"error": ce.Code})
 		return
 	}
 	fallback(r, err.Error())

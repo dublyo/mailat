@@ -303,13 +303,18 @@ func customizeContract(op object, verb, path string) {
 	case "/tracking/click/:token", "/oauth/:provider", "/oauth/:provider/callback":
 		if verb == "GET" {
 			delete(responses, "200")
-			responses["302"] = object{"description": "Redirect to the configured destination", "headers": object{"Location": object{"schema": object{"type": "string", "format": "uri-reference"}}}}
+			description := "Redirect to the configured destination"
+			if path != "/tracking/click/:token" {
+				description = "Browser redirect to the provider, to the SPA (session fragment or Settings link ticket), or to /login?oauthError=<invalid_state|provider_error|not_linked|email_unverified|registration_closed|rate_limited>"
+			}
+			responses["302"] = object{"description": description, "headers": object{"Location": object{"schema": object{"type": "string", "format": "uri-reference"}}}}
 		}
 	case "/health":
-		dataSchema(object{"type": "object", "properties": object{"status": object{"type": "string", "enum": []string{"healthy", "unhealthy"}}, "version": object{"type": "string"}, "timestamp": object{"type": "string", "format": "date-time"}, "checks": object{"type": "object", "additionalProperties": object{"type": "string"}}}})
-		responses["503"] = object{"description": "A database or Redis health check failed; code remains 0 and data.status is unhealthy.", "content": responses["200"].(object)["content"]}
+		dataSchema(object{"type": "object", "properties": object{"status": object{"type": "string", "enum": []string{"healthy", "unhealthy"}}, "version": object{"type": "string"}, "timestamp": object{"type": "string", "format": "date-time"}, "checks": object{"type": "object", "additionalProperties": object{"type": "string", "enum": []string{"ok", "unavailable"}}}}})
+		responses["503"] = object{"description": "A database or Redis check failed: code 503, data.status is unhealthy and data.version is still present. Failure details are only logged server-side.", "content": responses["200"].(object)["content"]}
 	case "/ready":
 		dataSchema(object{"type": "object", "properties": object{"ready": object{"type": "boolean"}, "timestamp": object{"type": "string", "format": "date-time"}}})
+		responses["503"] = object{"description": "Postgres or Redis did not answer within 2 seconds; data.ready is false.", "content": responses["200"].(object)["content"]}
 	}
 }
 

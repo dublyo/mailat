@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base32"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skip2/go-qrcode"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/dublyo/mailat/api/internal/config"
@@ -28,9 +30,10 @@ func checkPasswordHash(password, hash string) bool {
 
 // TwoFactorSetup holds the setup information for 2FA
 type TwoFactorSetup struct {
-	Secret     string `json:"secret"`
-	QRCodeURL  string `json:"qrCodeUrl"`
-	ManualCode string `json:"manualCode"`
+	Secret        string `json:"secret"`
+	QRCodeURL     string `json:"qrCodeUrl"`
+	QRCodeDataURL string `json:"qrCodeDataUrl"`
+	ManualCode    string `json:"manualCode"`
 }
 
 // TwoFactorService handles two-factor authentication operations
@@ -69,28 +72,43 @@ func (s *TwoFactorService) GenerateSetup(ctx context.Context, userID int64, emai
 		return nil, fmt.Errorf("disable existing two-factor authentication before setting it up again")
 	}
 
-	// Generate QR code URL (otpauth format)
-	issuer := "Mailat"
-	qrURL := fmt.Sprintf("otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30",
-		issuer, url.PathEscape(email), secret, issuer)
-
-	// Format manual code for easier reading (groups of 4)
-	manualCode := formatSecretForDisplay(secret)
+	qrURL := totpURI(email, secret)
+	png, err := qrcode.Encode(qrURL, qrcode.Medium, 256)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render QR code")
+	}
 
 	return &TwoFactorSetup{
-		Secret:     secret,
-		QRCodeURL:  qrURL,
-		ManualCode: manualCode,
+		Secret:        secret,
+		QRCodeURL:     qrURL,
+		QRCodeDataURL: "data:image/png;base64," + base64.StdEncoding.EncodeToString(png),
+		// Format manual code for easier reading (groups of 4)
+		ManualCode: formatSecretForDisplay(secret),
 	}, nil
 }
 
-// VerifyAndEnable verifies a TOTP code and enables 2FA for the user
-func (s *TwoFactorService) VerifyAndEnable(ctx context.Context, userID int64, code string) ([]string, error) {
-	// Get the pending secret
+// totpURI builds the otpauth:// URI authenticator apps scan. The label is
+// path-escaped as one segment so unusual addresses cannot alter the URI.
+func totpURI(email, secret string) string {
+	q := url.Values{"secret": {secret}, "issuer": {"Mailat"}, "algorithm": {"SHA1"}, "digits": {"6"}, "period": {"30"}}
+	return "otpauth://totp/" + url.PathEscape("Mailat:"+email) + "?" + q.Encode()
+}
+
+// VerifyAndEnable verifies a TOTP code and enables 2FA for the user. In the
+// same transaction it bumps auth_version (pending login challenges become
+// invalid) and revokes every session except keepSessionHash, so a stolen
+// session cannot outlive the new factor. An empty hash revokes all sessions.
+func (s *TwoFactorService) VerifyAndEnable(ctx context.Context, userID int64, code, keepSessionHash string) ([]string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to enable 2FA")
+	}
+	defer tx.Rollback()
+
 	var secret sql.NullString
 	var enabled bool
-	err := s.db.QueryRowContext(ctx, `
-		SELECT totp_secret, totp_enabled FROM users WHERE id = $1
+	err = tx.QueryRowContext(ctx, `
+		SELECT totp_secret, totp_enabled FROM users WHERE id = $1 AND status='active' FOR UPDATE
 	`, userID).Scan(&secret, &enabled)
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
@@ -104,29 +122,34 @@ func (s *TwoFactorService) VerifyAndEnable(ctx context.Context, userID int64, co
 		return nil, fmt.Errorf("2FA is already enabled")
 	}
 
-	// Verify the code
-	if !s.verifyTOTP(secret.String, code) {
+	step, ok := matchTOTPStep(secret.String, code, sql.NullInt64{})
+	if !ok {
 		return nil, fmt.Errorf("invalid verification code")
 	}
 
-	// Generate backup codes
 	backupCodes, hashedCodes, err := s.generateBackupCodes()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate backup codes")
 	}
 
-	// Enable 2FA and store backup codes
-	result, err := s.db.ExecContext(ctx, `
+	// The enabling step is recorded so the same code cannot complete a login.
+	result, err := tx.ExecContext(ctx, `
 		UPDATE users
-		SET totp_enabled = true, totp_verified_at = NOW(), backup_codes = $2, updated_at = NOW()
+		SET totp_enabled = true, totp_verified_at = NOW(), totp_last_step = $4, backup_codes = $2,
+		    auth_version = auth_version + 1, updated_at = NOW()
 		WHERE id = $1 AND NOT totp_enabled AND totp_secret=$3 AND status='active'
-	`, userID, formatPgArray(hashedCodes), secret.String)
+	`, userID, formatPgArray(hashedCodes), secret.String, step)
 	if err != nil {
 		return nil, fmt.Errorf("failed to enable 2FA")
 	}
-
 	if rows, _ := result.RowsAffected(); rows != 1 {
 		return nil, fmt.Errorf("two-factor setup changed; start again")
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE user_sessions SET active=false,revoked_at=now() WHERE user_id=$1 AND active AND token_hash<>$2`, userID, keepSessionHash); err != nil {
+		return nil, fmt.Errorf("failed to enable 2FA")
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to enable 2FA")
 	}
 	return backupCodes, nil
 }
@@ -160,93 +183,95 @@ func (s *TwoFactorService) VerifyBackupCode(ctx context.Context, userID int64, c
 	return rows == 1, err
 }
 
-// Disable disables 2FA for a user
-func (s *TwoFactorService) Disable(ctx context.Context, userID int64, password, code string) error {
-	// Verify password first
+// errInvalidSecondFactor is returned for a wrong, malformed or replayed code.
+var errInvalidSecondFactor = fmt.Errorf("invalid verification code")
+
+// lockForFactorChange loads the factor state under a row lock and checks the
+// password and code. TOTP steps are replay-checked against totp_last_step,
+// the same rule as the login challenge, and the accepted step is stored.
+// allowBackup lets an unused backup code stand in for the TOTP code.
+func lockForFactorChange(ctx context.Context, tx *sql.Tx, userID int64, password, code string, allowBackup bool) error {
 	var passwordHash string
 	var secret sql.NullString
 	var enabled bool
-	err := s.db.QueryRowContext(ctx, `
-		SELECT password_hash, totp_secret, totp_enabled FROM users WHERE id = $1
-	`, userID).Scan(&passwordHash, &secret, &enabled)
+	var last sql.NullInt64
+	var backup []string
+	err := tx.QueryRowContext(ctx, `
+		SELECT password_hash, totp_secret, totp_enabled, totp_last_step, backup_codes
+		FROM users WHERE id = $1 AND status='active' FOR UPDATE
+	`, userID).Scan(&passwordHash, &secret, &enabled, &last, pgStrArr(&backup))
 	if err != nil {
 		return fmt.Errorf("user not found")
 	}
-
 	if !enabled {
 		return fmt.Errorf("2FA is not enabled")
 	}
-
-	// Verify password
 	if !checkPasswordHash(password, passwordHash) {
 		return fmt.Errorf("invalid password")
 	}
-
-	// Verify TOTP code
-	if !s.verifyTOTP(secret.String, code) {
-		// Try backup code
-		valid, _ := s.VerifyBackupCode(ctx, userID, code)
-		if !valid {
-			return fmt.Errorf("invalid verification code")
+	if step, ok := matchTOTPStep(secret.String, code, last); ok {
+		_, err = tx.ExecContext(ctx, `UPDATE users SET totp_last_step=$2 WHERE id=$1`, userID, step)
+		return err
+	}
+	if allowBackup {
+		hashed := hashBackupCode(code)
+		for _, stored := range backup {
+			if hmac.Equal([]byte(stored), []byte(hashed)) {
+				_, err = tx.ExecContext(ctx, `UPDATE users SET backup_codes=array_remove(backup_codes,$2) WHERE id=$1`, userID, hashed)
+				return err
+			}
 		}
 	}
+	return errInvalidSecondFactor
+}
 
-	// Disable 2FA
-	_, err = s.db.ExecContext(ctx, `
+// Disable disables 2FA for a user after a password and an unused TOTP step
+// (or backup code).
+func (s *TwoFactorService) Disable(ctx context.Context, userID int64, password, code string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to disable 2FA")
+	}
+	defer tx.Rollback()
+	if err = lockForFactorChange(ctx, tx, userID, password, code, true); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 		UPDATE users
-		SET totp_enabled = false, totp_secret = NULL, totp_verified_at = NULL, backup_codes = '{}', updated_at = NOW()
+		SET totp_enabled = false, totp_secret = NULL, totp_verified_at = NULL, totp_last_step = NULL,
+		    backup_codes = '{}', updated_at = NOW()
 		WHERE id = $1
 	`, userID)
 	if err != nil {
 		return fmt.Errorf("failed to disable 2FA")
 	}
-
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to disable 2FA")
+	}
 	return nil
 }
 
-// RegenerateBackupCodes generates new backup codes for a user
+// RegenerateBackupCodes replaces the backup codes after a password and an
+// unused TOTP step.
 func (s *TwoFactorService) RegenerateBackupCodes(ctx context.Context, userID int64, password, code string) ([]string, error) {
-	// Verify password
-	var passwordHash string
-	var secret sql.NullString
-	var enabled bool
-	err := s.db.QueryRowContext(ctx, `
-		SELECT password_hash, totp_secret, totp_enabled FROM users WHERE id = $1
-	`, userID).Scan(&passwordHash, &secret, &enabled)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("user not found")
+		return nil, fmt.Errorf("failed to store backup codes")
 	}
-
-	if !enabled {
-		return nil, fmt.Errorf("2FA is not enabled")
+	defer tx.Rollback()
+	if err = lockForFactorChange(ctx, tx, userID, password, code, false); err != nil {
+		return nil, err
 	}
-
-	// Verify password
-	if !checkPasswordHash(password, passwordHash) {
-		return nil, fmt.Errorf("invalid password")
-	}
-
-	// Verify TOTP code
-	if !s.verifyTOTP(secret.String, code) {
-		return nil, fmt.Errorf("invalid verification code")
-	}
-
-	// Generate new backup codes
 	backupCodes, hashedCodes, err := s.generateBackupCodes()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate backup codes")
 	}
-
-	// Store new backup codes
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE users
-		SET backup_codes = $2, updated_at = NOW()
-		WHERE id = $1
-	`, userID, formatPgArray(hashedCodes))
-	if err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE users SET backup_codes = $2, updated_at = NOW() WHERE id = $1`, userID, formatPgArray(hashedCodes)); err != nil {
 		return nil, fmt.Errorf("failed to store backup codes")
 	}
-
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to store backup codes")
+	}
 	return backupCodes, nil
 }
 
@@ -288,6 +313,30 @@ func (s *TwoFactorService) verifyTOTP(secret, code string) bool {
 	}
 
 	return false
+}
+
+// matchTOTPStep finds the time step (±1 for clock drift) that produced code.
+// Steps at or before last were already used and are rejected (replay).
+func matchTOTPStep(secret, code string, last sql.NullInt64) (int64, bool) {
+	if len(code) != 6 || secret == "" {
+		return 0, false
+	}
+	for _, digit := range code {
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+	}
+	now := time.Now().Unix() / 30
+	for _, offset := range []int64{-1, 0, 1} {
+		step := now + offset
+		if last.Valid && step <= last.Int64 {
+			continue
+		}
+		if hmac.Equal([]byte(generateTOTP(secret, step)), []byte(code)) {
+			return step, true
+		}
+	}
+	return 0, false
 }
 
 // generateTOTP generates a TOTP code for a given secret and counter

@@ -128,7 +128,7 @@ func (c *SignupFormController) Submit(r *ghttp.Request) {
 	if !signupBody(r, &req) {
 		return
 	}
-	x, e := c.service.Submit(r.Context(), r.Get("uuid").String(), middleware.ClientIP(r), &req)
+	x, e := c.service.Submit(r.Context(), r.Get("uuid").String(), middleware.ClientIP(r), r.UserAgent(), &req)
 	if e != nil {
 		signupFailure(r, e)
 		return
@@ -141,7 +141,7 @@ func (c *SignupFormController) Confirm(r *ghttp.Request) {
 	if !signupBody(r, &req) {
 		return
 	}
-	x, e := c.service.Confirm(r.Context(), req.Token, middleware.ClientIP(r))
+	x, e := c.service.Confirm(r.Context(), req.Token, middleware.ClientIP(r), r.UserAgent())
 	if e != nil {
 		signupFailure(r, e)
 		return

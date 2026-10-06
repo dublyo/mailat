@@ -13,12 +13,14 @@ import (
 type EmailRulesController struct {
 	rulesService     *service.EmailRulesService
 	autoReplyService *service.AutoReplyService
+	limiter          *service.RateLimiter
 }
 
-func NewEmailRulesController(rulesService *service.EmailRulesService, autoReplyService *service.AutoReplyService) *EmailRulesController {
+func NewEmailRulesController(rulesService *service.EmailRulesService, autoReplyService *service.AutoReplyService, limiter *service.RateLimiter) *EmailRulesController {
 	return &EmailRulesController{
 		rulesService:     rulesService,
 		autoReplyService: autoReplyService,
+		limiter:          limiter,
 	}
 }
 
@@ -356,9 +358,13 @@ func (c *EmailRulesController) CreateEmailForward(r *ghttp.Request) {
 	response.SuccessWithMessage(r, "Email forward created. Please check your email to verify.", forward)
 }
 
-// VerifyEmailForward verifies an email forward
+// VerifyEmailForward verifies an email forward. Public; limited to 60 requests
+// per client IP per 15 minutes.
 // POST /api/v1/forwards/:id/verify
 func (c *EmailRulesController) VerifyEmailForward(r *ghttp.Request) {
+	if rateLimited(r, c.limiter, service.RulePublicComplianceIP, middleware.ClientIP(r)) {
+		return
+	}
 	forwardID, err := strconv.Atoi(r.Get("id").String())
 	if err != nil {
 		response.BadRequest(r, "Invalid forward ID")

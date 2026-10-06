@@ -1,6 +1,9 @@
 package response
 
 import (
+	"strconv"
+	"time"
+
 	"github.com/gogf/gf/v2/net/ghttp"
 )
 
@@ -104,4 +107,27 @@ func Created(r *ghttp.Request, data interface{}) {
 		Message: "created",
 		Data:    data,
 	})
+}
+
+// WithStatus writes a JSON envelope with an explicit HTTP status. Use it when
+// clients need data alongside a non-2xx response (health checks, typed error
+// codes).
+func WithStatus(r *ghttp.Request, httpStatus, code int, message string, data interface{}) {
+	r.Response.Status = httpStatus
+	r.Response.WriteJsonExit(Response{
+		Code:    code,
+		Message: message,
+		Data:    data,
+	})
+}
+
+// TooManyRequests sends a 429 with Retry-After in whole seconds (at least 1).
+func TooManyRequests(r *ghttp.Request, retryAfter time.Duration, message string) {
+	seconds := int((retryAfter + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	r.Response.Header().Set("Retry-After", strconv.Itoa(seconds))
+	r.Response.Status = 429
+	Error(r, 429, message)
 }

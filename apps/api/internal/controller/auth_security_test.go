@@ -56,7 +56,7 @@ func newAuthFixture(t *testing.T) *authFixture {
 		t.Fatal(err)
 	}
 	auth := service.NewAuthService(db, cfg)
-	ac := controller.NewAuthController(auth)
+	ac := controller.NewAuthController(auth, service.NewRateLimiter(db, cfg))
 	inbox := controller.NewReceivedInboxController(service.NewInboxService(db, cfg, service.NewIdentityService(db, cfg)), nil)
 	s := ghttp.GetServer(fmt.Sprintf("auth-security-%d", time.Now().UnixNano()))
 	s.SetAddr("127.0.0.1:0")
@@ -300,5 +300,33 @@ func TestAPIKeyConcurrentLimitHTTP(t *testing.T) {
 	}
 	if allowed != 3 || limited != 7 {
 		t.Fatalf("rate race: accepted=%d limited=%d", allowed, limited)
+	}
+}
+
+func TestLoginRateLimitPerAccountHTTP(t *testing.T) {
+	f := newAuthFixture(t)
+	wrong := map[string]string{"email": "Owner@Example.test", "password": "wrong-password"}
+	for i := 0; i < 10; i++ {
+		f.call(t, "POST", "/api/v1/auth/login", "", wrong).expect(t, 401)
+	}
+	// The 11th attempt for the same (case-insensitive) account is refused before
+	// the password is checked, even with the right password.
+	limited := f.call(t, "POST", "/api/v1/auth/login", "", map[string]string{"email": "owner@example.test", "password": "fixture-password"})
+	limited.expect(t, 429)
+	retry, err := strconv.Atoi(limited.header.Get("Retry-After"))
+	if err != nil || retry < 1 || retry > 15*60 {
+		t.Fatalf("Retry-After %q", limited.header.Get("Retry-After"))
+	}
+	var body struct{ Message string }
+	json.Unmarshal(limited.body, &body)
+	if body.Message == "" || !bytes.Contains([]byte(body.Message), []byte("Too many attempts")) {
+		t.Fatalf("message %q", body.Message)
+	}
+	// Other accounts on the same IP are still under the per-IP limit.
+	f.login(t, "member@example.test")
+	var stored int
+	f.db.QueryRow(`SELECT count(*) FROM auth_rate_limits WHERE key LIKE '%example%'`).Scan(&stored)
+	if stored != 0 {
+		t.Fatal("rate limit keys must not contain raw subjects")
 	}
 }
