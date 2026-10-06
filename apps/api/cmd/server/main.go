@@ -122,10 +122,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var recovery sync.WaitGroup
-	recovery.Add(3)
+	recovery.Add(4)
 	go func() { defer recovery.Done(); eventoutbox.Run(ctx, db) }()
 	go func() { defer recovery.Done(); service.RunDMARCReportBackfill(ctx, db, cfg) }()
 	go func() { defer recovery.Done(); worker.NewEmailHandler(db, cfg).RunPending(ctx) }()
+	go func() { defer recovery.Done(); service.RunCampaignSender(ctx, db, cfg) }()
 
 	// Start worker if enabled
 	var w *worker.Worker

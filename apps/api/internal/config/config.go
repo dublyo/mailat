@@ -73,6 +73,10 @@ type Config struct {
 	AWSSecretAccessKey  string
 	SESConfigurationSet string
 
+	// Campaign sender tuning: 0 rate means 80% of the SES MaxSendRate.
+	CampaignMaxSendRate     float64
+	CampaignSendConcurrency int
+
 	// OAuth2 Providers (Phase 5.3)
 	GoogleClientID        string
 	GoogleClientSecret    string
@@ -101,6 +105,8 @@ func Load() (*Config, error) {
 	workerEnabled, _ := strconv.ParseBool(getEnv("WORKER_ENABLED", "true"))
 	autoMigrate, _ := strconv.ParseBool(getEnv("AUTO_MIGRATE", "true"))
 	disableAppLimits, _ := strconv.ParseBool(getEnv("DISABLE_APP_LIMITS", "true"))
+	campaignMaxSendRate, _ := strconv.ParseFloat(getEnv("CAMPAIGN_MAX_SEND_RATE", "0"), 64)
+	campaignSendConcurrency, _ := strconv.Atoi(getEnv("CAMPAIGN_SEND_CONCURRENCY", "4"))
 
 	// Organization limits
 	defaultMaxDomains, _ := strconv.Atoi(getEnv("DEFAULT_MAX_DOMAINS", "0"))
@@ -161,6 +167,9 @@ func Load() (*Config, error) {
 		AWSAccessKeyID:      getEnv("AWS_ACCESS_KEY_ID", ""),
 		AWSSecretAccessKey:  getEnv("AWS_SECRET_ACCESS_KEY", ""),
 		SESConfigurationSet: getEnv("SES_CONFIGURATION_SET", ""),
+
+		CampaignMaxSendRate:     max(campaignMaxSendRate, 0),
+		CampaignSendConcurrency: min(max(campaignSendConcurrency, 1), 16),
 
 		// OAuth2 Providers
 		GoogleClientID:        getEnv("GOOGLE_CLIENT_ID", ""),
