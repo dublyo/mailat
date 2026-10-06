@@ -20,7 +20,8 @@ func NewIdentityController(identityService *service.IdentityService) *IdentityCo
 	return &IdentityController{identityService: identityService}
 }
 
-// Create adds a new identity/mailbox
+// Create adds a new identity. Owner or admin only; ownerUserUuid assigns it to
+// another active member of the organization.
 // POST /api/v1/identities
 func (c *IdentityController) Create(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -64,6 +65,9 @@ func (c *IdentityController) Create(r *ghttp.Request) {
 	response.SuccessWithMessage(r, "Identity created", identity)
 }
 
+// Update changes one of the caller's personal identities. Changing isCatchAll
+// or canReceive requires the owner or admin role (403 otherwise).
+// PUT /api/v1/identities/:uuid
 func (c *IdentityController) Update(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
@@ -75,8 +79,15 @@ func (c *IdentityController) Update(r *ghttp.Request) {
 		response.BadRequest(r, "Invalid identity update")
 		return
 	}
-	identity, err := c.identityService.UpdateIdentity(r.Context(), claims.UserID, r.Get("uuid").String(), &req)
-	if err != nil {
+	identity, err := c.identityService.UpdateIdentity(r.Context(), claims.UserID, r.Get("uuid").String(), &req, middleware.IsOrgAdmin(claims))
+	switch {
+	case errors.Is(err, service.ErrIdentityAdminRequired):
+		response.Forbidden(r, err.Error())
+		return
+	case errors.Is(err, service.ErrIdentityNotFound):
+		response.NotFound(r, "Identity not found")
+		return
+	case err != nil:
 		response.BadRequest(r, err.Error())
 		return
 	}
@@ -161,7 +172,8 @@ func (c *IdentityController) UpdatePassword(r *ghttp.Request) {
 	response.SuccessWithMessage(r, "Password updated", nil)
 }
 
-// Delete removes an identity
+// Delete removes a personal identity of the organization and its received
+// mail. Owner or admin only.
 // DELETE /api/v1/identities/:uuid
 func (c *IdentityController) Delete(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -177,8 +189,12 @@ func (c *IdentityController) Delete(r *ghttp.Request) {
 	}
 
 	err := c.identityService.DeleteIdentity(r.Context(), claims.UserID, identityUUID)
+	if errors.Is(err, service.ErrIdentityNotFound) {
+		response.NotFound(r, "Identity not found")
+		return
+	}
 	if err != nil {
-		response.NotFound(r, err.Error())
+		response.InternalError(r, "Unable to delete identity")
 		return
 	}
 

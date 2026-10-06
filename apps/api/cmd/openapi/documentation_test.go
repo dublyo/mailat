@@ -223,3 +223,49 @@ func handler() {
 		}
 	}
 }
+
+func TestOrganizationRolesAndPublicInvites(t *testing.T) {
+	paths, _ := publishedContract(t)
+	op := func(path, method string) map[string]interface{} {
+		methods, ok := paths[path].(map[string]interface{})
+		if !ok || methods[method] == nil {
+			t.Fatalf("%s %s is not documented", method, path)
+		}
+		return methods[method].(map[string]interface{})
+	}
+	for _, route := range [][2]string{{"/api/v1/auth/invites/lookup", "post"}, {"/api/v1/auth/invites/accept", "post"}} {
+		o := op(route[0], route[1])
+		if len(o["security"].([]interface{})) != 0 || o["x-api-key-scope"] != nil || o["x-mailat-required-role"] != nil {
+			t.Errorf("%s must be public", route[0])
+		}
+	}
+	admin := [][2]string{
+		{"/api/v1/domains", "post"}, {"/api/v1/domains/{uuid}", "delete"}, {"/api/v1/domains/{uuid}/setup-sending", "post"}, {"/api/v1/inbox/setup", "post"},
+		{"/api/v1/identities", "post"}, {"/api/v1/identities/{uuid}", "delete"}, {"/api/v1/identities/{uuid}/catch-all", "post"},
+		{"/api/v1/api-keys", "get"}, {"/api/v1/api-keys", "post"}, {"/api/v1/branding", "put"},
+		{"/api/v1/org/members", "get"}, {"/api/v1/org/members/{uuid}", "delete"}, {"/api/v1/org/invites", "post"}, {"/api/v1/org/identities/{uuid}/owner", "put"},
+	}
+	for _, route := range admin {
+		if op(route[0], route[1])["x-mailat-required-role"] != "owner or admin" {
+			t.Errorf("%s %s missing the owner/admin role", route[1], route[0])
+		}
+	}
+	if op("/api/v1/org/members/{uuid}", "put")["x-mailat-required-role"] != "owner" {
+		t.Error("role changes are owner only")
+	}
+	for _, route := range [][2]string{{"/api/v1/domains", "get"}, {"/api/v1/identities", "get"}, {"/api/v1/identities/{uuid}", "put"}, {"/api/v1/inbox/received", "get"}} {
+		if op(route[0], route[1])["x-mailat-required-role"] != nil {
+			t.Errorf("%s %s must stay open to members", route[1], route[0])
+		}
+	}
+	for path, methods := range paths {
+		if !strings.HasPrefix(path, "/api/v1/org/") && path != "/api/v1/org" {
+			continue
+		}
+		for method, value := range methods.(map[string]interface{}) {
+			if value.(map[string]interface{})["x-api-key-scope"] != nil {
+				t.Errorf("%s %s must be human-only", method, path)
+			}
+		}
+	}
+}

@@ -44,13 +44,22 @@ var dummyPasswordHash = func() []byte {
 // validateRegistration enforces the registration policy: a single valid
 // address and a password bcrypt can hash without truncation (8–72 bytes).
 func validateRegistration(email, password string) (string, error) {
+	email, err := normalizeAccountEmail(email)
+	if err != nil {
+		return "", err
+	}
+	if len(password) < 8 || len(password) > 72 {
+		return "", fmt.Errorf("password must be 8 to 72 bytes long")
+	}
+	return email, nil
+}
+
+// normalizeAccountEmail accepts one bare address and returns it lowercased.
+func normalizeAccountEmail(email string) (string, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	address, err := mail.ParseAddress(email)
 	if err != nil || address.Address != email || len(email) > 255 {
 		return "", fmt.Errorf("enter a valid email address")
-	}
-	if len(password) < 8 || len(password) > 72 {
-		return "", fmt.Errorf("password must be 8 to 72 bytes long")
 	}
 	return email, nil
 }

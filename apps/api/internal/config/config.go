@@ -83,6 +83,8 @@ type Config struct {
 	// messages one forward may send per day (0 means 200).
 	ForwardMaxBytes   int
 	ForwardDailyLimit int
+	// Hours an organization invite link stays valid (0 means 168).
+	InviteTTLHours int
 
 	// OAuth2 Providers (Phase 5.3)
 	GoogleClientID        string
@@ -125,6 +127,10 @@ func Load() (*Config, error) {
 	forwardDailyLimit, forwardDailyErr := strconv.Atoi(getEnv("FORWARD_DAILY_LIMIT", "200"))
 	if forwardDailyErr != nil {
 		forwardDailyLimit = -1
+	}
+	inviteTTLHours, inviteTTLErr := strconv.Atoi(getEnv("INVITE_TTL_HOURS", "168"))
+	if inviteTTLErr != nil {
+		inviteTTLHours = -1
 	}
 
 	// Organization limits
@@ -192,6 +198,7 @@ func Load() (*Config, error) {
 		AutoReplyDailyLimit:     autoReplyDailyLimit,
 		ForwardMaxBytes:         forwardMaxBytes,
 		ForwardDailyLimit:       forwardDailyLimit,
+		InviteTTLHours:          inviteTTLHours,
 
 		// OAuth2 Providers
 		GoogleClientID:        getEnv("GOOGLE_CLIENT_ID", ""),
@@ -274,6 +281,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ForwardDailyLimit < 0 || c.ForwardDailyLimit > 10000 {
 		add("FORWARD_DAILY_LIMIT must be a whole number from 1 to 10000")
+	}
+	if c.InviteTTLHours < 0 || c.InviteTTLHours > 720 {
+		add("INVITE_TTL_HOURS must be a whole number from 1 to 720")
 	}
 	if c.EmailProvider != "ses" && c.EmailProvider != "smtp" {
 		add("EMAIL_PROVIDER must be ses or smtp")

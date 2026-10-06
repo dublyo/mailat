@@ -344,7 +344,7 @@ func main() {
 		bindings[m[1]] = m[2]
 	}
 	paths := object{}
-	public := map[string]bool{"/health": true, "/ready": true, "/auth/register-status": true, "/auth/register": true, "/auth/login": true, "/auth/2fa/challenge": true, "/webhooks/ses/incoming": true, "/oauth/providers": true, "/oauth/:provider": true, "/oauth/:provider/callback": true, "/forwards/verify": true}
+	public := map[string]bool{"/health": true, "/ready": true, "/auth/register-status": true, "/auth/register": true, "/auth/login": true, "/auth/2fa/challenge": true, "/webhooks/ses/incoming": true, "/oauth/providers": true, "/oauth/:provider": true, "/oauth/:provider/callback": true, "/forwards/verify": true, "/auth/invites/lookup": true, "/auth/invites/accept": true}
 	lineRx := regexp.MustCompile(`(\w+)\.(GET|POST|PUT|DELETE|PATCH)\("([^"]+)",\s*(\w+)\.(\w+)\)`)
 	paramRx := regexp.MustCompile(`:(\w+)`)
 	for _, m := range lineRx.FindAllStringSubmatch(source, -1) {
@@ -373,6 +373,13 @@ func main() {
 			op["x-human-session-required"] = len(op["security"].([]object)) > 0
 		}
 		annotateBackend(op, controller, path)
+		// Routes registered inside the router's admin groups need an organization role.
+		if group == "adminGroup" || group == "humanAdminGroup" {
+			op["x-mailat-required-role"] = "owner or admin"
+			if verb == "PUT" && path == "/org/members/:uuid" {
+				op["x-mailat-required-role"] = "owner"
+			}
+		}
 		params := []object{}
 		for _, p := range paramRx.FindAllStringSubmatch(path, -1) {
 			params = append(params, object{"name": p[1], "in": "path", "required": true, "schema": object{"type": "string"}})

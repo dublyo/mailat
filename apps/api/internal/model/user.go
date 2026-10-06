@@ -110,6 +110,7 @@ type Identity struct {
 	Color             string    `json:"color"` // Hex color for UI display
 	CanSend           bool      `json:"canSend"`
 	CanReceive        bool      `json:"canReceive"`
+	Kind              string    `json:"kind"` // personal or shared
 	StalwartAcctID    string    `json:"stalwartAcctId,omitempty"`
 	PasswordHash      string    `json:"-"`
 	EncryptedPassword string    `json:"-"` // AES-encrypted password for JMAP auth
@@ -126,6 +127,8 @@ type JWTClaims struct {
 	OrgID  int64  `json:"orgId"`
 	Email  string `json:"email"`
 	Role   string `json:"role"`
+	// KeyOwnerRole is the live role of an API key's owner; empty for sessions.
+	KeyOwnerRole string `json:"-"`
 }
 
 // Request/Response DTOs
@@ -152,19 +155,21 @@ type CreateDomainRequest struct {
 }
 
 type CreateIdentityRequest struct {
-	DomainId    string `json:"domainId"` // UUID of the domain
-	Email       string `json:"email"`
-	DisplayName string `json:"displayName"`
-	Password    string `json:"password"`
-	QuotaBytes  int64  `json:"quotaBytes"`
-	IsDefault   bool   `json:"isDefault"`
-	IsCatchAll  bool   `json:"isCatchAll"` // Only one catch-all per domain allowed
+	DomainId      string `json:"domainId"` // UUID of the domain
+	Email         string `json:"email"`
+	DisplayName   string `json:"displayName"`
+	Password      string `json:"password"`
+	QuotaBytes    int64  `json:"quotaBytes"`
+	IsDefault     bool   `json:"isDefault"`
+	IsCatchAll    bool   `json:"isCatchAll"`    // Only one catch-all per domain allowed
+	OwnerUserUuid string `json:"ownerUserUuid"` // Assigns the identity to another active member of the organization; empty means the caller.
 }
 
 type UpdateIdentityRequest struct {
 	DisplayName *string `json:"displayName"`
 	IsDefault   *bool   `json:"isDefault"`
-	IsCatchAll  *bool   `json:"isCatchAll"`
+	IsCatchAll  *bool   `json:"isCatchAll"` // Owner or admin only
+	CanReceive  *bool   `json:"canReceive"` // Owner or admin only
 	Color       *string `json:"color"`
 }
 

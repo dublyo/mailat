@@ -28,6 +28,25 @@ func (s *AuthService) issueSession(ctx context.Context, user *model.User, versio
 	return token, nil
 }
 
+// IssueSessionForUser signs in an active user that has no second factor, such
+// as a user who just accepted an invite.
+func (s *AuthService) IssueSessionForUser(ctx context.Context, user *model.User) (string, error) {
+	var version int64
+	var totp bool
+	if err := s.db.QueryRowContext(ctx, `SELECT auth_version,totp_enabled FROM users WHERE id=$1 AND status='active'`, user.ID).Scan(&version, &totp); err != nil {
+		return "", fmt.Errorf("account unavailable")
+	}
+	if totp {
+		return "", fmt.Errorf("sign in with your second factor")
+	}
+	token, err := s.issueSession(ctx, user, version, false)
+	if err != nil {
+		return "", err
+	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE users SET last_login_at=now() WHERE id=$1`, user.ID)
+	return token, nil
+}
+
 // AuthenticateUser is shared by password and OAuth logins; neither can bypass
 // the second-factor decision or issue a token for a disabled account.
 func (s *AuthService) AuthenticateUser(ctx context.Context, userID int64) (*model.LoginResponse, error) {

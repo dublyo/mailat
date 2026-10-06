@@ -136,17 +136,77 @@ func TestSESIdentitiesAndExplicitMonthlyQuota(t *testing.T) {
 		t.Fatalf("incorrect identity flags: default=%v send=%v receive=%v", loaded.IsDefault, loaded.CanSend, loaded.CanReceive)
 	}
 	on, off := true, false
-	if _, err = svc.UpdateIdentity(ctx, user, b.UUID, &model.UpdateIdentityRequest{IsCatchAll: &on}); err == nil {
+	if _, err = svc.UpdateIdentity(ctx, user, b.UUID, &model.UpdateIdentityRequest{IsCatchAll: &on}, true); err == nil {
 		t.Fatal("second catch-all allowed")
 	}
-	if _, err = svc.UpdateIdentity(ctx, user, a.UUID, &model.UpdateIdentityRequest{IsCatchAll: &off}); err != nil {
+	if _, err = svc.UpdateIdentity(ctx, user, a.UUID, &model.UpdateIdentityRequest{IsCatchAll: &off}, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = svc.UpdateIdentity(ctx, user, b.UUID, &model.UpdateIdentityRequest{IsCatchAll: &on}); err != nil {
+	if _, err = svc.UpdateIdentity(ctx, user, b.UUID, &model.UpdateIdentityRequest{IsCatchAll: &on}, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = svc.UpdateIdentity(ctx, user+1000, b.UUID, &model.UpdateIdentityRequest{IsDefault: &on}); err == nil {
+	if _, err = svc.UpdateIdentity(ctx, user+1000, b.UUID, &model.UpdateIdentityRequest{IsDefault: &on}, true); err == nil {
 		t.Fatal("cross-user identity update allowed")
+	}
+	// Members cannot change catch-all or receiving, even on their own identity.
+	if _, err = svc.UpdateIdentity(ctx, user, b.UUID, &model.UpdateIdentityRequest{IsCatchAll: &off}, false); !errors.Is(err, ErrIdentityAdminRequired) {
+		t.Fatal("member catch-all change:", err)
+	}
+	if _, err = svc.UpdateIdentity(ctx, user, b.UUID, &model.UpdateIdentityRequest{CanReceive: &off}, false); !errors.Is(err, ErrIdentityAdminRequired) {
+		t.Fatal("member receiving change:", err)
+	}
+	if updated, err := svc.UpdateIdentity(ctx, user, b.UUID, &model.UpdateIdentityRequest{CanReceive: &off}, true); err != nil || updated.CanReceive {
+		t.Fatal("admin receiving change:", err)
+	}
+	if _, err = svc.UpdateIdentity(ctx, user, "not-a-uuid", &model.UpdateIdentityRequest{IsDefault: &on}, false); !errors.Is(err, ErrIdentityNotFound) {
+		t.Fatal(err)
+	}
+
+	// An admin assigns an identity to another active member of the org only.
+	var member, outsider int64
+	var memberUUID, outsiderUUID string
+	if err := db.QueryRow(`INSERT INTO users(org_id,email,password_hash,role,updated_at) VALUES($1,'member@example.test','unused','member',now()) RETURNING id,uuid`, org).Scan(&member, &memberUUID); err != nil {
+		t.Fatal(err)
+	}
+	var otherOrg int64
+	if err := db.QueryRow(`INSERT INTO organizations(name,slug,updated_at) VALUES('Other','other',now()) RETURNING id`).Scan(&otherOrg); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`INSERT INTO users(org_id,email,password_hash,updated_at) VALUES($1,'outsider@other.test','unused',now()) RETURNING id,uuid`, otherOrg).Scan(&outsider, &outsiderUUID); err != nil {
+		t.Fatal(err)
+	}
+	assigned, err := svc.CreateIdentity(ctx, user, &model.CreateIdentityRequest{DomainId: domainUUID, Email: "m@example.test", DisplayName: "M", IsDefault: true, OwnerUserUuid: memberUUID})
+	if err != nil || assigned.UserID != member {
+		t.Fatalf("assigned identity: %+v %v", assigned, err)
+	}
+	if mine, _ := svc.GetIdentity(ctx, user, b.UUID); mine == nil {
+		t.Fatal("assigning a default to a member changed the admin's identities")
+	}
+	for _, owner := range []string{outsiderUUID, "not-a-uuid"} {
+		if _, err = svc.CreateIdentity(ctx, user, &model.CreateIdentityRequest{DomainId: domainUUID, Email: "x" + owner[:4] + "@example.test", DisplayName: "X", OwnerUserUuid: owner}); err == nil {
+			t.Fatal("identity assigned outside the organization", owner)
+		}
+	}
+	if _, err = db.Exec(`UPDATE users SET status='disabled' WHERE id=$1`, member); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.CreateIdentity(ctx, user, &model.CreateIdentityRequest{DomainId: domainUUID, Email: "d@example.test", DisplayName: "D", OwnerUserUuid: memberUUID}); err == nil {
+		t.Fatal("identity assigned to a disabled user")
+	}
+
+	// Delete is org-scoped (the route is admin-only) and queues stored objects.
+	if _, err = db.Exec(`INSERT INTO received_emails(org_id,domain_id,identity_id,message_id,from_email,subject,raw_s3_bucket,raw_s3_key,updated_at) VALUES($1,$2,$3,'m','a@sender.test','S','bucket','raw/m',now())`, org, domain, assigned.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.DeleteIdentity(ctx, outsider, assigned.UUID); !errors.Is(err, ErrIdentityNotFound) {
+		t.Fatal("cross-org delete:", err)
+	}
+	if err = svc.DeleteIdentity(ctx, user, assigned.UUID); err != nil {
+		t.Fatal(err)
+	}
+	var queued int
+	if err = db.QueryRow(`SELECT count(*) FROM storage_cleanup_jobs WHERE bucket='bucket' AND object_key='raw/m'`).Scan(&queued); err != nil || queued != 1 {
+		t.Fatalf("storage cleanup not queued: %d %v", queued, err)
 	}
 	for n := 0; n < 4; n++ {
 		if err = reserveMonthlySend(ctx, db, cfg, org); err != nil {

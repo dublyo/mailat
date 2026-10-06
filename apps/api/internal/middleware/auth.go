@@ -98,7 +98,7 @@ func validateAPIKey(r *ghttp.Request, raw string) {
 	var expires sql.NullTime
 	var permissions []string
 	claims := &model.JWTClaims{Role: "api"}
-	err := database.DB.QueryRowContext(r.Context(), `SELECT k.id,k.org_id,k.user_id,k.expires_at,k.permissions,u.email FROM api_keys k JOIN users u ON u.id=k.user_id AND u.org_id=k.org_id WHERE k.key_hash=$1 AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.status='active'`, tokenHash(raw)).Scan(&id, &claims.OrgID, &claims.UserID, &expires, pq.Array(&permissions), &claims.Email)
+	err := database.DB.QueryRowContext(r.Context(), `SELECT k.id,k.org_id,k.user_id,k.expires_at,k.permissions,u.email,u.role FROM api_keys k JOIN users u ON u.id=k.user_id AND u.org_id=k.org_id WHERE k.key_hash=$1 AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.status='active'`, tokenHash(raw)).Scan(&id, &claims.OrgID, &claims.UserID, &expires, pq.Array(&permissions), &claims.Email, &claims.KeyOwnerRole)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			response.Unauthorized(r, "Invalid, expired, or revoked API key")
@@ -209,4 +209,32 @@ func RequireRole(roles ...string) func(*ghttp.Request) {
 		}
 		response.Forbidden(r, "Insufficient permissions")
 	}
+}
+
+// IsOrgAdmin reports whether the caller may manage the organization: an owner
+// or admin session, or an API key whose owner currently holds one of those roles.
+func IsOrgAdmin(c *model.JWTClaims) bool {
+	if c == nil {
+		return false
+	}
+	role := c.Role
+	if role == "api" {
+		role = c.KeyOwnerRole
+	}
+	return role == "owner" || role == "admin"
+}
+
+// RequireOrgAdmin gates organization management. Roles are read from the
+// database on every request, so a demotion applies immediately.
+func RequireOrgAdmin(r *ghttp.Request) {
+	c := GetClaims(r)
+	if c == nil {
+		response.Unauthorized(r, "Authentication required")
+		return
+	}
+	if !IsOrgAdmin(c) {
+		response.Forbidden(r, "An organization owner or admin is required")
+		return
+	}
+	r.Middleware.Next()
 }

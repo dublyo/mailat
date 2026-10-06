@@ -425,6 +425,17 @@ func (s *OAuthService) FindLoginUser(ctx context.Context, provider OAuthProvider
 		WHERE oc.provider = $1 AND oc.provider_user_id = $2
 	`, string(provider), info.ID).Scan(&userID, &orgID)
 	if err == nil {
+		// A removed (disabled) member never signs in or relinks through a
+		// leftover connection.
+		var active bool
+		if err = s.db.QueryRowContext(ctx, `SELECT status='active' FROM users WHERE id=$1`, userID).Scan(&active); err != nil {
+			return 0, 0, false, err
+		}
+		if !active {
+			return 0, 0, false, ErrOAuthNotLinked
+		}
+	}
+	if err == nil {
 		// Profile fields only; tokens are never kept.
 		if _, err = s.db.ExecContext(ctx, `
 			UPDATE oauth_connections
@@ -529,7 +540,11 @@ func (s *OAuthService) ConfirmLink(ctx context.Context, userID int64, ticket str
 	if err != nil {
 		return "", err
 	}
-	if owner != userID {
+	var active bool
+	if err = tx.QueryRowContext(ctx, `SELECT status='active' FROM users WHERE id=$1`, userID).Scan(&active); err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+	if owner != userID || !active {
 		// Keep the ticket consumed; nothing is linked.
 		if err = tx.Commit(); err != nil {
 			return "", err

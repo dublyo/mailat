@@ -24,6 +24,9 @@ import (
 
 var ErrIdentityNotFound = errors.New("identity not found")
 
+// ErrIdentityAdminRequired is returned when a non-admin changes catch-all or receiving.
+var ErrIdentityAdminRequired = errors.New("only an organization owner or admin can change catch-all or receiving")
+
 type IdentityService struct {
 	db       *sql.DB
 	cfg      *config.Config
@@ -84,6 +87,20 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 	if domainStatus != "active" {
 		return nil, fmt.Errorf("domain is not active")
 	}
+	// An admin may create the identity for another active member of the org.
+	ownerID := userID
+	if req.OwnerUserUuid != "" {
+		if _, err = uuid.Parse(req.OwnerUserUuid); err != nil {
+			return nil, fmt.Errorf("owner is not an active member of this organization")
+		}
+		err = s.db.QueryRowContext(ctx, `SELECT id FROM users WHERE uuid=$1 AND org_id=$2 AND status='active'`, req.OwnerUserUuid, userOrgID).Scan(&ownerID)
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("owner is not an active member of this organization")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify owner: %w", err)
+		}
+	}
 	if s.cfg.EmailProvider == "ses" && !sesVerified {
 		return nil, fmt.Errorf("verify the domain with SES before creating an address")
 	}
@@ -125,8 +142,8 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 	// Auto-assign color based on identity count for user
 	var identityCount int
 	err = s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM identities WHERE user_id = $1
-	`, userID).Scan(&identityCount)
+		SELECT COUNT(*) FROM identities WHERE user_id = $1 AND kind='personal'
+	`, ownerID).Scan(&identityCount)
 	if err != nil {
 		identityCount = 0
 	}
@@ -161,7 +178,7 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 	defer tx.Rollback()
 	// Lock the user then domain in a consistent order so concurrent creates and
 	// updates cannot produce two defaults or catch-alls.
-	if _, err = tx.ExecContext(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID); err != nil {
+	if _, err = tx.ExecContext(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, ownerID); err != nil {
 		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `SELECT id FROM domains WHERE id=$1 FOR UPDATE`, domainID); err != nil {
@@ -182,7 +199,7 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 		}
 	}
 	if req.IsDefault {
-		if _, err = tx.ExecContext(ctx, `UPDATE identities SET is_default=false, updated_at=now() WHERE user_id=$1 AND is_default`, userID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE identities SET is_default=false, updated_at=now() WHERE user_id=$1 AND kind='personal' AND is_default`, ownerID); err != nil {
 			return nil, err
 		}
 	}
@@ -198,7 +215,7 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
 		RETURNING id, uuid, user_id, domain_id, email, display_name, is_default, is_catch_all, color,
 		          quota_bytes, used_bytes, stalwart_account_id, created_at, updated_at
-	`, identityUUID, userID, domainID, strings.ToLower(req.Email), req.DisplayName,
+	`, identityUUID, ownerID, domainID, strings.ToLower(req.Email), req.DisplayName,
 		req.IsDefault, req.IsCatchAll, assignedColor, string(passwordHash), encryptedPassword, quotaBytes).Scan(
 		&identity.ID, &identity.UUID, &identity.UserID, &identity.DomainID,
 		&identity.Email, &identity.DisplayName, &identity.IsDefault, &identity.IsCatchAll, &colorNull,
@@ -219,8 +236,8 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 	if req.IsDefault {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE identities SET is_default = false, updated_at = NOW()
-			WHERE user_id = $1 AND id != $2
-		`, userID, identity.ID)
+			WHERE user_id = $1 AND kind='personal' AND id != $2
+		`, ownerID, identity.ID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to update default identity: %w", err)
 		}
@@ -255,6 +272,7 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 
 	identity.Status = "active" // Virtual field
 	identity.CanSend, identity.CanReceive = true, true
+	identity.Kind = "personal"
 
 	return &identity, nil
 }
@@ -272,7 +290,15 @@ func identityAddressForDomain(value, domain string) (string, error) {
 	return strings.ToLower(value), nil
 }
 
-func (s *IdentityService) UpdateIdentity(ctx context.Context, userID int64, identityUUID string, req *model.UpdateIdentityRequest) (*model.Identity, error) {
+// UpdateIdentity changes one of the caller's personal identities. Catch-all
+// and receiving changes need isAdmin (owner or admin).
+func (s *IdentityService) UpdateIdentity(ctx context.Context, userID int64, identityUUID string, req *model.UpdateIdentityRequest, isAdmin bool) (*model.Identity, error) {
+	if !isAdmin && (req.IsCatchAll != nil || req.CanReceive != nil) {
+		return nil, ErrIdentityAdminRequired
+	}
+	if _, err := uuid.Parse(identityUUID); err != nil {
+		return nil, ErrIdentityNotFound
+	}
 	if req.DisplayName != nil && (len(*req.DisplayName) > 255 || strings.ContainsAny(*req.DisplayName, "\r\n")) {
 		return nil, fmt.Errorf("invalid display name")
 	}
@@ -288,8 +314,11 @@ func (s *IdentityService) UpdateIdentity(ctx context.Context, userID int64, iden
 		return nil, err
 	}
 	var id, domainID int64
-	if err = tx.QueryRowContext(ctx, `SELECT id,domain_id FROM identities WHERE uuid=$1 AND user_id=$2 FOR UPDATE`, identityUUID, userID).Scan(&id, &domainID); err != nil {
-		return nil, fmt.Errorf("identity not found")
+	if err = tx.QueryRowContext(ctx, `SELECT id,domain_id FROM identities WHERE uuid=$1 AND user_id=$2 AND kind='personal' FOR UPDATE`, identityUUID, userID).Scan(&id, &domainID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrIdentityNotFound
+		}
+		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `SELECT id FROM domains WHERE id=$1 FOR UPDATE`, domainID); err != nil {
 		return nil, err
@@ -304,11 +333,11 @@ func (s *IdentityService) UpdateIdentity(ctx context.Context, userID int64, iden
 		}
 	}
 	if req.IsDefault != nil && *req.IsDefault {
-		if _, err = tx.ExecContext(ctx, `UPDATE identities SET is_default=false,updated_at=now() WHERE user_id=$1 AND id<>$2 AND is_default`, userID, id); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE identities SET is_default=false,updated_at=now() WHERE user_id=$1 AND kind='personal' AND id<>$2 AND is_default`, userID, id); err != nil {
 			return nil, err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE identities SET display_name=COALESCE($1,display_name),is_default=COALESCE($2,is_default),is_catch_all=COALESCE($3,is_catch_all),color=COALESCE($4,color),updated_at=now() WHERE id=$5`, req.DisplayName, req.IsDefault, req.IsCatchAll, req.Color, id)
+	_, err = tx.ExecContext(ctx, `UPDATE identities SET display_name=COALESCE($1,display_name),is_default=COALESCE($2,is_default),is_catch_all=COALESCE($3,is_catch_all),color=COALESCE($4,color),can_receive=COALESCE($6,can_receive),updated_at=now() WHERE id=$5`, req.DisplayName, req.IsDefault, req.IsCatchAll, req.Color, id, req.CanReceive)
 	if err != nil {
 		return nil, err
 	}
@@ -320,20 +349,23 @@ func (s *IdentityService) UpdateIdentity(ctx context.Context, userID int64, iden
 
 // GetIdentity retrieves an identity by UUID
 func (s *IdentityService) GetIdentity(ctx context.Context, userID int64, identityUUID string) (*model.Identity, error) {
+	if _, err := uuid.Parse(identityUUID); err != nil {
+		return nil, ErrIdentityNotFound
+	}
 	var identity model.Identity
 	var stalwartAcctID sql.NullString
 	var colorNull sql.NullString
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, uuid, user_id, domain_id, email, COALESCE(display_name, ''), is_default, is_catch_all, color,
-		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive
+		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive, kind
 		FROM identities
-		WHERE uuid = $1 AND user_id = $2
+		WHERE uuid = $1 AND user_id = $2 AND kind = 'personal'
 	`, identityUUID, userID).Scan(
 		&identity.ID, &identity.UUID, &identity.UserID, &identity.DomainID,
 		&identity.Email, &identity.DisplayName, &identity.IsDefault, &identity.IsCatchAll, &colorNull,
 		&stalwartAcctID, &identity.QuotaBytes, &identity.UsedBytes,
-		&identity.CreatedAt, &identity.UpdatedAt, &identity.CanSend, &identity.CanReceive,
+		&identity.CreatedAt, &identity.UpdatedAt, &identity.CanSend, &identity.CanReceive, &identity.Kind,
 	)
 
 	if err == sql.ErrNoRows {
@@ -358,9 +390,9 @@ func (s *IdentityService) GetIdentity(ctx context.Context, userID int64, identit
 func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*model.Identity, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, uuid, user_id, domain_id, email, COALESCE(display_name, ''), is_default, is_catch_all, color,
-		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive
+		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive, kind
 		FROM identities
-		WHERE user_id = $1
+		WHERE user_id = $1 AND kind = 'personal'
 		ORDER BY is_default DESC, email ASC
 	`, userID)
 	if err != nil {
@@ -376,7 +408,7 @@ func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*
 		if err := rows.Scan(&identity.ID, &identity.UUID, &identity.UserID, &identity.DomainID,
 			&identity.Email, &identity.DisplayName, &identity.IsDefault, &identity.IsCatchAll, &colorNull,
 			&stalwartAcctID, &identity.QuotaBytes, &identity.UsedBytes,
-			&identity.CreatedAt, &identity.UpdatedAt, &identity.CanSend, &identity.CanReceive); err != nil {
+			&identity.CreatedAt, &identity.UpdatedAt, &identity.CanSend, &identity.CanReceive, &identity.Kind); err != nil {
 			return nil, fmt.Errorf("failed to scan identity: %w", err)
 		}
 		if stalwartAcctID.Valid {
@@ -432,36 +464,54 @@ func (s *IdentityService) UpdateIdentityPassword(ctx context.Context, userID int
 	return nil
 }
 
-// DeleteIdentity removes an identity
+// DeleteIdentity removes a personal identity of the caller's organization and
+// its received mail. The route is admin-only; stored objects are queued for
+// cleanup in the same transaction.
 func (s *IdentityService) DeleteIdentity(ctx context.Context, userID int64, identityUUID string) error {
-	// Get identity first
-	identity, err := s.GetIdentity(ctx, userID, identityUUID)
+	if _, err := uuid.Parse(identityUUID); err != nil {
+		return ErrIdentityNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-
-	// Delete from database
-	result, err := s.db.ExecContext(ctx, `
-		DELETE FROM identities WHERE uuid = $1 AND user_id = $2
-	`, identityUUID, userID)
+	defer tx.Rollback()
+	var id int64
+	var stalwartID sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT i.id,i.stalwart_account_id FROM identities i JOIN domains d ON d.id=i.domain_id
+		WHERE i.uuid=$1 AND i.kind='personal' AND d.org_id=(SELECT org_id FROM users WHERE id=$2) FOR UPDATE OF i`, identityUUID, userID).Scan(&id, &stalwartID)
+	if err == sql.ErrNoRows {
+		return ErrIdentityNotFound
+	}
 	if err != nil {
+		return fmt.Errorf("failed to load identity: %w", err)
+	}
+	if err = queueMailStorageCleanup(ctx, tx, `e.identity_id=$1`, id); err != nil {
+		return fmt.Errorf("failed to queue storage cleanup: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM identities WHERE id=$1`, id); err != nil {
 		return fmt.Errorf("failed to delete identity: %w", err)
 	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("identity not found")
+	if err = tx.Commit(); err != nil {
+		return err
 	}
-
-	// Delete from Stalwart
-	if identity.StalwartAcctID != "" {
-		err = s.stalwart.DeleteAccount(ctx, identity.StalwartAcctID)
-		if err != nil {
+	if stalwartID.Valid && stalwartID.String != "" {
+		if err = s.stalwart.DeleteAccount(ctx, stalwartID.String); err != nil {
 			fmt.Printf("Warning: Failed to delete Stalwart account: %v\n", err)
 		}
 	}
-
 	return nil
+}
+
+// queueMailStorageCleanup queues the raw and attachment objects of the
+// received_emails rows matching where (alias e). The cleanup worker rechecks
+// every object for remaining references before deleting it.
+func queueMailStorageCleanup(ctx context.Context, tx *sql.Tx, where string, args ...any) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO storage_cleanup_jobs(bucket,object_key)
+ SELECT e.raw_s3_bucket,e.raw_s3_key FROM received_emails e WHERE `+where+` AND COALESCE(e.raw_s3_bucket,'')!='' AND COALESCE(e.raw_s3_key,'')!=''
+ UNION SELECT a.s3_bucket,a.s3_key FROM email_attachments a JOIN received_emails e ON e.id=a.received_email_id WHERE `+where+` AND a.s3_bucket!='' AND a.s3_key!=''
+ ON CONFLICT(bucket,object_key) DO UPDATE SET next_attempt_at=NOW()`, args...)
+	return err
 }
 
 // Stalwart API integration

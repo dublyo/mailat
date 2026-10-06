@@ -97,6 +97,8 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 	webhookTriggerService := service.NewWebhookTriggerService(database.DB, cfg)
 	pushService := service.NewPushNotificationService(database.DB, cfg)
 	brandingService := service.NewBrandingService(database.DB, cfg)
+	orgMemberService := service.NewOrgMemberService(database.DB, cfg, authService)
+	orgMemberService.SetSender(transactionalService)
 
 	// Wire webhook trigger service to services that fire events (n8n/Zapier integration)
 	contactService.SetWebhookTriggerService(webhookTriggerService)
@@ -136,6 +138,7 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 	oauthCtrl := controller.NewOAuthController(oauthService, auditLogService, cfg, rateLimiter)
 	phase5Ctrl := controller.NewPhase5Controller(webauthnService, sharedMailboxService, webhookTriggerService, pushService, brandingService, auditLogService)
 	settingsCtrl := controller.NewSettingsController(settingsService)
+	orgCtrl := controller.NewOrgController(orgMemberService, rateLimiter)
 
 	// Email Receiving controllers
 	sseCtrl := controller.NewSSEController()
@@ -201,6 +204,8 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			authGroup.POST("/register", authCtrl.Register)
 			authGroup.POST("/login", authCtrl.Login)
 			authGroup.POST("/2fa/challenge", authCtrl.CompleteChallenge)
+			authGroup.POST("/invites/lookup", orgCtrl.LookupInvite)
+			authGroup.POST("/invites/accept", orgCtrl.AcceptInvite)
 
 			// Protected auth routes
 			authGroup.Middleware(middleware.Auth)
@@ -242,8 +247,6 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.POST("/inbox/received/star", receivedInboxCtrl.StarEmails)
 			protectedGroup.POST("/inbox/received/move", receivedInboxCtrl.MoveEmails)
 			protectedGroup.POST("/inbox/received/trash", receivedInboxCtrl.TrashEmails)
-			protectedGroup.POST("/inbox/setup", receivedInboxCtrl.SetupReceiving)
-			protectedGroup.POST("/identities/:uuid/catch-all", identityCtrl.Update)
 
 			// SES mailbox management and resumable automation reads.
 			protectedGroup.GET("/inbox/changes", receivedInboxCtrl.Changes)
@@ -267,32 +270,19 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.DELETE("/inbox/trusted-senders/:uuid", receivedInboxCtrl.DeleteTrustedSender)
 
 			// API Keys
-			protectedGroup.POST("/api-keys", authCtrl.CreateAPIKey)
-			protectedGroup.GET("/api-keys", authCtrl.ListAPIKeys)
-			protectedGroup.DELETE("/api-keys/:uuid", authCtrl.DeleteAPIKey)
 
 			// Domains
-			protectedGroup.POST("/domains", domainCtrl.Create)
 			protectedGroup.GET("/domains", domainCtrl.List)
 			protectedGroup.GET("/domains/:uuid", domainCtrl.Get)
 			protectedGroup.GET("/domains/:uuid/dmarc", domainCtrl.DMARC)
 			protectedGroup.GET("/domains/:uuid/sending-status", domainCtrl.SendingStatus)
-			protectedGroup.POST("/domains/:uuid/setup-sending", domainCtrl.SetupSending)
-			protectedGroup.POST("/domains/:uuid/verify", domainCtrl.Verify)
-			protectedGroup.DELETE("/domains/:uuid", domainCtrl.Delete)
-			// SES and Cloudflare integration
-			protectedGroup.POST("/domains/:uuid/ses-verify", domainCtrl.InitiateSES)
 			protectedGroup.GET("/domains/:uuid/ses-status", domainCtrl.CheckSESStatus)
-			protectedGroup.POST("/domains/:uuid/dns/cloudflare", domainCtrl.AddDNSToCloudflare)
-			protectedGroup.POST("/domains/cloudflare/zones", domainCtrl.GetCloudflareZones)
 
 			// Identities
-			protectedGroup.POST("/identities", identityCtrl.Create)
 			protectedGroup.GET("/identities", identityCtrl.List)
 			protectedGroup.GET("/identities/:uuid", identityCtrl.Get)
 			protectedGroup.PUT("/identities/:uuid", identityCtrl.Update)
 			protectedGroup.PUT("/identities/:uuid/password", identityCtrl.UpdatePassword)
-			protectedGroup.DELETE("/identities/:uuid", identityCtrl.Delete)
 
 			// Unified Inbox
 			protectedGroup.GET("/inbox", inboxCtrl.GetInbox)
@@ -479,10 +469,8 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.DELETE("/security/webauthn/credentials/:uuid", phase5Ctrl.DeleteWebAuthnCredential)
 
 			// Phase 5.1: Shared Mailboxes
-			protectedGroup.POST("/shared-mailboxes", phase5Ctrl.CreateSharedMailbox)
 			protectedGroup.GET("/shared-mailboxes", phase5Ctrl.ListSharedMailboxes)
 			protectedGroup.GET("/shared-mailboxes/:id", phase5Ctrl.GetSharedMailbox)
-			protectedGroup.DELETE("/shared-mailboxes/:id", phase5Ctrl.DeleteSharedMailbox)
 			protectedGroup.POST("/shared-mailboxes/:id/members", phase5Ctrl.AddSharedMailboxMember)
 			protectedGroup.GET("/shared-mailboxes/:id/members", phase5Ctrl.ListSharedMailboxMembers)
 			protectedGroup.DELETE("/shared-mailboxes/:id/members/:userId", phase5Ctrl.RemoveSharedMailboxMember)
@@ -506,9 +494,53 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 
 			// Phase 5.5: Branding & Multi-tenant
 			protectedGroup.GET("/branding", phase5Ctrl.GetBranding)
-			protectedGroup.PUT("/branding", phase5Ctrl.UpdateBranding)
-			protectedGroup.POST("/branding/verify-domain", phase5Ctrl.VerifyCustomDomain)
 			protectedGroup.GET("/branding/css", phase5Ctrl.GetBrandingCSS)
+
+			// Organization management: owner/admin sessions, and API keys whose
+			// owner is an owner or admin where the route has a key scope.
+			protectedGroup.Group("/", func(adminGroup *ghttp.RouterGroup) {
+				adminGroup.Middleware(middleware.RequireOrgAdmin)
+
+				// Domains, SES sending and receiving setup
+				adminGroup.POST("/domains", domainCtrl.Create)
+				adminGroup.POST("/domains/:uuid/verify", domainCtrl.Verify)
+				adminGroup.POST("/domains/:uuid/ses-verify", domainCtrl.InitiateSES)
+				adminGroup.POST("/domains/:uuid/setup-sending", domainCtrl.SetupSending)
+				adminGroup.POST("/domains/:uuid/dns/cloudflare", domainCtrl.AddDNSToCloudflare)
+				adminGroup.POST("/domains/cloudflare/zones", domainCtrl.GetCloudflareZones)
+				adminGroup.DELETE("/domains/:uuid", domainCtrl.Delete)
+				adminGroup.POST("/inbox/setup", receivedInboxCtrl.SetupReceiving)
+
+				// Identities
+				adminGroup.POST("/identities", identityCtrl.Create)
+				adminGroup.DELETE("/identities/:uuid", identityCtrl.Delete)
+				adminGroup.POST("/identities/:uuid/catch-all", identityCtrl.Update)
+
+				// Members and invites
+				adminGroup.GET("/org/members", orgCtrl.ListMembers)
+				adminGroup.PUT("/org/members/:uuid", orgCtrl.ChangeMemberRole)
+				adminGroup.DELETE("/org/members/:uuid", orgCtrl.RemoveMember)
+				adminGroup.GET("/org/invites", orgCtrl.ListInvites)
+				adminGroup.POST("/org/invites", orgCtrl.CreateInvite)
+				adminGroup.POST("/org/invites/:uuid/resend", orgCtrl.ResendInvite)
+				adminGroup.DELETE("/org/invites/:uuid", orgCtrl.RevokeInvite)
+				adminGroup.GET("/org/identities", orgCtrl.ListOrgIdentities)
+				adminGroup.PUT("/org/identities/:uuid/owner", orgCtrl.TransferIdentity)
+
+				// Branding and shared mailboxes
+				adminGroup.PUT("/branding", phase5Ctrl.UpdateBranding)
+				adminGroup.POST("/branding/verify-domain", phase5Ctrl.VerifyCustomDomain)
+				adminGroup.POST("/shared-mailboxes", phase5Ctrl.CreateSharedMailbox)
+				adminGroup.DELETE("/shared-mailboxes/:id", phase5Ctrl.DeleteSharedMailbox)
+
+				// API keys are managed from an owner or admin session only.
+				adminGroup.Group("/", func(humanAdminGroup *ghttp.RouterGroup) {
+					humanAdminGroup.Middleware(middleware.RequireRole("owner", "admin"))
+					humanAdminGroup.POST("/api-keys", authCtrl.CreateAPIKey)
+					humanAdminGroup.GET("/api-keys", authCtrl.ListAPIKeys)
+					humanAdminGroup.DELETE("/api-keys/:uuid", authCtrl.DeleteAPIKey)
+				})
+			})
 		})
 	})
 }
