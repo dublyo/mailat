@@ -176,6 +176,13 @@ func CredentialActive(ctx context.Context) bool {
 	}
 	return err == nil && active
 }
+
+// SessionHash returns the authenticated session's token hash, or "" for API
+// keys and unauthenticated contexts.
+func SessionHash(ctx context.Context) string {
+	c, _ := ctx.Value(credentialContextKey).(credential)
+	return c.SessionHash
+}
 func GetClaims(r *ghttp.Request) *model.JWTClaims {
 	c, _ := r.Context().Value(ClaimsContextKey).(*model.JWTClaims)
 	return c

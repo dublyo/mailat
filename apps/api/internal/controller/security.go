@@ -52,7 +52,7 @@ func (c *SecurityController) Setup2FA(r *ghttp.Request) {
 		Resource:    "user",
 		ResourceID:  strconv.FormatInt(claims.UserID, 10),
 		Description: "Started 2FA setup",
-		IPAddress:   r.GetClientIp(),
+		IPAddress:   middleware.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
 
@@ -90,7 +90,7 @@ func (c *SecurityController) Verify2FA(r *ghttp.Request) {
 			Resource:    "user",
 			ResourceID:  strconv.FormatInt(claims.UserID, 10),
 			Description: "Failed to enable 2FA: " + err.Error(),
-			IPAddress:   r.GetClientIp(),
+			IPAddress:   middleware.ClientIP(r),
 			UserAgent:   r.UserAgent(),
 			Status:      "failure",
 		})
@@ -105,7 +105,7 @@ func (c *SecurityController) Verify2FA(r *ghttp.Request) {
 		Resource:    "user",
 		ResourceID:  strconv.FormatInt(claims.UserID, 10),
 		Description: "2FA enabled successfully",
-		IPAddress:   r.GetClientIp(),
+		IPAddress:   middleware.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
 
@@ -151,7 +151,7 @@ func (c *SecurityController) Disable2FA(r *ghttp.Request) {
 			Resource:    "user",
 			ResourceID:  strconv.FormatInt(claims.UserID, 10),
 			Description: "Failed to disable 2FA: " + err.Error(),
-			IPAddress:   r.GetClientIp(),
+			IPAddress:   middleware.ClientIP(r),
 			UserAgent:   r.UserAgent(),
 			Status:      "failure",
 		})
@@ -166,7 +166,7 @@ func (c *SecurityController) Disable2FA(r *ghttp.Request) {
 		Resource:    "user",
 		ResourceID:  strconv.FormatInt(claims.UserID, 10),
 		Description: "2FA disabled successfully",
-		IPAddress:   r.GetClientIp(),
+		IPAddress:   middleware.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
 
@@ -204,7 +204,7 @@ func (c *SecurityController) RegenerateBackupCodes(r *ghttp.Request) {
 		Resource:    "user",
 		ResourceID:  strconv.FormatInt(claims.UserID, 10),
 		Description: "Backup codes regenerated",
-		IPAddress:   r.GetClientIp(),
+		IPAddress:   middleware.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
 
@@ -374,7 +374,7 @@ func (c *SecurityController) ChangePassword(r *ghttp.Request) {
 			Resource:    "user",
 			ResourceID:  strconv.FormatInt(claims.UserID, 10),
 			Description: "Failed to change password: " + err.Error(),
-			IPAddress:   r.GetClientIp(),
+			IPAddress:   middleware.ClientIP(r),
 			UserAgent:   r.UserAgent(),
 			Status:      "failure",
 		})
@@ -389,7 +389,7 @@ func (c *SecurityController) ChangePassword(r *ghttp.Request) {
 		Resource:    "user",
 		ResourceID:  strconv.FormatInt(claims.UserID, 10),
 		Description: "Password changed successfully",
-		IPAddress:   r.GetClientIp(),
+		IPAddress:   middleware.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
 
@@ -451,7 +451,7 @@ func (c *SecurityController) RevokeSession(r *ghttp.Request) {
 		Resource:    "session",
 		ResourceID:  sessionUUID,
 		Description: "Session revoked",
-		IPAddress:   r.GetClientIp(),
+		IPAddress:   middleware.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
 
@@ -482,7 +482,7 @@ func (c *SecurityController) RevokeAllSessions(r *ghttp.Request) {
 		Action:      "all_sessions_revoked",
 		Resource:    "session",
 		Description: "All other sessions revoked",
-		IPAddress:   r.GetClientIp(),
+		IPAddress:   middleware.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
 

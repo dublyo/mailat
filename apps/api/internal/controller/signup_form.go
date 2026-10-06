@@ -3,16 +3,13 @@ package controller
 import (
 	"encoding/json"
 	"errors"
-	"github.com/dublyo/mailat/api/internal/config"
 	"github.com/dublyo/mailat/api/internal/middleware"
 	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/internal/service"
 	"github.com/dublyo/mailat/api/pkg/response"
 	"github.com/gogf/gf/v2/net/ghttp"
 	"io"
-	"net"
 	"net/http"
-	"strings"
 )
 
 type SignupFormController struct{ service *service.SignupFormService }
@@ -46,43 +43,6 @@ func signupBody(r *ghttp.Request, target any) bool {
 	}
 	return true
 }
-func signupIP(r *ghttp.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	trusted := func(raw string) bool {
-		ip := net.ParseIP(raw)
-		if ip == nil || config.Cfg == nil {
-			return false
-		}
-		for _, part := range strings.Split(config.Cfg.TrustedProxyCIDRs, ",") {
-			_, network, e := net.ParseCIDR(strings.TrimSpace(part))
-			if e == nil && network.Contains(ip) {
-				return true
-			}
-		}
-		return false
-	}
-	if !trusted(host) {
-		return host
-	}
-	// Walk from the immediate peer toward the client and stop at the first
-	// untrusted hop. A visitor cannot spoof rate limits with a prepended address.
-	chain := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
-	for i := len(chain) - 1; i >= 0; i-- {
-		candidate := strings.TrimSpace(chain[i])
-		if net.ParseIP(candidate) == nil {
-			continue
-		}
-		host = candidate
-		if !trusted(host) {
-			break
-		}
-	}
-	return host
-}
-
 func (c *SignupFormController) List(r *ghttp.Request) {
 	a := middleware.GetClaims(r)
 	if a == nil {
@@ -168,7 +128,7 @@ func (c *SignupFormController) Submit(r *ghttp.Request) {
 	if !signupBody(r, &req) {
 		return
 	}
-	x, e := c.service.Submit(r.Context(), r.Get("uuid").String(), signupIP(r), &req)
+	x, e := c.service.Submit(r.Context(), r.Get("uuid").String(), middleware.ClientIP(r), &req)
 	if e != nil {
 		signupFailure(r, e)
 		return
@@ -181,7 +141,7 @@ func (c *SignupFormController) Confirm(r *ghttp.Request) {
 	if !signupBody(r, &req) {
 		return
 	}
-	x, e := c.service.Confirm(r.Context(), req.Token, signupIP(r))
+	x, e := c.service.Confirm(r.Context(), req.Token, middleware.ClientIP(r))
 	if e != nil {
 		signupFailure(r, e)
 		return

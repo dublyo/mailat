@@ -25,7 +25,7 @@ func (c *ComplianceController) OneClickUnsubscribe(r *ghttp.Request) {
 		return
 	}
 
-	ipAddress := r.GetClientIp()
+	ipAddress := middleware.ClientIP(r)
 	userAgent := r.Header.Get("User-Agent")
 
 	err := c.complianceService.ProcessOneClickUnsubscribe(r.Context(), token, ipAddress, userAgent)
@@ -69,7 +69,7 @@ func (c *ComplianceController) ConfirmUnsubscribe(r *ghttp.Request) {
 	}
 	r.Parse(&req)
 
-	ipAddress := r.GetClientIp()
+	ipAddress := middleware.ClientIP(r)
 	userAgent := r.Header.Get("User-Agent")
 
 	err := c.complianceService.ConfirmUnsubscribe(r.Context(), token, req.Reason, ipAddress, userAgent)
@@ -116,7 +116,7 @@ func (c *ComplianceController) UpdatePreferences(r *ghttp.Request) {
 		return
 	}
 
-	ipAddress := r.GetClientIp()
+	ipAddress := middleware.ClientIP(r)
 	userAgent := r.Header.Get("User-Agent")
 
 	err := c.complianceService.UpdatePreferences(r.Context(), token, req.ListIDs, ipAddress, userAgent)
@@ -137,7 +137,7 @@ func (c *ComplianceController) ConfirmDoubleOptIn(r *ghttp.Request) {
 		return
 	}
 
-	ipAddress := r.GetClientIp()
+	ipAddress := middleware.ClientIP(r)
 	userAgent := r.Header.Get("User-Agent")
 
 	err := c.complianceService.ConfirmDoubleOptIn(r.Context(), token, ipAddress, userAgent)

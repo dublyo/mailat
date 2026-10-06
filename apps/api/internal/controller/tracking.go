@@ -5,6 +5,7 @@ import (
 
 	"github.com/gogf/gf/v2/net/ghttp"
 
+	"github.com/dublyo/mailat/api/internal/middleware"
 	"github.com/dublyo/mailat/api/internal/service"
 )
 
@@ -32,7 +33,7 @@ func (c *TrackingController) TrackOpen(r *ghttp.Request) {
 	}
 
 	// Get client info
-	ipAddress := r.GetClientIp()
+	ipAddress := middleware.ClientIP(r)
 	userAgent := r.Header.Get("User-Agent")
 
 	// Process the open event (fire and forget)
@@ -52,7 +53,7 @@ func (c *TrackingController) TrackClick(r *ghttp.Request) {
 	token := r.Get("token").String()
 
 	// Get client info
-	ipAddress := r.GetClientIp()
+	ipAddress := middleware.ClientIP(r)
 	userAgent := r.Header.Get("User-Agent")
 
 	// Process the click event and get the target URL

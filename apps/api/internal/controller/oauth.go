@@ -141,7 +141,7 @@ func (c *OAuthController) HandleCallback(r *ghttp.Request) {
 		Resource:    "user",
 		ResourceID:  fmt.Sprintf("%d", userID),
 		Description: description,
-		IPAddress:   r.GetClientIp(),
+		IPAddress:   middleware.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
 
@@ -242,7 +242,7 @@ func (c *OAuthController) DisconnectProvider(r *ghttp.Request) {
 		Resource:    "oauth_connection",
 		ResourceID:  providerStr,
 		Description: fmt.Sprintf("Disconnected %s OAuth provider", providerStr),
-		IPAddress:   r.GetClientIp(),
+		IPAddress:   middleware.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
 

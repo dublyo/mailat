@@ -99,7 +99,7 @@ func (c *Phase5Controller) FinishWebAuthnRegistration(r *ghttp.Request) {
 		Resource:    "webauthn_credential",
 		ResourceID:  credential.UUID,
 		Description: "Security key registered: " + req.Name,
-		IPAddress:   r.GetClientIp(),
+		IPAddress:   middleware.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
 
@@ -769,7 +769,7 @@ func (c *Phase5Controller) UpdateBranding(r *ghttp.Request) {
 		Resource:    "branding",
 		ResourceID:  strconv.FormatInt(claims.OrgID, 10),
 		Description: "Organization branding updated",
-		IPAddress:   r.GetClientIp(),
+		IPAddress:   middleware.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
 
