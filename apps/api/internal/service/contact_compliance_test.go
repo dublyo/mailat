@@ -10,14 +10,7 @@ import (
 	"github.com/dublyo/mailat/api/internal/config"
 	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/internal/testutil"
-	"github.com/dublyo/mailat/api/internal/worker"
 )
-
-func TestSuppressedSQLMatchesWorkerCopy(t *testing.T) {
-	if suppressedSQL("$1", "c.email") != worker.SuppressedSQL("$1", "c.email") {
-		t.Fatal("service and worker suppression predicates diverged")
-	}
-}
 
 func TestLikePatternAndSortColumns(t *testing.T) {
 	if got := likePattern(`50%_a\b`); got != `%50\%\_a\\b%` {

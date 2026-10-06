@@ -12,8 +12,6 @@ const (
 	TypeWebhookDeliver   = "webhook:deliver"
 	TypeBounceProcess    = "bounce:process"
 	TypeSuppressionCheck = "suppression:check"
-	TypeCampaignProcess  = "campaign:process"
-	TypeCampaignBatch    = "campaign:batch"
 )
 
 // EmailSendPayload contains the data needed to send an email
@@ -88,21 +86,6 @@ type SuppressionCheckPayload struct {
 	Source string `json:"source"` // bounce, complaint, manual
 }
 
-// CampaignProcessPayload contains data for campaign processing
-type CampaignProcessPayload struct {
-	CampaignID int   `json:"campaignId"`
-	OrgID      int64 `json:"orgId"`
-}
-
-// CampaignBatchPayload contains data for a batch of campaign emails
-type CampaignBatchPayload struct {
-	CampaignID   int     `json:"campaignId"`
-	OrgID        int64   `json:"orgId"`
-	ContactIDs   []int64 `json:"contactIds"`
-	BatchNumber  int     `json:"batchNumber"`
-	TotalBatches int     `json:"totalBatches"`
-}
-
 // NewEmailSendPayload creates a new email send task payload
 func NewEmailSendPayload(emailID, orgID int64, from string, to []string, subject, htmlBody, textBody, messageID string) *EmailSendPayload {
 	return &EmailSendPayload{
@@ -154,34 +137,6 @@ func (p *BounceProcessPayload) Marshal() ([]byte, error) {
 // UnmarshalBounceProcessPayload deserializes JSON to BounceProcessPayload
 func UnmarshalBounceProcessPayload(data []byte) (*BounceProcessPayload, error) {
 	var p BounceProcessPayload
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
-}
-
-// Marshal serializes the payload to JSON
-func (p *CampaignProcessPayload) Marshal() ([]byte, error) {
-	return json.Marshal(p)
-}
-
-// UnmarshalCampaignProcessPayload deserializes JSON to CampaignProcessPayload
-func UnmarshalCampaignProcessPayload(data []byte) (*CampaignProcessPayload, error) {
-	var p CampaignProcessPayload
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
-}
-
-// Marshal serializes the payload to JSON
-func (p *CampaignBatchPayload) Marshal() ([]byte, error) {
-	return json.Marshal(p)
-}
-
-// UnmarshalCampaignBatchPayload deserializes JSON to CampaignBatchPayload
-func UnmarshalCampaignBatchPayload(data []byte) (*CampaignBatchPayload, error) {
-	var p CampaignBatchPayload
 	if err := json.Unmarshal(data, &p); err != nil {
 		return nil, err
 	}

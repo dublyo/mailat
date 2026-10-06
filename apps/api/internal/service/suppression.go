@@ -23,8 +23,6 @@ func emailSHA256(email string) string {
 // suppressedSQL returns a boolean SQL expression that is true when the address
 // is on the org's marketing suppression list. Matching uses the hash column so
 // GDPR-erased rows (which keep only the hash) still block sends.
-// worker/campaign_handler.go keeps an identical copy (import cycle); a test
-// asserts the two stay the same.
 func suppressedSQL(orgExpr, emailExpr string) string {
 	return "EXISTS(SELECT 1 FROM suppressions s WHERE s.org_id=" + orgExpr +
 		" AND s.email_sha256=encode(sha256(convert_to(lower(trim(" + emailExpr + ")),'UTF8')),'hex'))"

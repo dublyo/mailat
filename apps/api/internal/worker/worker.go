@@ -121,15 +121,12 @@ func (w *Worker) RegisterHandlers() {
 	// Create handlers
 	emailHandler := NewEmailHandler(w.db, w.cfg)
 	emailHandler.SetWebhookTriggerService(triggerFirer)
-	campaignHandler := NewCampaignHandler(w.db, w.cfg)
 	webhookHandler := NewWebhookHandler(w.db, w.cfg)
 	bounceHandler := NewBounceHandler(w.db, w.cfg)
 	scheduledHandler := NewScheduledTaskHandler(w.db, w.cfg, w.digest)
 
 	// Register handlers
 	w.mux.HandleFunc(TypeEmailSend, emailHandler.HandleEmailSend)
-	w.mux.HandleFunc(TypeCampaignProcess, campaignHandler.HandleCampaignProcess)
-	w.mux.HandleFunc(TypeCampaignBatch, campaignHandler.HandleCampaignBatch)
 	w.mux.HandleFunc(TypeWebhookDeliver, webhookHandler.HandleWebhookDeliver)
 	w.mux.HandleFunc(TypeBounceProcess, bounceHandler.HandleBounceProcess)
 
@@ -141,8 +138,6 @@ func (w *Worker) RegisterHandlers() {
 
 	fmt.Println("Registered task handlers:")
 	fmt.Printf("  - %s\n", TypeEmailSend)
-	fmt.Printf("  - %s\n", TypeCampaignProcess)
-	fmt.Printf("  - %s\n", TypeCampaignBatch)
 	fmt.Printf("  - %s\n", TypeWebhookDeliver)
 	fmt.Printf("  - %s\n", TypeBounceProcess)
 	fmt.Printf("  - %s (scheduled)\n", TypeScheduledBlacklistCheck)
@@ -249,55 +244,6 @@ func (c *QueueClient) EnqueueBounceProcess(payload *BounceProcessPayload) (*asyn
 		asynq.Queue("critical"),
 		asynq.MaxRetry(3),
 		asynq.Timeout(1*time.Minute),
-	)
-}
-
-// EnqueueCampaignProcess enqueues a campaign processing task
-func (c *QueueClient) EnqueueCampaignProcess(payload *CampaignProcessPayload) (*asynq.TaskInfo, error) {
-	data, err := payload.Marshal()
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	task := asynq.NewTask(TypeCampaignProcess, data)
-
-	return c.client.Enqueue(task,
-		asynq.Queue("default"),
-		asynq.MaxRetry(1),           // Campaign processing should only be attempted once
-		asynq.Timeout(24*time.Hour), // Long timeout for large campaigns
-	)
-}
-
-// EnqueueCampaignProcessScheduled enqueues a campaign processing task for later
-func (c *QueueClient) EnqueueCampaignProcessScheduled(payload *CampaignProcessPayload, processAt time.Time) (*asynq.TaskInfo, error) {
-	data, err := payload.Marshal()
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	task := asynq.NewTask(TypeCampaignProcess, data)
-
-	return c.client.Enqueue(task,
-		asynq.Queue("default"),
-		asynq.MaxRetry(1),
-		asynq.Timeout(24*time.Hour),
-		asynq.ProcessAt(processAt),
-	)
-}
-
-// EnqueueCampaignBatch enqueues a campaign batch processing task
-func (c *QueueClient) EnqueueCampaignBatch(payload *CampaignBatchPayload) (*asynq.TaskInfo, error) {
-	data, err := payload.Marshal()
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	task := asynq.NewTask(TypeCampaignBatch, data)
-
-	return c.client.Enqueue(task,
-		asynq.Queue("default"),
-		asynq.MaxRetry(3),
-		asynq.Timeout(1*time.Hour),
 	)
 }
 
