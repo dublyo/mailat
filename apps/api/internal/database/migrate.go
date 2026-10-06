@@ -15,6 +15,11 @@ var migrationFiles embed.FS
 // Migrate upgrades one configured schema. A connection-scoped advisory lock keeps
 // overlapping container restarts from running the same DDL concurrently.
 func Migrate(ctx context.Context, db *sql.DB) error {
+	return migrateThrough(ctx, db, "")
+}
+
+// migrateThrough applies migrations up to and including last ("" means all).
+func migrateThrough(ctx context.Context, db *sql.DB, last string) error {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return err
@@ -34,6 +39,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	for _, entry := range entries {
 		name := entry.Name()
+		if last != "" && name > last {
+			break
+		}
 		body, err := migrationFiles.ReadFile("migrations/" + name)
 		if err != nil {
 			return err
