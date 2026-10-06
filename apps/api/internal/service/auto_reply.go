@@ -5,64 +5,72 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/lib/pq"
 
 	"github.com/dublyo/mailat/api/internal/config"
 )
 
 // AutoReply represents an auto-reply/vacation responder configuration
 type AutoReply struct {
-	ID              int        `json:"id"`
-	UUID            string     `json:"uuid"`
-	UserID          int        `json:"userId"`
-	OrgID           int        `json:"orgId"`
-	Name            string     `json:"name"`
-	StartDate       time.Time  `json:"startDate"`
-	EndDate         *time.Time `json:"endDate,omitempty"`
-	Subject         string     `json:"subject"`
-	HTMLContent     string     `json:"htmlContent"`
-	TextContent     string     `json:"textContent,omitempty"`
-	ReplyOnce       bool       `json:"replyOnce"`
-	ReplyToAll      bool       `json:"replyToAll"`
-	ExcludePatterns []string   `json:"excludePatterns,omitempty"`
-	IdentityIDs     []int      `json:"identityIds,omitempty"`
-	Active          bool       `json:"active"`
-	ReplyCount      int        `json:"replyCount"`
-	LastRepliedAt   *time.Time `json:"lastRepliedAt,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
+	ID                int        `json:"id"`
+	UUID              string     `json:"uuid"`
+	UserID            int        `json:"userId"`
+	OrgID             int        `json:"orgId"`
+	Name              string     `json:"name"`
+	StartDate         time.Time  `json:"startDate"`
+	EndDate           *time.Time `json:"endDate,omitempty"`
+	Subject           string     `json:"subject"`
+	HTMLContent       string     `json:"htmlContent"`
+	TextContent       string     `json:"textContent,omitempty"`
+	ReplyOnce         bool       `json:"replyOnce"`
+	ReplyToAll        bool       `json:"replyToAll"` // Deprecated: stored but ignored; replies go to the original sender only.
+	ReplyIntervalDays int        `json:"replyIntervalDays"`
+	ExcludePatterns   []string   `json:"excludePatterns,omitempty"`
+	IdentityIDs       []int      `json:"identityIds,omitempty"`
+	Active            bool       `json:"active"`
+	ReplyCount        int        `json:"replyCount"`
+	LastRepliedAt     *time.Time `json:"lastRepliedAt,omitempty"`
+	LastError         *string    `json:"lastError,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
 }
 
 // CreateAutoReplyInput is the input for creating an auto-reply
 type CreateAutoReplyInput struct {
-	Name            string     `json:"name"`
-	StartDate       time.Time  `json:"startDate"`
-	EndDate         *time.Time `json:"endDate,omitempty"`
-	Subject         string     `json:"subject"`
-	HTMLContent     string     `json:"htmlContent"`
-	TextContent     string     `json:"textContent,omitempty"`
-	ReplyOnce       bool       `json:"replyOnce"`
-	ReplyToAll      bool       `json:"replyToAll"`
-	ExcludePatterns []string   `json:"excludePatterns,omitempty"`
-	IdentityIDs     []int      `json:"identityIds,omitempty"`
-	Active          bool       `json:"active"`
+	Name              string     `json:"name"`
+	StartDate         time.Time  `json:"startDate"`
+	EndDate           *time.Time `json:"endDate,omitempty"`
+	Subject           string     `json:"subject"` // Empty replies with "Re: <original subject>".
+	HTMLContent       string     `json:"htmlContent"`
+	TextContent       string     `json:"textContent,omitempty"`
+	ReplyOnce         bool       `json:"replyOnce"`
+	ReplyToAll        bool       `json:"replyToAll"`                  // Deprecated: accepted and ignored.
+	ReplyIntervalDays int        `json:"replyIntervalDays,omitempty"` // Days before the same sender is answered again (1-30, default 7).
+	ExcludePatterns   []string   `json:"excludePatterns,omitempty"`   // Up to 50 sender patterns; "*" is a wildcard, otherwise a substring.
+	IdentityIDs       []int      `json:"identityIds,omitempty"`       // Your identities; empty means all of them.
+	Active            bool       `json:"active"`
 }
 
 // UpdateAutoReplyInput is the input for updating an auto-reply
 type UpdateAutoReplyInput struct {
-	Name            *string    `json:"name,omitempty"`
-	StartDate       *time.Time `json:"startDate,omitempty"`
-	EndDate         *time.Time `json:"endDate,omitempty"`
-	Subject         *string    `json:"subject,omitempty"`
-	HTMLContent     *string    `json:"htmlContent,omitempty"`
-	TextContent     *string    `json:"textContent,omitempty"`
-	ReplyOnce       *bool      `json:"replyOnce,omitempty"`
-	ReplyToAll      *bool      `json:"replyToAll,omitempty"`
-	ExcludePatterns *[]string  `json:"excludePatterns,omitempty"`
-	IdentityIDs     *[]int     `json:"identityIds,omitempty"`
-	Active          *bool      `json:"active,omitempty"`
+	Name              *string    `json:"name,omitempty"`
+	StartDate         *time.Time `json:"startDate,omitempty"`
+	EndDate           *time.Time `json:"endDate,omitempty"`
+	Subject           *string    `json:"subject,omitempty"`
+	HTMLContent       *string    `json:"htmlContent,omitempty"`
+	TextContent       *string    `json:"textContent,omitempty"`
+	ReplyOnce         *bool      `json:"replyOnce,omitempty"`
+	ReplyToAll        *bool      `json:"replyToAll,omitempty"` // Deprecated: accepted and ignored.
+	ReplyIntervalDays *int       `json:"replyIntervalDays,omitempty"`
+	ExcludePatterns   *[]string  `json:"excludePatterns,omitempty"`
+	IdentityIDs       *[]int     `json:"identityIds,omitempty"`
+	Active            *bool      `json:"active,omitempty"`
 }
 
 // EmailForward represents an email forwarding configuration
@@ -101,373 +109,221 @@ func NewAutoReplyService(db *sql.DB, cfg *config.Config) *AutoReplyService {
 	return &AutoReplyService{db: db, cfg: cfg}
 }
 
-// CreateAutoReply creates a new auto-reply configuration
-func (s *AutoReplyService) CreateAutoReply(ctx context.Context, userID, orgID int64, input *CreateAutoReplyInput) (*AutoReply, error) {
-	if input.Subject == "" {
-		return nil, fmt.Errorf("subject is required")
-	}
-	if input.HTMLContent == "" {
-		return nil, fmt.Errorf("HTML content is required")
-	}
+// AutoReplyValidationError is a rejected auto-reply; its message is safe to show.
+type AutoReplyValidationError struct{ Message string }
 
-	// Convert arrays to PostgreSQL array format
-	excludePatterns := "{}"
-	if len(input.ExcludePatterns) > 0 {
-		excludePatterns = "{" + strings.Join(input.ExcludePatterns, ",") + "}"
-	}
+func (e *AutoReplyValidationError) Error() string { return e.Message }
 
-	identityIDs := "{}"
-	if len(input.IdentityIDs) > 0 {
-		idStrs := make([]string, len(input.IdentityIDs))
-		for i, id := range input.IdentityIDs {
-			idStrs[i] = fmt.Sprintf("%d", id)
-		}
-		identityIDs = "{" + strings.Join(idStrs, ",") + "}"
-	}
+// ErrAutoReplyNotFound means no auto-reply with that id belongs to the user.
+var ErrAutoReplyNotFound = errors.New("auto-reply not found")
 
-	var autoReply AutoReply
-	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO auto_replies (user_id, org_id, name, start_date, end_date, subject, html_content, text_content, reply_once, reply_to_all, exclude_patterns, identity_ids, active)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		RETURNING id, uuid, user_id, org_id, name, start_date, end_date, subject, html_content, COALESCE(text_content, ''), reply_once, reply_to_all, exclude_patterns, identity_ids, active, reply_count, last_replied_at, created_at, updated_at
-	`, userID, orgID, input.Name, input.StartDate, input.EndDate, input.Subject, input.HTMLContent, input.TextContent,
-		input.ReplyOnce, input.ReplyToAll, excludePatterns, identityIDs, input.Active,
-	).Scan(&autoReply.ID, &autoReply.UUID, &autoReply.UserID, &autoReply.OrgID, &autoReply.Name,
-		&autoReply.StartDate, &autoReply.EndDate, &autoReply.Subject, &autoReply.HTMLContent, &autoReply.TextContent,
-		&autoReply.ReplyOnce, &autoReply.ReplyToAll, pgArr(&autoReply.ExcludePatterns), pgArr(&autoReply.IdentityIDs),
-		&autoReply.Active, &autoReply.ReplyCount, &autoReply.LastRepliedAt, &autoReply.CreatedAt, &autoReply.UpdatedAt)
+const (
+	autoReplyMaxBody     = 256 << 10
+	autoReplyMaxPatterns = 50
+	autoReplyDefaultDays = 7
+)
+
+const autoReplyColumns = `id, uuid, user_id, org_id, name, start_date, end_date, subject, html_content, COALESCE(text_content, ''),
+	COALESCE(reply_once, true), COALESCE(reply_to_all, true), reply_interval_days, COALESCE(exclude_patterns, '{}'), COALESCE(identity_ids, '{}'),
+	COALESCE(active, false), COALESCE(reply_count, 0), last_replied_at, last_error, created_at, COALESCE(updated_at, created_at)`
+
+func scanAutoReply(row rowScanner) (*AutoReply, error) {
+	var ar AutoReply
+	var ids []int64
+	err := row.Scan(&ar.ID, &ar.UUID, &ar.UserID, &ar.OrgID, &ar.Name, &ar.StartDate, &ar.EndDate, &ar.Subject, &ar.HTMLContent, &ar.TextContent,
+		&ar.ReplyOnce, &ar.ReplyToAll, &ar.ReplyIntervalDays, pq.Array(&ar.ExcludePatterns), pq.Array(&ids),
+		&ar.Active, &ar.ReplyCount, &ar.LastRepliedAt, &ar.LastError, &ar.CreatedAt, &ar.UpdatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create auto-reply: %w", err)
+		return nil, err
 	}
-
-	return &autoReply, nil
+	ar.IdentityIDs = make([]int, len(ids))
+	for i, id := range ids {
+		ar.IdentityIDs[i] = int(id)
+	}
+	return &ar, nil
 }
 
-// pgArr is a helper for scanning PostgreSQL arrays
-func pgArr[T any](dest *[]T) interface{} {
-	return &pgArray[T]{dest: dest}
-}
-
-type pgArray[T any] struct {
-	dest *[]T
-}
-
-func (a *pgArray[T]) Scan(src interface{}) error {
-	if src == nil {
-		*a.dest = nil
-		return nil
+// validateAutoReply normalizes and checks a complete rule. Every identity id
+// must be one of the user's own identities; an empty list covers all of them.
+func (s *AutoReplyService) validateAutoReply(ctx context.Context, userID int64, ar *AutoReply) error {
+	invalid := func(msg string) error { return &AutoReplyValidationError{Message: msg} }
+	ar.Name = strings.TrimSpace(ar.Name)
+	ar.Subject = strings.TrimSpace(ar.Subject)
+	switch {
+	case utf8.RuneCountInString(ar.Name) > 255:
+		return invalid("name must be at most 255 characters")
+	case utf8.RuneCountInString(ar.Subject) > 500:
+		return invalid("subject must be at most 500 characters")
+	case strings.ContainsAny(ar.Subject, "\r\n"):
+		return invalid("subject must be a single line")
+	case strings.TrimSpace(ar.HTMLContent) == "":
+		return invalid("HTML content is required")
+	case len(ar.HTMLContent) > autoReplyMaxBody || len(ar.TextContent) > autoReplyMaxBody:
+		return invalid("HTML and text content must each be at most 256 KiB")
+	case ar.ReplyIntervalDays < 1 || ar.ReplyIntervalDays > 30:
+		return invalid("replyIntervalDays must be between 1 and 30")
+	case len(ar.ExcludePatterns) > autoReplyMaxPatterns:
+		return invalid("at most 50 exclude patterns are allowed")
 	}
-
-	switch v := src.(type) {
-	case []byte:
-		return a.parseArray(string(v))
-	case string:
-		return a.parseArray(v)
-	default:
-		return fmt.Errorf("unsupported type for pgArray: %T", src)
+	if ar.StartDate.IsZero() {
+		ar.StartDate = time.Now()
 	}
-}
-
-func (a *pgArray[T]) parseArray(s string) error {
-	// Handle empty array
-	if s == "{}" || s == "" {
-		*a.dest = []T{}
-		return nil
+	if ar.EndDate != nil && !ar.EndDate.After(ar.StartDate) {
+		return invalid("endDate must be after startDate")
 	}
-
-	// Remove braces
-	s = strings.Trim(s, "{}")
-
-	// Split by comma (simplistic, doesn't handle quoted values with commas)
-	parts := strings.Split(s, ",")
-
-	result := make([]T, 0, len(parts))
-	for _, p := range parts {
+	patterns := make([]string, 0, len(ar.ExcludePatterns))
+	for _, p := range ar.ExcludePatterns {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			continue
 		}
-
-		// Type assertion based on T
-		var val interface{}
-		switch any((*a.dest)).(type) {
-		case *[]string:
-			val = strings.Trim(p, "\"")
-		case *[]int:
-			var i int
-			fmt.Sscanf(p, "%d", &i)
-			val = i
-		default:
-			val = p
+		if utf8.RuneCountInString(p) > 200 {
+			return invalid("exclude patterns must be at most 200 characters")
 		}
-
-		result = append(result, val.(T))
+		patterns = append(patterns, p)
 	}
-
-	*a.dest = result
+	ar.ExcludePatterns = patterns
+	ar.IdentityIDs = uniqueInts(ar.IdentityIDs)
+	if len(ar.IdentityIDs) == 0 {
+		return nil
+	}
+	var owned int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM identities WHERE id = ANY($1::int[]) AND user_id = $2`, pq.Array(ar.IdentityIDs), userID).Scan(&owned); err != nil {
+		return fmt.Errorf("failed to validate identities: %w", err)
+	}
+	if owned != len(ar.IdentityIDs) {
+		return invalid("identityIds must be your own identities")
+	}
 	return nil
+}
+
+// CreateAutoReply creates a new auto-reply configuration
+func (s *AutoReplyService) CreateAutoReply(ctx context.Context, userID, orgID int64, input *CreateAutoReplyInput) (*AutoReply, error) {
+	ar := &AutoReply{
+		Name: input.Name, StartDate: input.StartDate, EndDate: input.EndDate, Subject: input.Subject,
+		HTMLContent: input.HTMLContent, TextContent: input.TextContent, ReplyOnce: input.ReplyOnce, ReplyToAll: input.ReplyToAll,
+		ReplyIntervalDays: input.ReplyIntervalDays, ExcludePatterns: input.ExcludePatterns, IdentityIDs: input.IdentityIDs, Active: input.Active,
+	}
+	if ar.ReplyIntervalDays == 0 {
+		ar.ReplyIntervalDays = autoReplyDefaultDays
+	}
+	if err := s.validateAutoReply(ctx, userID, ar); err != nil {
+		return nil, err
+	}
+	created, err := scanAutoReply(s.db.QueryRowContext(ctx, `
+		INSERT INTO auto_replies (user_id, org_id, name, start_date, end_date, subject, html_content, text_content, reply_once, reply_to_all,
+			reply_interval_days, exclude_patterns, identity_ids, active, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+		RETURNING `+autoReplyColumns,
+		userID, orgID, ar.Name, ar.StartDate, ar.EndDate, ar.Subject, ar.HTMLContent, ar.TextContent, ar.ReplyOnce, ar.ReplyToAll,
+		ar.ReplyIntervalDays, pq.Array(ar.ExcludePatterns), pq.Array(ar.IdentityIDs), ar.Active))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create auto-reply: %w", err)
+	}
+	return created, nil
 }
 
 // GetAutoReply gets an auto-reply by ID
 func (s *AutoReplyService) GetAutoReply(ctx context.Context, userID int64, autoReplyID int) (*AutoReply, error) {
-	var autoReply AutoReply
-
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, uuid, user_id, org_id, name, start_date, end_date, subject, html_content, COALESCE(text_content, ''), reply_once, reply_to_all, exclude_patterns, identity_ids, active, reply_count, last_replied_at, created_at, updated_at
-		FROM auto_replies
-		WHERE id = $1 AND user_id = $2
-	`, autoReplyID, userID).Scan(&autoReply.ID, &autoReply.UUID, &autoReply.UserID, &autoReply.OrgID, &autoReply.Name,
-		&autoReply.StartDate, &autoReply.EndDate, &autoReply.Subject, &autoReply.HTMLContent, &autoReply.TextContent,
-		&autoReply.ReplyOnce, &autoReply.ReplyToAll, pgArr(&autoReply.ExcludePatterns), pgArr(&autoReply.IdentityIDs),
-		&autoReply.Active, &autoReply.ReplyCount, &autoReply.LastRepliedAt, &autoReply.CreatedAt, &autoReply.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("auto-reply not found")
+	ar, err := scanAutoReply(s.db.QueryRowContext(ctx, `SELECT `+autoReplyColumns+` FROM auto_replies WHERE id = $1 AND user_id = $2`, autoReplyID, userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrAutoReplyNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auto-reply: %w", err)
 	}
-
-	return &autoReply, nil
+	return ar, nil
 }
 
 // ListAutoReplies lists all auto-replies for a user
 func (s *AutoReplyService) ListAutoReplies(ctx context.Context, userID int64) ([]*AutoReply, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, uuid, user_id, org_id, name, start_date, end_date, subject, html_content, COALESCE(text_content, ''), reply_once, reply_to_all, exclude_patterns, identity_ids, active, reply_count, last_replied_at, created_at, updated_at
-		FROM auto_replies
-		WHERE user_id = $1
-		ORDER BY created_at DESC
-	`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+autoReplyColumns+` FROM auto_replies WHERE user_id = $1 ORDER BY created_at DESC, id DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list auto-replies: %w", err)
 	}
 	defer rows.Close()
-
-	var autoReplies []*AutoReply
+	autoReplies := []*AutoReply{}
 	for rows.Next() {
-		var ar AutoReply
-		if err := rows.Scan(&ar.ID, &ar.UUID, &ar.UserID, &ar.OrgID, &ar.Name,
-			&ar.StartDate, &ar.EndDate, &ar.Subject, &ar.HTMLContent, &ar.TextContent,
-			&ar.ReplyOnce, &ar.ReplyToAll, pgArr(&ar.ExcludePatterns), pgArr(&ar.IdentityIDs),
-			&ar.Active, &ar.ReplyCount, &ar.LastRepliedAt, &ar.CreatedAt, &ar.UpdatedAt); err != nil {
-			continue
+		ar, err := scanAutoReply(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read auto-reply: %w", err)
 		}
-		autoReplies = append(autoReplies, &ar)
+		autoReplies = append(autoReplies, ar)
 	}
-
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to list auto-replies: %w", err)
+	}
 	return autoReplies, nil
 }
 
-// UpdateAutoReply updates an auto-reply
+// UpdateAutoReply applies the given fields and re-validates the whole rule.
 func (s *AutoReplyService) UpdateAutoReply(ctx context.Context, userID int64, autoReplyID int, input *UpdateAutoReplyInput) (*AutoReply, error) {
-	updates := []string{}
-	args := []interface{}{}
-	argNum := 1
-
-	if input.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argNum))
-		args = append(args, *input.Name)
-		argNum++
+	ar, err := s.GetAutoReply(ctx, userID, autoReplyID)
+	if err != nil {
+		return nil, err
 	}
-
+	set := func(dst *string, v *string) {
+		if v != nil {
+			*dst = *v
+		}
+	}
+	set(&ar.Name, input.Name)
+	set(&ar.Subject, input.Subject)
+	set(&ar.HTMLContent, input.HTMLContent)
+	set(&ar.TextContent, input.TextContent)
 	if input.StartDate != nil {
-		updates = append(updates, fmt.Sprintf("start_date = $%d", argNum))
-		args = append(args, *input.StartDate)
-		argNum++
+		ar.StartDate = *input.StartDate
 	}
-
 	if input.EndDate != nil {
-		updates = append(updates, fmt.Sprintf("end_date = $%d", argNum))
-		args = append(args, *input.EndDate)
-		argNum++
+		ar.EndDate = input.EndDate
 	}
-
-	if input.Subject != nil {
-		updates = append(updates, fmt.Sprintf("subject = $%d", argNum))
-		args = append(args, *input.Subject)
-		argNum++
-	}
-
-	if input.HTMLContent != nil {
-		updates = append(updates, fmt.Sprintf("html_content = $%d", argNum))
-		args = append(args, *input.HTMLContent)
-		argNum++
-	}
-
-	if input.TextContent != nil {
-		updates = append(updates, fmt.Sprintf("text_content = $%d", argNum))
-		args = append(args, *input.TextContent)
-		argNum++
-	}
-
 	if input.ReplyOnce != nil {
-		updates = append(updates, fmt.Sprintf("reply_once = $%d", argNum))
-		args = append(args, *input.ReplyOnce)
-		argNum++
+		ar.ReplyOnce = *input.ReplyOnce
 	}
-
 	if input.ReplyToAll != nil {
-		updates = append(updates, fmt.Sprintf("reply_to_all = $%d", argNum))
-		args = append(args, *input.ReplyToAll)
-		argNum++
+		ar.ReplyToAll = *input.ReplyToAll
 	}
-
+	if input.ReplyIntervalDays != nil {
+		ar.ReplyIntervalDays = *input.ReplyIntervalDays
+	}
 	if input.ExcludePatterns != nil {
-		excludePatterns := "{}"
-		if len(*input.ExcludePatterns) > 0 {
-			excludePatterns = "{" + strings.Join(*input.ExcludePatterns, ",") + "}"
-		}
-		updates = append(updates, fmt.Sprintf("exclude_patterns = $%d", argNum))
-		args = append(args, excludePatterns)
-		argNum++
+		ar.ExcludePatterns = *input.ExcludePatterns
 	}
-
 	if input.IdentityIDs != nil {
-		identityIDs := "{}"
-		if len(*input.IdentityIDs) > 0 {
-			idStrs := make([]string, len(*input.IdentityIDs))
-			for i, id := range *input.IdentityIDs {
-				idStrs[i] = fmt.Sprintf("%d", id)
-			}
-			identityIDs = "{" + strings.Join(idStrs, ",") + "}"
-		}
-		updates = append(updates, fmt.Sprintf("identity_ids = $%d", argNum))
-		args = append(args, identityIDs)
-		argNum++
+		ar.IdentityIDs = *input.IdentityIDs
 	}
-
 	if input.Active != nil {
-		updates = append(updates, fmt.Sprintf("active = $%d", argNum))
-		args = append(args, *input.Active)
-		argNum++
+		ar.Active = *input.Active
 	}
-
-	if len(updates) == 0 {
-		return s.GetAutoReply(ctx, userID, autoReplyID)
+	if err = s.validateAutoReply(ctx, userID, ar); err != nil {
+		return nil, err
 	}
-
-	updates = append(updates, "updated_at = NOW()")
-
-	query := fmt.Sprintf(`
-		UPDATE auto_replies
-		SET %s
-		WHERE id = $%d AND user_id = $%d
-	`, strings.Join(updates, ", "), argNum, argNum+1)
-
-	args = append(args, autoReplyID, userID)
-
-	result, err := s.db.ExecContext(ctx, query, args...)
+	updated, err := scanAutoReply(s.db.QueryRowContext(ctx, `
+		UPDATE auto_replies SET name=$3, start_date=$4, end_date=$5, subject=$6, html_content=$7, text_content=$8, reply_once=$9,
+			reply_to_all=$10, reply_interval_days=$11, exclude_patterns=$12, identity_ids=$13, active=$14, updated_at=NOW()
+		WHERE id = $1 AND user_id = $2
+		RETURNING `+autoReplyColumns,
+		autoReplyID, userID, ar.Name, ar.StartDate, ar.EndDate, ar.Subject, ar.HTMLContent, ar.TextContent, ar.ReplyOnce,
+		ar.ReplyToAll, ar.ReplyIntervalDays, pq.Array(ar.ExcludePatterns), pq.Array(ar.IdentityIDs), ar.Active))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrAutoReplyNotFound
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to update auto-reply: %w", err)
 	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return nil, fmt.Errorf("auto-reply not found")
-	}
-
-	return s.GetAutoReply(ctx, userID, autoReplyID)
+	return updated, nil
 }
 
 // DeleteAutoReply deletes an auto-reply
 func (s *AutoReplyService) DeleteAutoReply(ctx context.Context, userID int64, autoReplyID int) error {
-	result, err := s.db.ExecContext(ctx, `
-		DELETE FROM auto_replies WHERE id = $1 AND user_id = $2
-	`, autoReplyID, userID)
+	result, err := s.db.ExecContext(ctx, `DELETE FROM auto_replies WHERE id = $1 AND user_id = $2`, autoReplyID, userID)
 	if err != nil {
 		return fmt.Errorf("failed to delete auto-reply: %w", err)
 	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return fmt.Errorf("auto-reply not found")
+	if rowsAffected, _ := result.RowsAffected(); rowsAffected == 0 {
+		return ErrAutoReplyNotFound
 	}
-
 	return nil
-}
-
-// GetActiveAutoReplies gets all active auto-replies that should be triggered now
-func (s *AutoReplyService) GetActiveAutoReplies(ctx context.Context, userID int64, identityID int) ([]*AutoReply, error) {
-	now := time.Now()
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, uuid, user_id, org_id, name, start_date, end_date, subject, html_content, COALESCE(text_content, ''), reply_once, reply_to_all, exclude_patterns, identity_ids, active, reply_count, last_replied_at, created_at, updated_at
-		FROM auto_replies
-		WHERE user_id = $1
-		  AND active = true
-		  AND start_date <= $2
-		  AND (end_date IS NULL OR end_date >= $2)
-		ORDER BY created_at ASC
-	`, userID, now)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get active auto-replies: %w", err)
-	}
-	defer rows.Close()
-
-	var autoReplies []*AutoReply
-	for rows.Next() {
-		var ar AutoReply
-		if err := rows.Scan(&ar.ID, &ar.UUID, &ar.UserID, &ar.OrgID, &ar.Name,
-			&ar.StartDate, &ar.EndDate, &ar.Subject, &ar.HTMLContent, &ar.TextContent,
-			&ar.ReplyOnce, &ar.ReplyToAll, pgArr(&ar.ExcludePatterns), pgArr(&ar.IdentityIDs),
-			&ar.Active, &ar.ReplyCount, &ar.LastRepliedAt, &ar.CreatedAt, &ar.UpdatedAt); err != nil {
-			continue
-		}
-
-		// Check if this auto-reply applies to the identity
-		if len(ar.IdentityIDs) > 0 {
-			found := false
-			for _, id := range ar.IdentityIDs {
-				if id == identityID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-
-		autoReplies = append(autoReplies, &ar)
-	}
-
-	return autoReplies, nil
-}
-
-// ShouldSendAutoReply checks if we should send an auto-reply to this sender
-func (s *AutoReplyService) ShouldSendAutoReply(ctx context.Context, autoReplyID int, senderEmail string) (bool, error) {
-	// Check if we've already replied to this sender
-	var count int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM auto_reply_senders
-		WHERE auto_reply_id = $1 AND sender_email = $2
-	`, autoReplyID, senderEmail).Scan(&count)
-	if err != nil {
-		return false, fmt.Errorf("failed to check auto-reply sender: %w", err)
-	}
-
-	return count == 0, nil
-}
-
-// RecordAutoReplySent records that we sent an auto-reply to a sender
-func (s *AutoReplyService) RecordAutoReplySent(ctx context.Context, autoReplyID int, senderEmail string) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO auto_reply_senders (auto_reply_id, sender_email)
-		VALUES ($1, $2)
-		ON CONFLICT (auto_reply_id, sender_email) DO NOTHING
-	`, autoReplyID, senderEmail)
-	if err != nil {
-		return fmt.Errorf("failed to record auto-reply sender: %w", err)
-	}
-
-	// Update stats
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE auto_replies
-		SET reply_count = reply_count + 1, last_replied_at = NOW()
-		WHERE id = $1
-	`, autoReplyID)
-
-	return err
 }
 
 // CreateEmailForward creates a new email forward

@@ -189,8 +189,10 @@ func annotateBackend(op object, controller, path string) {
 		backend, note = "ses", "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP."
 	} else if controller == "IdentityController" {
 		note = "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server."
-	} else if strings.HasPrefix(path, "/sieve-scripts") || strings.HasPrefix(path, "/shared-mailboxes") || strings.HasPrefix(path, "/auto-replies") || strings.HasPrefix(path, "/forwards") {
-		note = "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+	} else if strings.HasPrefix(path, "/auto-replies") {
+		backend, note = "ses", "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT)."
+	} else if strings.HasPrefix(path, "/sieve-scripts") || strings.HasPrefix(path, "/shared-mailboxes") || strings.HasPrefix(path, "/forwards") {
+		note = "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
 	}
 	op["x-mailat-backend"], op["x-mailat-backend-note"] = backend, note
 }

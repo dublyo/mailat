@@ -4812,6 +4812,14 @@
             },
             "type": "array"
           },
+          "lastError": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
           "lastRepliedAt": {
             "allOf": [
               {
@@ -4832,10 +4840,15 @@
             "format": "int64",
             "type": "integer"
           },
+          "replyIntervalDays": {
+            "format": "int64",
+            "type": "integer"
+          },
           "replyOnce": {
             "type": "boolean"
           },
           "replyToAll": {
+            "description": "Deprecated: stored but ignored; replies go to the original sender only.",
             "type": "boolean"
           },
           "startDate": {
@@ -5065,6 +5078,7 @@
             "nullable": true
           },
           "excludePatterns": {
+            "description": "Up to 50 sender patterns; \"*\" is a wildcard, otherwise a substring.",
             "items": {
               "type": "string"
             },
@@ -5074,6 +5088,7 @@
             "type": "string"
           },
           "identityIds": {
+            "description": "Your identities; empty means all of them.",
             "items": {
               "format": "int64",
               "type": "integer"
@@ -5083,10 +5098,16 @@
           "name": {
             "type": "string"
           },
+          "replyIntervalDays": {
+            "description": "Days before the same sender is answered again (1-30, default 7).",
+            "format": "int64",
+            "type": "integer"
+          },
           "replyOnce": {
             "type": "boolean"
           },
           "replyToAll": {
+            "description": "Deprecated: accepted and ignored.",
             "type": "boolean"
           },
           "startDate": {
@@ -5094,6 +5115,7 @@
             "type": "string"
           },
           "subject": {
+            "description": "Empty replies with \"Re: \u003coriginal subject\u003e\".",
             "type": "string"
           },
           "textContent": {
@@ -6571,6 +6593,15 @@
             ],
             "nullable": true
           },
+          "replyIntervalDays": {
+            "allOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              }
+            ],
+            "nullable": true
+          },
           "replyOnce": {
             "allOf": [
               {
@@ -6585,6 +6616,7 @@
                 "type": "boolean"
               }
             ],
+            "description": "Deprecated: accepted and ignored.",
             "nullable": true
           },
           "startDate": {
@@ -11784,8 +11816,8 @@
           "auto-replies"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT)."
       },
       "post": {
         "description": "CreateAutoReply creates a new auto-reply\nPOST /api/v1/auto-replies",
@@ -12036,8 +12068,8 @@
           "auto-replies"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT)."
       }
     },
     "/api/v1/auto-replies/{id}": {
@@ -12282,8 +12314,8 @@
           "auto-replies"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT)."
       },
       "get": {
         "description": "GetAutoReply gets an auto-reply by ID\nGET /api/v1/auto-replies/:id",
@@ -12534,8 +12566,8 @@
           "auto-replies"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT)."
       },
       "put": {
         "description": "UpdateAutoReply updates an auto-reply\nPUT /api/v1/auto-replies/:id",
@@ -12796,8 +12828,8 @@
           "auto-replies"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT)."
       }
     },
     "/api/v1/automations": {
@@ -32024,7 +32056,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       },
       "post": {
         "description": "CreateEmailForward creates a new email forward\nPOST /api/v1/forwards",
@@ -32276,7 +32308,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       }
     },
     "/api/v1/forwards/{id}": {
@@ -32522,7 +32554,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       }
     },
     "/api/v1/forwards/{id}/verify": {
@@ -32783,7 +32815,7 @@
         ],
         "x-human-session-required": false,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       }
     },
     "/api/v1/health": {
@@ -62091,7 +62123,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       },
       "post": {
         "description": "CreateSharedMailbox creates a new shared mailbox\nPOST /api/v1/shared-mailboxes",
@@ -62343,7 +62375,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       }
     },
     "/api/v1/shared-mailboxes/{id}": {
@@ -62589,7 +62621,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       },
       "get": {
         "description": "GetSharedMailbox gets a shared mailbox\nGET /api/v1/shared-mailboxes/:id",
@@ -62841,7 +62873,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       }
     },
     "/api/v1/shared-mailboxes/{id}/members": {
@@ -63098,7 +63130,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       },
       "post": {
         "description": "AddSharedMailboxMember adds a member to a shared mailbox\nPOST /api/v1/shared-mailboxes/:id/members",
@@ -63360,7 +63392,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       }
     },
     "/api/v1/shared-mailboxes/{id}/members/{userId}": {
@@ -63614,7 +63646,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       }
     },
     "/api/v1/sieve-scripts": {
@@ -63861,7 +63893,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       },
       "post": {
         "description": "CreateSieveScript creates a new Sieve script\nPOST /api/v1/sieve-scripts",
@@ -64113,7 +64145,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       }
     },
     "/api/v1/sieve-scripts/validate": {
@@ -64375,7 +64407,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       }
     },
     "/api/v1/sieve-scripts/{id}": {
@@ -64621,7 +64653,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       },
       "get": {
         "description": "GetSieveScript gets a Sieve script\nGET /api/v1/sieve-scripts/:id",
@@ -64873,7 +64905,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       },
       "put": {
         "description": "UpdateSieveScript updates a Sieve script\nPUT /api/v1/sieve-scripts/:id",
@@ -65161,7 +65193,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox, auto-reply or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/reply/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
       }
     },
     "/api/v1/signup-forms": {

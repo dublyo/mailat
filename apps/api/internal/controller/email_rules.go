@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"errors"
+	"log"
 	"strconv"
 
 	"github.com/gogf/gf/v2/net/ghttp"
@@ -211,6 +213,20 @@ func (c *EmailRulesController) TestRule(r *ghttp.Request) {
 // AUTO-REPLY / VACATION
 // ====================
 
+// autoReplyError maps auto-reply service errors without exposing internals.
+func autoReplyError(r *ghttp.Request, err error) {
+	var invalid *service.AutoReplyValidationError
+	switch {
+	case errors.As(err, &invalid):
+		response.BadRequest(r, invalid.Message)
+	case errors.Is(err, service.ErrAutoReplyNotFound):
+		response.NotFound(r, "Auto-reply not found")
+	default:
+		log.Printf("Auto-reply request failed: %v", err)
+		response.InternalError(r, "Auto-reply request failed")
+	}
+}
+
 // CreateAutoReply creates a new auto-reply
 // POST /api/v1/auto-replies
 func (c *EmailRulesController) CreateAutoReply(r *ghttp.Request) {
@@ -228,7 +244,7 @@ func (c *EmailRulesController) CreateAutoReply(r *ghttp.Request) {
 
 	autoReply, err := c.autoReplyService.CreateAutoReply(r.Context(), claims.UserID, claims.OrgID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		autoReplyError(r, err)
 		return
 	}
 
@@ -252,7 +268,7 @@ func (c *EmailRulesController) GetAutoReply(r *ghttp.Request) {
 
 	autoReply, err := c.autoReplyService.GetAutoReply(r.Context(), claims.UserID, autoReplyID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		autoReplyError(r, err)
 		return
 	}
 
@@ -270,7 +286,7 @@ func (c *EmailRulesController) ListAutoReplies(r *ghttp.Request) {
 
 	autoReplies, err := c.autoReplyService.ListAutoReplies(r.Context(), claims.UserID)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		autoReplyError(r, err)
 		return
 	}
 
@@ -300,7 +316,7 @@ func (c *EmailRulesController) UpdateAutoReply(r *ghttp.Request) {
 
 	autoReply, err := c.autoReplyService.UpdateAutoReply(r.Context(), claims.UserID, autoReplyID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		autoReplyError(r, err)
 		return
 	}
 
@@ -323,7 +339,7 @@ func (c *EmailRulesController) DeleteAutoReply(r *ghttp.Request) {
 	}
 
 	if err := c.autoReplyService.DeleteAutoReply(r.Context(), claims.UserID, autoReplyID); err != nil {
-		response.NotFound(r, err.Error())
+		autoReplyError(r, err)
 		return
 	}
 
