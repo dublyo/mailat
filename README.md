@@ -61,8 +61,10 @@ DATABASE_URL="postgresql://user:password@host:5432/database?sslmode=require"
 # Redis (optional)
 REDIS_URL="redis://:password@host:6379"
 
-# Authentication
+# Authentication (startup fails unless both are set, at least 32 bytes and different;
+# generate each with: openssl rand -hex 32)
 JWT_SECRET="your-jwt-secret-min-32-chars"
+ENCRYPTION_KEY="a-different-random-value-min-32-chars"
 JWT_EXPIRES_IN="7d"
 
 # AWS SES (Required for email sending/receiving)

@@ -292,9 +292,11 @@ func (s *AuthService) IsRegistrationOpen(ctx context.Context) (bool, error) {
 }
 
 func (s *AuthService) sessionExpiry() time.Time {
-	expiry := 7 * 24 * time.Hour
-	if d, err := time.ParseDuration(s.cfg.JWTExpiresIn); err == nil && d > 0 {
-		expiry = d
+	// config.Load rejects bad values at startup; directly built configs (tests)
+	// fall back to the documented 7d default instead of failing silently.
+	expiry, err := config.ParseSessionDuration(s.cfg.JWTExpiresIn)
+	if err != nil {
+		expiry = 7 * 24 * time.Hour
 	}
 	return time.Now().Add(expiry).Truncate(time.Second)
 }

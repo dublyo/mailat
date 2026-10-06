@@ -1,9 +1,15 @@
 package config
 
 import (
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -17,6 +23,11 @@ type Config struct {
 	AppDomain         string // Domain for WebAuthn and email (e.g., "mailat.co")
 	TrustedProxyCIDRs string // Explicit networks allowed to supply the client-IP forwarding chain.
 	AppName           string // Application name for branding (e.g., "Mailat")
+
+	// Derived from the raw settings above by Load after validation.
+	TrustedProxyNets []*net.IPNet
+	CORSOrigins      []string      // CORS_ORIGINS: extra browser origins allowed besides WEB_URL
+	SessionTTL       time.Duration // parsed JWT_EXPIRES_IN
 
 	// Database
 	DatabaseURL string
@@ -97,7 +108,7 @@ func Load() (*Config, error) {
 	defaultMaxIdentities, _ := strconv.Atoi(getEnv("DEFAULT_MAX_IDENTITIES", "0"))
 	defaultMaxContacts, _ := strconv.Atoi(getEnv("DEFAULT_MAX_CONTACTS", "0"))
 
-	Cfg = &Config{
+	cfg := &Config{
 		// Server
 		Port:              port,
 		TrustedProxyCIDRs: getEnv("TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128"),
@@ -135,7 +146,7 @@ func Load() (*Config, error) {
 		DisableAppLimits: disableAppLimits,
 
 		// Email Provider
-		EmailProvider: getEnv("EMAIL_PROVIDER", "smtp"),
+		EmailProvider: getEnv("EMAIL_PROVIDER", "ses"),
 
 		// SMTP
 		SMTPHost:     getEnv("SMTP_HOST", "localhost"),
@@ -164,9 +175,133 @@ func Load() (*Config, error) {
 		DefaultMonthlyEmailLimit: defaultMonthlyEmailLimit,
 		DefaultMaxIdentities:     defaultMaxIdentities,
 		DefaultMaxContacts:       defaultMaxContacts,
-	}
 
+		CORSOrigins: splitList(getEnv("CORS_ORIGINS", "")),
+	}
+	for i, origin := range cfg.CORSOrigins {
+		cfg.CORSOrigins[i] = strings.TrimSuffix(origin, "/")
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	cfg.TrustedProxyNets, _ = ParseProxyNets(cfg.TrustedProxyCIDRs)
+	cfg.SessionTTL, _ = ParseSessionDuration(cfg.JWTExpiresIn)
+	Cfg = cfg
 	return Cfg, nil
+}
+
+var (
+	dayDuration        = regexp.MustCompile(`^\d+d$`)
+	secretPlaceholders = []string{"replace-with", "change-me", "changeme"}
+)
+
+// Validate fails startup on unsafe or malformed settings. The returned error
+// names variables only; secret values are never included.
+func (c *Config) Validate() error {
+	var problems []string
+	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
+	for _, s := range []struct{ name, value string }{{"JWT_SECRET", c.JWTSecret}, {"ENCRYPTION_KEY", c.EncryptionKey}} {
+		lower := strings.ToLower(s.value)
+		switch {
+		case s.value == "":
+			add("%s is required", s.name)
+		case len(s.value) < 32:
+			add("%s must be at least 32 bytes", s.name)
+		default:
+			for _, p := range secretPlaceholders {
+				if strings.HasPrefix(lower, p) {
+					add("%s still holds the example placeholder", s.name)
+					break
+				}
+			}
+		}
+	}
+	if c.JWTSecret != "" && c.JWTSecret == c.EncryptionKey {
+		add("JWT_SECRET and ENCRYPTION_KEY must be different values")
+	}
+	if len(problems) > 0 {
+		problems[len(problems)-1] += " (generate with: openssl rand -hex 32)"
+	}
+	if _, err := ParseSessionDuration(c.JWTExpiresIn); err != nil {
+		add("JWT_EXPIRES_IN %v", err)
+	}
+	if _, err := ParseProxyNets(c.TrustedProxyCIDRs); err != nil {
+		add("TRUSTED_PROXY_CIDRS %v", err)
+	}
+	for i, origin := range c.CORSOrigins {
+		if !validOrigin(origin) {
+			add("CORS_ORIGINS entry %d must look like https://host[:port]", i+1)
+		}
+	}
+	if c.EmailProvider != "ses" && c.EmailProvider != "smtp" {
+		add("EMAIL_PROVIDER must be ses or smtp")
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return errors.New("invalid configuration: " + strings.Join(problems, "; "))
+}
+
+// ParseSessionDuration accepts "<n>d" (days) or any time.ParseDuration value,
+// bounded to 1h-90d. time.ParseDuration alone rejects the documented "7d".
+func ParseSessionDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	var d time.Duration
+	if dayDuration.MatchString(s) {
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+		if err != nil || n > 90 {
+			return 0, errors.New("must be between 1h and 90d")
+		}
+		d = time.Duration(n) * 24 * time.Hour
+	} else {
+		parsed, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, errors.New(`must be a duration such as "7d" or "168h"`)
+		}
+		d = parsed
+	}
+	if d < time.Hour || d > 90*24*time.Hour {
+		return 0, errors.New("must be between 1h and 90d")
+	}
+	return d, nil
+}
+
+// ParseProxyNets parses a comma-separated list of CIDRs; a bare IP means that
+// single address.
+func ParseProxyNets(raw string) ([]*net.IPNet, error) {
+	var nets []*net.IPNet
+	for i, part := range splitList(raw) {
+		if ip := net.ParseIP(part); ip != nil {
+			bits := 128
+			if ip.To4() != nil {
+				ip, bits = ip.To4(), 32
+			}
+			nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
+		}
+		_, network, err := net.ParseCIDR(part)
+		if err != nil {
+			return nil, fmt.Errorf("entry %d is not a valid CIDR", i+1)
+		}
+		nets = append(nets, network)
+	}
+	return nets, nil
+}
+
+func validOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.Hostname() != "" &&
+		u.User == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == "" && !strings.HasSuffix(origin, "?") && !strings.HasSuffix(origin, "#")
+}
+
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func getEnv(key, fallback string) string {
