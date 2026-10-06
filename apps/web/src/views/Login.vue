@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { Eye, EyeOff } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { api, authApi, oauthApi } from '@/lib/api'
+import { consumeOAuthNonce, createOAuthNonce } from '@/lib/oauthNonce'
 import Button from '@/components/common/Button.vue'
 import Spinner from '@/components/common/Spinner.vue'
 
@@ -33,6 +34,10 @@ const oauthErrors: Record<string, string> = {
   rate_limited: 'Too many sign-in attempts. Please wait a few minutes and try again.',
 }
 
+function startOAuth(provider: string) {
+  window.location.assign(oauthApi.loginUrl(provider, createOAuthNonce()))
+}
+
 async function retrySession() {
   retrying.value = true
   try {
@@ -55,8 +60,12 @@ onMounted(async () => {
   const session = params.get('session')
   if (challenge || session) {
     await router.replace({ path: route.path, query: route.query, hash: '' })
-    if (challenge) authStore.challengeToken = challenge
-    if (session) {
+    // Only adopt a result from a sign-in this tab started (login CSRF).
+    if (!consumeOAuthNonce(params.get('nonce'))) {
+      error.value = oauthErrors.invalid_state
+    } else if (challenge) {
+      authStore.challengeToken = challenge
+    } else if (session) {
       api.setToken(session)
       await authStore.checkAuth()
       if (authStore.isAuthenticated) { await router.replace('/inbox'); return }
@@ -197,6 +206,7 @@ const handleSubmit = async () => {
               v-for="provider in providers"
               :key="provider"
               :href="oauthApi.loginUrl(provider)"
+              @click.prevent="startOAuth(provider)"
               class="block w-full text-center px-4 py-3 border border-gmail-border rounded-lg text-sm font-medium hover:bg-gmail-lightGray"
             >
               Continue with {{ providerLabels[provider] || provider }}

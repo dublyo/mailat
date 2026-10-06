@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/gogf/gf/v2/net/ghttp"
@@ -33,6 +34,10 @@ func NewOAuthController(oauthService *service.OAuthService, auditLogService *ser
 }
 
 const oauthStateCookie = "oauth_state"
+
+// oauthNonce is the SPA's per-tab random value. It is echoed back in the login
+// fragment so the SPA only adopts a session from a sign-in it started itself.
+var oauthNonce = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
 // GetProviders returns the list of configured OAuth providers
 // GET /api/v1/oauth/providers
@@ -72,10 +77,17 @@ func (c *OAuthController) setStateCookie(r *ghttp.Request, value string, maxAge 
 
 // InitiateOAuth starts a sign-in with a provider. A one-use state is stored
 // (hashed) for 10 minutes and bound to this browser with an HttpOnly cookie.
-// Failures redirect to /login?oauthError=<code>.
+// The optional nonce (16-128 URL-safe characters) rides in that cookie and is
+// returned as &nonce= in the login fragment. Failures redirect to
+// /login?oauthError=<code>.
 // GET /api/v1/oauth/:provider
 func (c *OAuthController) InitiateOAuth(r *ghttp.Request) {
 	if c.oauthLimited(r, true) {
+		return
+	}
+	nonce := r.Get("nonce").String()
+	if nonce != "" && !oauthNonce.MatchString(nonce) {
+		c.redirectWithError(r, "invalid_state")
 		return
 	}
 	provider := service.OAuthProvider(r.Get("provider").String())
@@ -93,7 +105,11 @@ func (c *OAuthController) InitiateOAuth(r *ghttp.Request) {
 		c.redirectWithError(r, "provider_error")
 		return
 	}
-	c.setStateCookie(r, state, 600)
+	cookie := state
+	if nonce != "" {
+		cookie += "." + nonce
+	}
+	c.setStateCookie(r, cookie, 600)
 	r.Response.RedirectTo(authURL)
 }
 
@@ -119,8 +135,10 @@ func (c *OAuthController) HandleCallback(r *ghttp.Request) {
 		c.redirectWithError(r, "invalid_state")
 		return
 	}
+	var nonce string
 	if purpose == "login" {
-		cookie := r.Cookie.Get(oauthStateCookie).String()
+		cookie, cookieNonce, _ := strings.Cut(r.Cookie.Get(oauthStateCookie).String(), ".")
+		nonce = cookieNonce
 		c.setStateCookie(r, "", -1)
 		if cookie == "" || subtle.ConstantTimeCompare([]byte(cookie), []byte(state)) != 1 {
 			c.redirectWithError(r, "invalid_state")
@@ -189,11 +207,14 @@ func (c *OAuthController) HandleCallback(r *ghttp.Request) {
 		return
 	}
 	// Fragments never reach the server access log or Referer header.
-	redirectURL := strings.TrimRight(c.cfg.WebUrl, "/") + "/login#session=" + result.Token
+	fragment := "session=" + result.Token
 	if result.RequiresTwoFactor {
-		redirectURL = strings.TrimRight(c.cfg.WebUrl, "/") + "/login#challenge=" + result.ChallengeToken
+		fragment = "challenge=" + result.ChallengeToken
 	}
-	r.Response.RedirectTo(redirectURL)
+	if nonce != "" {
+		fragment += "&nonce=" + nonce
+	}
+	r.Response.RedirectTo(strings.TrimRight(c.cfg.WebUrl, "/") + "/login#" + fragment)
 }
 
 // ConnectProvider starts linking a provider to the signed-in user. Navigate

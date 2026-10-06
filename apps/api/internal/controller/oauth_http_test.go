@@ -210,12 +210,26 @@ func TestOAuthLoginLinkAndConfirmHTTP(t *testing.T) {
 	// The linked identity now signs in; the session goes in the URL fragment.
 	state = startLogin()
 	res := get("/api/v1/oauth/google/callback?code=c&state="+state, state)
-	if res.StatusCode != 302 || !strings.HasPrefix(res.Header.Get("Location"), "http://web.test/login#session=") {
+	if res.StatusCode != 302 || !strings.HasPrefix(res.Header.Get("Location"), "http://web.test/login#session=") || strings.Contains(res.Header.Get("Location"), "nonce=") {
 		t.Fatalf("linked login: %d %s", res.StatusCode, res.Header.Get("Location"))
 	}
 	if !strings.Contains(res.Header.Get("Set-Cookie"), "Max-Age=0") {
 		t.Fatal("state cookie not cleared", res.Header.Get("Set-Cookie"))
 	}
+	// The SPA's nonce rides in the state cookie and comes back in the fragment,
+	// so a fragment the browser did not ask for can be rejected.
+	const nonce = "spa-nonce_0123456789abcdef"
+	res = get("/api/v1/oauth/google?nonce="+nonce, "")
+	loc, _ := url.Parse(res.Header.Get("Location"))
+	state = loc.Query().Get("state")
+	if !strings.Contains(res.Header.Get("Set-Cookie"), "oauth_state="+state+"."+nonce) || strings.Contains(loc.String(), nonce) {
+		t.Fatalf("nonce cookie: %s -> %s", res.Header.Get("Set-Cookie"), loc)
+	}
+	res = get("/api/v1/oauth/google/callback?code=c&state="+state, state+"."+nonce)
+	if target := res.Header.Get("Location"); res.StatusCode != 302 || !strings.HasPrefix(target, "http://web.test/login#session=") || !strings.HasSuffix(target, "&nonce="+nonce) {
+		t.Fatalf("nonce login: %d %s", res.StatusCode, target)
+	}
+	wantError(get("/api/v1/oauth/google?nonce=bad%22value", ""), "invalid_state")
 }
 
 func TestHealthAndReadyHideDependencyErrorsHTTP(t *testing.T) {

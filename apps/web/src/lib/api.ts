@@ -324,7 +324,8 @@ export const oauthApi = {
   disconnect: (provider: string) => api.delete(`/api/v1/oauth/${encodeURIComponent(provider)}`),
   confirmLink: (ticket: string) => api.post<{ provider: string }>('/api/v1/oauth/link/confirm', { ticket }),
   // Sign-in starts with a top-level navigation to the API origin.
-  loginUrl: (provider: string) => `${API_BASE}/api/v1/oauth/${encodeURIComponent(provider)}`,
+  // nonce comes back in the /login fragment (see lib/oauthNonce).
+  loginUrl: (provider: string, nonce?: string) => `${API_BASE}/api/v1/oauth/${encodeURIComponent(provider)}${nonce ? `?nonce=${encodeURIComponent(nonce)}` : ''}`,
 }
 
 // ============ Inbox API ============
