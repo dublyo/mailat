@@ -343,8 +343,8 @@ func TestGDPRErasureCompleteness(t *testing.T) {
 		INSERT INTO list_contacts(list_id,contact_id) VALUES(1,10),(2,11),(1,12);
 		UPDATE lists SET contact_count=(SELECT count(*) FROM list_contacts WHERE list_id=lists.id);
 		INSERT INTO consent_audit(contact_id,org_id,action,source,ip_address) VALUES(10,1,'subscribe','form','192.0.2.1'),(11,1,'subscribe','form','192.0.2.1');
-		INSERT INTO automations(id,org_id,name,trigger_type,updated_at) VALUES(1,1,'Welcome','contact_created',now());
-		INSERT INTO automation_enrollments(id,automation_id,contact_id,org_id,updated_at) VALUES(1,1,10,1,now()),(2,1,12,1,now());
+		INSERT INTO automations(id,org_id,name,trigger_type,updated_at) VALUES(1,1,'Welcome','contact.created',now());
+		INSERT INTO automation_enrollments(id,automation_id,contact_id,org_id,status,updated_at) VALUES(1,1,10,1,'completed',now()),(2,1,12,1,'completed',now());
 		INSERT INTO automation_logs(enrollment_id,automation_id,step_index,step_type,message) VALUES(1,1,0,'email','sent to Erase.Me@example.test'),(2,1,0,'email','kept');
 		INSERT INTO emails(id,org_id,message_id,identity_id,from_email,to_emails,cc_emails,subject,html_content,text_content,domain_id,contact_id,updated_at) VALUES
 			(1,1,'m1',1,'news@one.test',ARRAY['Eve <Erase.Me@example.test>'],'{}','Hi Eve','<p>Eve</p>','Eve',1,10,now()),
