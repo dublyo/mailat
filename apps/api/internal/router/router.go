@@ -182,7 +182,6 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 		group.DELETE("/unsubscribe/:token", complianceCtrl.ConfirmUnsubscribe)
 		group.GET("/preferences/:token", complianceCtrl.GetPreferences)
 		group.PUT("/preferences/:token", complianceCtrl.UpdatePreferences)
-		group.GET("/confirm/:token", complianceCtrl.ConfirmDoubleOptIn)
 
 		// Email forward verification (public - clicked from email)
 		group.POST("/forwards/:id/verify", emailRulesCtrl.VerifyEmailForward)

@@ -576,18 +576,23 @@ type ImportContactsRequest struct {
 	SkipConfirmation bool               `json:"skipConfirmation"`
 }
 
+// ImportContactRow is validated per row by the service (not by request
+// validation) so one bad row is reported instead of rejecting the whole batch.
 type ImportContactRow struct {
-	Email      string         `json:"email" v:"required|email"`
+	Email      string         `json:"email"`
 	FirstName  string         `json:"firstName"`
 	LastName   string         `json:"lastName"`
 	Attributes map[string]any `json:"attributes"`
 }
 
 type ImportContactsResponse struct {
-	Imported int      `json:"imported"`
-	Updated  int      `json:"updated"`
-	Skipped  int      `json:"skipped"`
-	Errors   []string `json:"errors,omitempty"`
+	Imported int `json:"imported"`
+	Updated  int `json:"updated"`
+	Skipped  int `json:"skipped"`
+	// Suppressed counts rows not added to lists because the address is
+	// suppressed or the existing contact is no longer active.
+	Suppressed int      `json:"suppressed"`
+	Errors     []string `json:"errors,omitempty"`
 }
 
 type ExportContactsRequest struct {
@@ -640,10 +645,11 @@ type ImportContactsToListRequest struct {
 
 // ImportContactsToListResponse returns the result of importing contacts to a list
 type ImportContactsToListResponse struct {
-	Imported int      `json:"imported"`
-	Updated  int      `json:"updated"`
-	Skipped  int      `json:"skipped"`
-	Errors   []string `json:"errors,omitempty"`
+	Imported   int      `json:"imported"`
+	Updated    int      `json:"updated"`
+	Skipped    int      `json:"skipped"`
+	Suppressed int      `json:"suppressed"`
+	Errors     []string `json:"errors,omitempty"`
 }
 
 // ManualAddContactToListRequest for adding a single contact manually to a list

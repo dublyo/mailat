@@ -297,7 +297,7 @@ func (s *SignupFormService) blocked(ctx context.Context, tx *sql.Tx, org int64, 
 		return true, nil
 	}
 	var blocked bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM suppressions WHERE org_id=$1 AND lower(email)=$2)`, org, email).Scan(&blocked)
+	err = tx.QueryRowContext(ctx, `SELECT `+suppressedSQL("$1", "$2::text"), org, email).Scan(&blocked)
 	return blocked, err
 }
 func (s *SignupFormService) subscribe(ctx context.Context, tx *sql.Tx, f *model.SignupForm, requestID, email, name, disclosure, mode string) (bool, error) {

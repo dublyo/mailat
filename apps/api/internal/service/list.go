@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/dublyo/mailat/api/internal/config"
 	"github.com/dublyo/mailat/api/internal/model"
@@ -406,11 +407,21 @@ func (s *ListService) GetListContacts(ctx context.Context, orgID int64, listUUID
 	}, nil
 }
 
-// ImportContactsToList imports contacts from a CSV-like structure directly to a list
+// ImportContactsToList imports contacts directly to a list. Addresses are
+// normalized to lowercase, each row runs in its own SAVEPOINT, and suppressed
+// or non-active contacts are never added (counted in Suppressed).
 func (s *ListService) ImportContactsToList(ctx context.Context, orgID int64, listUUID string, req *model.ImportContactsToListRequest) (*model.ImportContactsToListResponse, error) {
-	// Get list ID
+	if len(req.Contacts) > MaxContactImportRows {
+		return nil, invalidContact(fmt.Sprintf("cannot import more than %d contacts at once", MaxContactImportRows))
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	var listID int
-	err := s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		"SELECT id FROM lists WHERE org_id = $1 AND uuid = $2",
 		orgID, listUUID,
 	).Scan(&listID)
@@ -427,97 +438,73 @@ func (s *ListService) ImportContactsToList(ctx context.Context, orgID int64, lis
 		consentSource = "list_import"
 	}
 
-	for _, row := range req.Contacts {
-		if row.Email == "" {
+	for i, row := range req.Contacts {
+		n := i + 1
+		if strings.TrimSpace(row.Email) == "" {
 			result.Skipped++
 			continue
 		}
-
-		// Check if contact exists
-		var existingID int64
-		var existingUUID string
-		err := s.db.QueryRowContext(ctx,
-			"SELECT id, uuid FROM contacts WHERE org_id = $1 AND email = $2",
-			orgID, row.Email,
-		).Scan(&existingID, &existingUUID)
-
-		var contactID int64
-		if err == sql.ErrNoRows {
-			// Create new contact
-			var attributesJSON []byte
-			if row.Attributes != nil {
-				attributesJSON, _ = json.Marshal(row.Attributes)
-			}
-
-			err = s.db.QueryRowContext(ctx, `
-				INSERT INTO contacts (org_id, email, first_name, last_name, attributes, status, consent_source, consent_timestamp, engagement_score, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, $5, 'active', $6, NOW(), 0, NOW(), NOW())
-				RETURNING id
-			`, orgID, row.Email, row.FirstName, row.LastName, attributesJSON, consentSource).Scan(&contactID)
-			if err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("Failed to create contact %s: %v", row.Email, err))
-				continue
-			}
-			result.Imported++
-		} else if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("Failed to check contact %s: %v", row.Email, err))
-			continue
-		} else {
-			contactID = existingID
-			if req.UpdateExisting {
-				// Update existing contact
-				var attributesJSON []byte
-				if row.Attributes != nil {
-					attributesJSON, _ = json.Marshal(row.Attributes)
-				}
-				_, err = s.db.ExecContext(ctx, `
-					UPDATE contacts SET
-						first_name = COALESCE(NULLIF($1, ''), first_name),
-						last_name = COALESCE(NULLIF($2, ''), last_name),
-						attributes = COALESCE($3::jsonb, attributes),
-						updated_at = NOW()
-					WHERE id = $4
-				`, row.FirstName, row.LastName, attributesJSON, contactID)
-				if err != nil {
-					result.Errors = append(result.Errors, fmt.Sprintf("Failed to update contact %s: %v", row.Email, err))
-				} else {
-					result.Updated++
-				}
-			} else {
-				result.Skipped++
-			}
+		email, err := normalizeContactEmail(row.Email)
+		if err == nil {
+			err = validateContactNames(row.FirstName, row.LastName)
 		}
-
-		// Add contact to list
-		_, err = s.db.ExecContext(ctx, `
-			INSERT INTO list_contacts (list_id, contact_id, created_at)
-			VALUES ($1, $2, NOW())
-			ON CONFLICT (list_id, contact_id) DO NOTHING
-		`, listID, contactID)
 		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("Failed to add contact %s to list: %v", row.Email, err))
+			result.Errors = append(result.Errors, fmt.Sprintf("row %d: %s", n, err.Error()))
+			continue
+		}
+		if _, err = tx.ExecContext(ctx, `SAVEPOINT import_row`); err != nil {
+			return nil, fmt.Errorf("failed to import contacts: %w", err)
+		}
+		outcome, err := importContactRow(ctx, tx, orgID, email, row, []int{listID}, req.UpdateExisting, consentSource)
+		if err != nil {
+			if _, rbErr := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT import_row`); rbErr != nil {
+				return nil, fmt.Errorf("failed to import contacts: %w", rbErr)
+			}
+			result.Errors = append(result.Errors, fmt.Sprintf("row %d: could not be saved", n))
+			continue
+		}
+		if _, err = tx.ExecContext(ctx, `RELEASE SAVEPOINT import_row`); err != nil {
+			return nil, fmt.Errorf("failed to import contacts: %w", err)
+		}
+		switch outcome {
+		case importImported:
+			result.Imported++
+		case importUpdated:
+			result.Updated++
+		case importSkipped:
+			result.Skipped++
+		case importSuppressed:
+			result.Suppressed++
 		}
 	}
 
-	// Update contact count
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE lists SET contact_count = (
-			SELECT COUNT(*) FROM list_contacts WHERE list_id = $1
-		), updated_at = NOW()
-		WHERE id = $1
-	`, listID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to update list count: %w", err)
+	if err = recountLists(ctx, tx, orgID, []int{listID}); err != nil {
+		return nil, err
 	}
-
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to import contacts: %w", err)
+	}
 	return result, nil
 }
 
-// ManualAddContactToList creates a new contact and adds it to a list in one operation
+// ManualAddContactToList creates (or finds, case-insensitively) a contact and
+// adds it to a list. Suppressed or non-active addresses are refused.
 func (s *ListService) ManualAddContactToList(ctx context.Context, orgID int64, listUUID string, req *model.ManualAddContactToListRequest) (*model.Contact, error) {
-	// Get list ID
+	email, err := normalizeContactEmail(req.Email)
+	if err != nil {
+		return nil, err
+	}
+	if err = validateContactNames(req.FirstName, req.LastName); err != nil {
+		return nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	var listID int
-	err := s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		"SELECT id FROM lists WHERE org_id = $1 AND uuid = $2",
 		orgID, listUUID,
 	).Scan(&listID)
@@ -528,80 +515,39 @@ func (s *ListService) ManualAddContactToList(ctx context.Context, orgID int64, l
 		return nil, fmt.Errorf("failed to get list: %w", err)
 	}
 
-	// Check if contact already exists
-	var existingID int64
-	err = s.db.QueryRowContext(ctx,
-		"SELECT id FROM contacts WHERE org_id = $1 AND email = $2",
-		orgID, req.Email,
-	).Scan(&existingID)
-
-	var contact model.Contact
-	var attributesJSON []byte
-	if req.Attributes != nil {
-		attributesJSON, _ = json.Marshal(req.Attributes)
-	}
-
-	if err == sql.ErrNoRows {
-		// Create new contact
-		err = s.db.QueryRowContext(ctx, `
-			INSERT INTO contacts (org_id, email, first_name, last_name, attributes, status, consent_source, consent_timestamp, engagement_score, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, 'active', 'manual', NOW(), 0, NOW(), NOW())
-			RETURNING id, uuid, org_id, email, first_name, last_name, attributes, status, consent_source, consent_timestamp, last_engaged_at, engagement_score, created_at, updated_at
-		`, orgID, req.Email, req.FirstName, req.LastName, attributesJSON).Scan(
-			&contact.ID, &contact.UUID, &contact.OrgID, &contact.Email,
-			&contact.FirstName, &contact.LastName, &attributesJSON,
-			&contact.Status, &contact.ConsentSource, &contact.ConsentTimestamp,
-			&contact.LastEngagedAt, &contact.EngagementScore,
-			&contact.CreatedAt, &contact.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create contact: %w", err)
-		}
-		if len(attributesJSON) > 0 {
-			json.Unmarshal(attributesJSON, &contact.Attributes)
-		}
-	} else if err != nil {
-		return nil, fmt.Errorf("failed to check existing contact: %w", err)
-	} else {
-		// Contact exists, just get it
-		err = s.db.QueryRowContext(ctx, `
-			SELECT id, uuid, org_id, email, first_name, last_name, attributes, status, consent_source, consent_timestamp, last_engaged_at, engagement_score, created_at, updated_at
-			FROM contacts WHERE id = $1
-		`, existingID).Scan(
-			&contact.ID, &contact.UUID, &contact.OrgID, &contact.Email,
-			&contact.FirstName, &contact.LastName, &attributesJSON,
-			&contact.Status, &contact.ConsentSource, &contact.ConsentTimestamp,
-			&contact.LastEngagedAt, &contact.EngagementScore,
-			&contact.CreatedAt, &contact.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get existing contact: %w", err)
-		}
-		if len(attributesJSON) > 0 {
-			json.Unmarshal(attributesJSON, &contact.Attributes)
-		}
-	}
-
-	// Add contact to list
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO list_contacts (list_id, contact_id, created_at)
-		VALUES ($1, $2, NOW())
-		ON CONFLICT (list_id, contact_id) DO NOTHING
-	`, listID, contact.ID)
+	outcome, err := importContactRow(ctx, tx, orgID, email, model.ImportContactRow{
+		Email: email, FirstName: req.FirstName, LastName: req.LastName, Attributes: req.Attributes,
+	}, []int{listID}, false, "manual")
 	if err != nil {
 		return nil, fmt.Errorf("failed to add contact to list: %w", err)
 	}
-
-	// Update contact count
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE lists SET contact_count = (
-			SELECT COUNT(*) FROM list_contacts WHERE list_id = $1
-		), updated_at = NOW()
-		WHERE id = $1
-	`, listID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to update list count: %w", err)
+	if outcome == importSuppressed {
+		return nil, ErrContactSuppressed
+	}
+	if err = recountLists(ctx, tx, orgID, []int{listID}); err != nil {
+		return nil, err
 	}
 
+	var contact model.Contact
+	var attributesJSON []byte
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, uuid, org_id, email, first_name, last_name, attributes, status, consent_source, consent_timestamp, last_engaged_at, engagement_score, created_at, updated_at
+		FROM contacts WHERE org_id = $1 AND lower(email) = $2 ORDER BY id LIMIT 1
+	`, orgID, email).Scan(
+		&contact.ID, &contact.UUID, &contact.OrgID, &contact.Email,
+		&contact.FirstName, &contact.LastName, &attributesJSON,
+		&contact.Status, &contact.ConsentSource, &contact.ConsentTimestamp,
+		&contact.LastEngagedAt, &contact.EngagementScore,
+		&contact.CreatedAt, &contact.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get contact: %w", err)
+	}
+	if len(attributesJSON) > 0 {
+		json.Unmarshal(attributesJSON, &contact.Attributes)
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to add contact to list: %w", err)
+	}
 	return &contact, nil
 }

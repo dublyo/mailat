@@ -295,7 +295,7 @@ func (s *CampaignService) ScheduleCampaign(ctx context.Context, orgID int64, cam
 		FROM contacts c
 		JOIN list_contacts lc ON lc.contact_id = c.id
 		WHERE lc.list_id = $1 AND c.status = 'active'
-		AND c.email NOT IN (SELECT email FROM suppressions WHERE org_id = $2)
+		AND NOT `+suppressedSQL("$2", "c.email")+`
 	`, campaign.ListID, orgID).Scan(&recipientCount)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count recipients: %w", err)
@@ -341,7 +341,7 @@ func (s *CampaignService) SendCampaignNow(ctx context.Context, orgID int64, camp
 		FROM contacts c
 		JOIN list_contacts lc ON lc.contact_id = c.id
 		WHERE lc.list_id = $1 AND c.status = 'active'
-		AND c.email NOT IN (SELECT email FROM suppressions WHERE org_id = $2)
+		AND NOT `+suppressedSQL("$2", "c.email")+`
 	`, campaign.ListID, orgID).Scan(&recipientCount)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count recipients: %w", err)

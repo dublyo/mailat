@@ -1780,7 +1780,6 @@
             "type": "object"
           },
           "email": {
-            "format": "email",
             "type": "string"
           },
           "firstName": {
@@ -1790,9 +1789,6 @@
             "type": "string"
           }
         },
-        "required": [
-          "email"
-        ],
         "type": "object"
       },
       "model.ImportContactsRequest": {
@@ -1841,6 +1837,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "suppressed": {
+            "format": "int64",
+            "type": "integer"
+          },
           "updated": {
             "format": "int64",
             "type": "integer"
@@ -1881,6 +1881,10 @@
             "type": "integer"
           },
           "skipped": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "suppressed": {
             "format": "int64",
             "type": "integer"
           },
@@ -20356,251 +20360,9 @@
         "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP."
       }
     },
-    "/api/v1/confirm/{token}": {
-      "get": {
-        "description": "ConfirmDoubleOptIn handles double opt-in confirmation\nGET /api/v1/confirm/:token",
-        "operationId": "get_api_v1_confirm_token",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 0,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 400,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Invalid input"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 401,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Missing, expired or revoked authentication"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 403,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Insufficient permission"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 404,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Resource not found"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 409,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Conflict or changed idempotency payload"
-          },
-          "410": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 410,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Recovery cursor expired; resynchronize"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 429,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Rate limit exceeded; respect Retry-After",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
-                "schema": {
-                  "minimum": 1,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 500,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Internal failure; retain the idempotency key"
-          }
-        },
-        "security": [],
-        "summary": "ConfirmDoubleOptIn",
-        "tags": [
-          "confirm"
-        ],
-        "x-human-session-required": false,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
-      }
-    },
     "/api/v1/contacts": {
       "get": {
-        "description": "ListContacts retrieves contacts with pagination\nGET /api/v1/contacts",
+        "description": "ListContacts retrieves contacts with pagination. query matches email and\nnames literally (case-insensitive substring); sortBy is one of createdAt,\nupdatedAt, email, firstName, lastName.\nGET /api/v1/contacts",
         "operationId": "get_api_v1_contacts",
         "parameters": [
           {
@@ -20915,7 +20677,7 @@
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
       },
       "post": {
-        "description": "CreateContact creates a new contact\nPOST /api/v1/contacts",
+        "description": "CreateContact creates a new contact. The email is lowercased; listIds from\nanother organization are rejected (400 unknown_list) and suppressed\naddresses are refused (409 suppressed).\nPOST /api/v1/contacts",
         "operationId": "post_api_v1_contacts",
         "requestBody": {
           "content": {
@@ -21439,7 +21201,7 @@
     },
     "/api/v1/contacts/import": {
       "post": {
-        "description": "ImportContacts bulk imports contacts\nPOST /api/v1/contacts/import",
+        "description": "ImportContacts bulk imports up to 10,000 contacts. Rows are imported\nindependently: invalid rows are reported in errors (1-based row numbers)\nwhile the rest commit. Suppressed or non-active addresses are not added to\nlists and are counted in suppressed. Foreign listIds return 400 unknown_list.\nPOST /api/v1/contacts/import",
         "operationId": "post_api_v1_contacts_import",
         "requestBody": {
           "content": {
@@ -22480,7 +22242,7 @@
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
       },
       "put": {
-        "description": "UpdateContact updates a contact\nPUT /api/v1/contacts/:uuid",
+        "description": "UpdateContact updates a contact. status accepts only \"active\" or\n\"unsubscribed\": unsubscribing is always allowed, reactivation only for a\nbounced, unsuppressed address (409 reactivation_blocked otherwise). Other\nstatuses are system-managed (400). 409 duplicate_email if the new email is taken.\nPUT /api/v1/contacts/:uuid",
         "operationId": "put_api_v1_contacts_uuid",
         "parameters": [
           {
@@ -23273,7 +23035,7 @@
     },
     "/api/v1/contacts/{uuid}/gdpr": {
       "delete": {
-        "description": "DeleteContactData deletes all data for a contact (GDPR)\nDELETE /api/v1/contacts/:uuid/gdpr",
+        "description": "DeleteContactData erases a contact (GDPR right to erasure) in one\ntransaction. Erased: every case variant of the address in the organization,\nlist memberships, consent history, signup requests, automation enrollments\nand logs, campaign email recipients/subject/content and delivery event data,\nand webhook payloads naming the address or contact (pending deliveries are\ncancelled). A hash-only suppression (SHA-256 of the lowercased address) is\nkept so the address is never mailed again; this pseudonymous hash is\nretained under the legitimate interest of honoring the objection.\nNot erased: the transactional suppression_list (SES deliverability data),\nthe organization users' own mailboxes and raw stored mail; a webhook\ndelivery already in flight may still be sent once.\nDELETE /api/v1/contacts/:uuid/gdpr",
         "operationId": "delete_api_v1_contacts_uuid_gdpr",
         "parameters": [
           {
@@ -45247,7 +45009,7 @@
     },
     "/api/v1/lists/{uuid}/contacts/import": {
       "post": {
-        "description": "ImportContactsToList imports contacts directly to a list\nPOST /api/v1/lists/:uuid/contacts/import",
+        "description": "ImportContactsToList imports contacts directly to a list. Emails are\nlowercased and deduplicated case-insensitively; suppressed or non-active\naddresses are not added (counted in suppressed).\nPOST /api/v1/lists/:uuid/contacts/import",
         "operationId": "post_api_v1_lists_uuid_contacts_import",
         "parameters": [
           {
@@ -45520,7 +45282,7 @@
     },
     "/api/v1/lists/{uuid}/contacts/manual": {
       "post": {
-        "description": "ManualAddContactToList creates a contact and adds it to a list\nPOST /api/v1/lists/:uuid/contacts/manual",
+        "description": "ManualAddContactToList creates (or finds, case-insensitively) a contact and\nadds it to a list. Suppressed or non-active addresses return 409 suppressed.\nPOST /api/v1/lists/:uuid/contacts/manual",
         "operationId": "post_api_v1_lists_uuid_contacts_manual",
         "parameters": [
           {
@@ -47513,7 +47275,7 @@
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
       },
       "put": {
-        "description": "UpdatePreferences updates subscriber preferences\nPUT /api/v1/preferences/:token",
+        "description": "UpdatePreferences sets the contact's list memberships from the preference\ncenter. listIds must belong to the token's organization (400 unknown_list).\nLeaving lists is always allowed; joining is refused for unsubscribed or\nsuppressed addresses (409 reactivation_blocked). An empty selection\nunsubscribes and suppresses the address.\nPUT /api/v1/preferences/:token",
         "operationId": "put_api_v1_preferences_token",
         "parameters": [
           {

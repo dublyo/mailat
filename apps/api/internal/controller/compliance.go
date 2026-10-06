@@ -99,7 +99,11 @@ func (c *ComplianceController) GetPreferences(r *ghttp.Request) {
 	response.Success(r, data)
 }
 
-// UpdatePreferences updates subscriber preferences
+// UpdatePreferences sets the contact's list memberships from the preference
+// center. listIds must belong to the token's organization (400 unknown_list).
+// Leaving lists is always allowed; joining is refused for unsubscribed or
+// suppressed addresses (409 reactivation_blocked). An empty selection
+// unsubscribes and suppresses the address.
 // PUT /api/v1/preferences/:token
 func (c *ComplianceController) UpdatePreferences(r *ghttp.Request) {
 	token := r.Get("token").String()
@@ -121,32 +125,11 @@ func (c *ComplianceController) UpdatePreferences(r *ghttp.Request) {
 
 	err := c.complianceService.UpdatePreferences(r.Context(), token, req.ListIDs, ipAddress, userAgent)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		contactError(r, err, response.BadRequest)
 		return
 	}
 
 	response.SuccessWithMessage(r, "Preferences updated", nil)
-}
-
-// ConfirmDoubleOptIn handles double opt-in confirmation
-// GET /api/v1/confirm/:token
-func (c *ComplianceController) ConfirmDoubleOptIn(r *ghttp.Request) {
-	token := r.Get("token").String()
-	if token == "" {
-		response.BadRequest(r, "Invalid confirmation link")
-		return
-	}
-
-	ipAddress := middleware.ClientIP(r)
-	userAgent := r.Header.Get("User-Agent")
-
-	err := c.complianceService.ConfirmDoubleOptIn(r.Context(), token, ipAddress, userAgent)
-	if err != nil {
-		response.BadRequest(r, err.Error())
-		return
-	}
-
-	response.SuccessWithMessage(r, "Subscription confirmed", nil)
 }
 
 // ExportContactData exports all data for a contact (GDPR)
@@ -173,7 +156,17 @@ func (c *ComplianceController) ExportContactData(r *ghttp.Request) {
 	response.Success(r, data)
 }
 
-// DeleteContactData deletes all data for a contact (GDPR)
+// DeleteContactData erases a contact (GDPR right to erasure) in one
+// transaction. Erased: every case variant of the address in the organization,
+// list memberships, consent history, signup requests, automation enrollments
+// and logs, campaign email recipients/subject/content and delivery event data,
+// and webhook payloads naming the address or contact (pending deliveries are
+// cancelled). A hash-only suppression (SHA-256 of the lowercased address) is
+// kept so the address is never mailed again; this pseudonymous hash is
+// retained under the legitimate interest of honoring the objection.
+// Not erased: the transactional suppression_list (SES deliverability data),
+// the organization users' own mailboxes and raw stored mail; a webhook
+// delivery already in flight may still be sent once.
 // DELETE /api/v1/contacts/:uuid/gdpr
 func (c *ComplianceController) DeleteContactData(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -188,9 +181,10 @@ func (c *ComplianceController) DeleteContactData(r *ghttp.Request) {
 		return
 	}
 
-	err := c.complianceService.DeleteContactData(r.Context(), claims.OrgID, contactUUID)
+	actor := service.ContactActor{UserID: claims.UserID, IP: middleware.ClientIP(r), UA: r.UserAgent()}
+	err := c.complianceService.DeleteContactData(r.Context(), claims.OrgID, actor, contactUUID)
 	if err != nil {
-		response.NotFound(r, err.Error())
+		contactError(r, err, response.InternalError)
 		return
 	}
 

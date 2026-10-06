@@ -510,6 +510,8 @@ export interface ImportContactsResponse {
   imported: number
   updated: number
   skipped: number
+  /** Rows not added to lists because the address is suppressed or no longer active. */
+  suppressed: number
   errors?: string[]
 }
 
@@ -525,8 +527,11 @@ export const contactApi = {
       `/api/v1/contacts?page=${page}&pageSize=${limit}`
     ),
 
-  search: (query: string) =>
-    api.get<Contact[]>(`/api/v1/contacts/search?q=${encodeURIComponent(query)}`),
+  // Literal, case-insensitive match on email and names (server escapes % and _).
+  search: (query: string, page = 1, pageSize = 50) =>
+    api.get<ListContactsResponse>(
+      `/api/v1/contacts?query=${encodeURIComponent(query)}&page=${page}&pageSize=${pageSize}`
+    ),
 
   create: (data: { email: string; firstName?: string; lastName?: string; attributes?: Record<string, unknown>; listIds?: number[]; consentSource?: string }) =>
     api.post<ContactFull>('/api/v1/contacts', data),
@@ -557,6 +562,7 @@ export interface ImportToListResponse {
   imported: number
   updated: number
   skipped: number
+  suppressed?: number
   errors?: string[]
 }
 

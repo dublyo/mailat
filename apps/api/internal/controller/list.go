@@ -224,7 +224,9 @@ func (c *ListController) GetListContacts(r *ghttp.Request) {
 	response.Success(r, result)
 }
 
-// ImportContactsToList imports contacts directly to a list
+// ImportContactsToList imports contacts directly to a list. Emails are
+// lowercased and deduplicated case-insensitively; suppressed or non-active
+// addresses are not added (counted in suppressed).
 // POST /api/v1/lists/:uuid/contacts/import
 func (c *ListController) ImportContactsToList(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -247,14 +249,15 @@ func (c *ListController) ImportContactsToList(r *ghttp.Request) {
 
 	result, err := c.listService.ImportContactsToList(r.Context(), claims.OrgID, listUUID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		contactError(r, err, response.BadRequest)
 		return
 	}
 
 	response.SuccessWithMessage(r, "Contacts imported to list", result)
 }
 
-// ManualAddContactToList creates a contact and adds it to a list
+// ManualAddContactToList creates (or finds, case-insensitively) a contact and
+// adds it to a list. Suppressed or non-active addresses return 409 suppressed.
 // POST /api/v1/lists/:uuid/contacts/manual
 func (c *ListController) ManualAddContactToList(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -277,7 +280,7 @@ func (c *ListController) ManualAddContactToList(r *ghttp.Request) {
 
 	contact, err := c.listService.ManualAddContactToList(r.Context(), claims.OrgID, listUUID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		contactError(r, err, response.BadRequest)
 		return
 	}
 

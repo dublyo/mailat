@@ -272,7 +272,7 @@ func (h *CampaignHandler) getCampaignContacts(ctx context.Context, campaign *cam
 		JOIN list_contacts lc ON lc.contact_id = c.id
 		WHERE lc.list_id = $1
 		AND c.status = 'active'
-		AND c.email NOT IN (SELECT email FROM suppressions WHERE org_id = $2)
+		AND NOT `+SuppressedSQL("$2", "c.email")+`
 		ORDER BY c.id
 	`, campaign.ListID, campaign.OrgID)
 	if err != nil {
@@ -326,11 +326,18 @@ func (h *CampaignHandler) getContactsByIDs(ctx context.Context, orgID int64, con
 
 var errCampaignIneligible = errors.New("contact no longer eligible")
 
+// SuppressedSQL is a copy of service.suppressedSQL (service imports worker, so
+// it cannot be shared). service/suppression_test.go asserts they are identical.
+func SuppressedSQL(orgExpr, emailExpr string) string {
+	return "EXISTS(SELECT 1 FROM suppressions s WHERE s.org_id=" + orgExpr +
+		" AND s.email_sha256=encode(sha256(convert_to(lower(trim(" + emailExpr + ")),'UTF8')),'hex'))"
+}
+
 // sendCampaignEmail sends an email to a contact
 func (h *CampaignHandler) sendCampaignEmail(ctx context.Context, campaign *campaignInfo, contact contactInfo) error {
 	// Recheck at delivery time: queued batches can outlive an unsubscribe.
 	var eligible bool
-	err := h.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM contacts c JOIN list_contacts lc ON lc.contact_id=c.id WHERE c.id=$1 AND c.org_id=$2 AND lc.list_id=$3 AND c.status='active' AND NOT EXISTS(SELECT 1 FROM suppressions s WHERE s.org_id=c.org_id AND lower(s.email)=lower(c.email)))`, contact.ID, campaign.OrgID, campaign.ListID).Scan(&eligible)
+	err := h.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM contacts c JOIN list_contacts lc ON lc.contact_id=c.id WHERE c.id=$1 AND c.org_id=$2 AND lc.list_id=$3 AND c.status='active' AND NOT `+SuppressedSQL("c.org_id", "c.email")+`)`, contact.ID, campaign.OrgID, campaign.ListID).Scan(&eligible)
 	if err != nil {
 		return err
 	}

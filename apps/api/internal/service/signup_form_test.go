@@ -301,7 +301,7 @@ func TestSignupUnpublishExistingContactsAndErasure(t *testing.T) {
 		t.Fatal("replayed after unsubscribe")
 	}
 	signupCount(t, db, `SELECT count(*) FROM contacts WHERE status='active'`, 0)
-	if err = compliance.DeleteContactData(ctx, 1, contactUUID); err != nil {
+	if err = compliance.DeleteContactData(ctx, 1, ContactActor{}, contactUUID); err != nil {
 		t.Fatal(err)
 	}
 	signupCount(t, db, `SELECT count(*) FROM signup_requests`, 0)

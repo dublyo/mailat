@@ -19,54 +19,35 @@ export const useContactsStore = defineStore('contacts', () => {
   const hasContacts = computed(() => contacts.value.length > 0)
   const hasLists = computed(() => lists.value.length > 0)
 
+  // Active search; paging keeps it until searchContacts('') clears it.
+  const searchQuery = ref('')
+  let requestSeq = 0
+
   async function fetchContacts(page = 1, limit = 50) {
+    const seq = ++requestSeq
+    const query = searchQuery.value
     isLoading.value = true
     error.value = null
     try {
-      const result = await contactApi.list(page, limit)
+      const result = query ? await contactApi.search(query, page, limit) : await contactApi.list(page, limit)
+      if (seq !== requestSeq) return // a newer search or page request superseded this one
       contacts.value = (result?.contacts ?? []).filter((c): c is ContactFull => c != null)
       totalContacts.value = result?.total ?? 0
       currentPage.value = result?.page ?? 1
       totalPages.value = result?.totalPages ?? 1
       pageSize.value = result?.pageSize ?? limit
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch contacts'
+      if (seq !== requestSeq) return
+      error.value = e instanceof Error ? e.message : (query ? 'Failed to search contacts' : 'Failed to fetch contacts')
       contacts.value = []
     } finally {
-      isLoading.value = false
+      if (seq === requestSeq) isLoading.value = false
     }
   }
 
   async function searchContacts(query: string) {
-    if (!query.trim()) {
-      await fetchContacts()
-      return
-    }
-
-    isLoading.value = true
-    try {
-      const result = await contactApi.search(query)
-      // Map old Contact type to ContactFull
-      contacts.value = (result ?? []).map(c => ({
-        id: parseInt(c.id) || 0,
-        uuid: c.uuid,
-        orgId: 0,
-        email: c.email,
-        firstName: c.name?.split(' ')[0] || '',
-        lastName: c.name?.split(' ').slice(1).join(' ') || '',
-        attributes: { company: c.company, phone: c.phone },
-        status: 'active' as const,
-        engagementScore: 0,
-        createdAt: c.createdAt,
-        updatedAt: c.createdAt,
-      }))
-      totalContacts.value = contacts.value.length
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to search contacts'
-      contacts.value = []
-    } finally {
-      isLoading.value = false
-    }
+    searchQuery.value = query.trim()
+    await fetchContacts(1, pageSize.value)
   }
 
   async function createContact(data: { email: string; firstName?: string; lastName?: string; attributes?: Record<string, unknown>; listIds?: number[]; consentSource?: string }) {
@@ -272,6 +253,7 @@ export const useContactsStore = defineStore('contacts', () => {
     isExporting,
     error,
     importResult,
+    searchQuery,
     // Computed
     hasContacts,
     hasLists,

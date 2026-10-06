@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"errors"
+
 	"github.com/gogf/gf/v2/net/ghttp"
 
 	"github.com/dublyo/mailat/api/internal/middleware"
@@ -17,7 +19,21 @@ func NewContactController(contactService *service.ContactService) *ContactContro
 	return &ContactController{contactService: contactService}
 }
 
-// CreateContact creates a new contact
+// contactError maps typed contact errors to their HTTP status and code; the
+// code is returned as data.error so clients can branch without parsing text.
+func contactError(r *ghttp.Request, err error, fallback func(*ghttp.Request, string)) {
+	var ce *service.ContactError
+	if errors.As(err, &ce) {
+		r.Response.Status = ce.Status
+		r.Response.WriteJsonExit(response.Response{Code: ce.Status, Message: ce.Message, Data: map[string]string{"error": ce.Code}})
+		return
+	}
+	fallback(r, err.Error())
+}
+
+// CreateContact creates a new contact. The email is lowercased; listIds from
+// another organization are rejected (400 unknown_list) and suppressed
+// addresses are refused (409 suppressed).
 // POST /api/v1/contacts
 func (c *ContactController) Create(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -34,7 +50,7 @@ func (c *ContactController) Create(r *ghttp.Request) {
 
 	contact, err := c.contactService.CreateContact(r.Context(), claims.OrgID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		contactError(r, err, response.BadRequest)
 		return
 	}
 
@@ -65,7 +81,9 @@ func (c *ContactController) Get(r *ghttp.Request) {
 	response.Success(r, contact)
 }
 
-// ListContacts retrieves contacts with pagination
+// ListContacts retrieves contacts with pagination. query matches email and
+// names literally (case-insensitive substring); sortBy is one of createdAt,
+// updatedAt, email, firstName, lastName.
 // GET /api/v1/contacts
 func (c *ContactController) List(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -89,7 +107,10 @@ func (c *ContactController) List(r *ghttp.Request) {
 	response.Success(r, result)
 }
 
-// UpdateContact updates a contact
+// UpdateContact updates a contact. status accepts only "active" or
+// "unsubscribed": unsubscribing is always allowed, reactivation only for a
+// bounced, unsuppressed address (409 reactivation_blocked otherwise). Other
+// statuses are system-managed (400). 409 duplicate_email if the new email is taken.
 // PUT /api/v1/contacts/:uuid
 func (c *ContactController) Update(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -110,9 +131,10 @@ func (c *ContactController) Update(r *ghttp.Request) {
 		return
 	}
 
-	contact, err := c.contactService.UpdateContact(r.Context(), claims.OrgID, contactUUID, &req)
+	actor := service.ContactActor{UserID: claims.UserID, IP: middleware.ClientIP(r), UA: r.UserAgent()}
+	contact, err := c.contactService.UpdateContact(r.Context(), claims.OrgID, actor, contactUUID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		contactError(r, err, response.BadRequest)
 		return
 	}
 
@@ -143,7 +165,10 @@ func (c *ContactController) Delete(r *ghttp.Request) {
 	response.SuccessWithMessage(r, "Contact deleted", nil)
 }
 
-// ImportContacts bulk imports contacts
+// ImportContacts bulk imports up to 10,000 contacts. Rows are imported
+// independently: invalid rows are reported in errors (1-based row numbers)
+// while the rest commit. Suppressed or non-active addresses are not added to
+// lists and are counted in suppressed. Foreign listIds return 400 unknown_list.
 // POST /api/v1/contacts/import
 func (c *ContactController) Import(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -158,14 +183,9 @@ func (c *ContactController) Import(r *ghttp.Request) {
 		return
 	}
 
-	if len(req.Contacts) > 1000 {
-		response.BadRequest(r, "Cannot import more than 1000 contacts at once")
-		return
-	}
-
 	result, err := c.contactService.ImportContacts(r.Context(), claims.OrgID, &req)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		contactError(r, err, response.InternalError)
 		return
 	}
 

@@ -364,7 +364,7 @@ func main() {
 			description = strings.TrimSpace(f.Doc.Text())
 		}
 		op := object{"operationId": strings.ToLower(verb) + strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(full, "/", "_"), ":", ""), "-", "_"), "summary": method, "description": description, "tags": []string{strings.Split(strings.TrimPrefix(path, "/"), "/")[0]}, "security": []object{{"bearerAuth": []string{}}}}
-		if public[path] || strings.HasPrefix(path, "/public/forms") || strings.HasPrefix(path, "/tracking/") || strings.HasPrefix(path, "/unsubscribe/") || strings.HasPrefix(path, "/preferences/") || strings.HasPrefix(path, "/confirm/") {
+		if public[path] || strings.HasPrefix(path, "/public/forms") || strings.HasPrefix(path, "/tracking/") || strings.HasPrefix(path, "/unsubscribe/") || strings.HasPrefix(path, "/preferences/") {
 			op["security"] = []object{}
 		}
 		if scope, ok := middleware.APIKeyScope(verb, full); ok {

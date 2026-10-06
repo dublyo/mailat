@@ -11,6 +11,7 @@ import Avatar from '@/components/common/Avatar.vue'
 import Spinner from '@/components/common/Spinner.vue'
 import { useContactsStore } from '@/stores/contacts'
 import type { ContactFull, ImportContactRow, ContactList } from '@/lib/api'
+import { toCsv, CSV_MIME } from '@/lib/csv'
 
 const contactsStore = useContactsStore()
 const searchQuery = ref('')
@@ -50,7 +51,7 @@ const addToListTarget = ref<ContactList | null>(null)
 const addToListSearchQuery = ref('')
 const addToListSelectedContacts = ref<Set<string>>(new Set())
 const addToListLoading = ref(false)
-const addToListResult = ref<{ imported: number; updated: number; skipped: number; errors?: string[] } | null>(null)
+const addToListResult = ref<{ imported: number; updated: number; skipped: number; suppressed?: number; errors?: string[] } | null>(null)
 
 // Add to List - Manual form
 const manualContactForm = ref({
@@ -699,21 +700,13 @@ const exportContacts = async () => {
   try {
     const contacts = await contactsStore.exportContacts()
 
-    // Convert to CSV
     const headers = ['email', 'firstName', 'lastName', 'status', 'createdAt']
-    const csvContent = [
-      headers.join(','),
-      ...contacts.map(c => [
-        `"${c.email}"`,
-        `"${c.firstName || ''}"`,
-        `"${c.lastName || ''}"`,
-        `"${c.status}"`,
-        `"${c.createdAt}"`
-      ].join(','))
-    ].join('\n')
+    const csvContent = toCsv(
+      contacts.map(c => [c.email, c.firstName, c.lastName, c.status, c.createdAt]),
+      headers
+    )
 
-    // Download
-    const blob = new Blob([csvContent], { type: 'text/csv' })
+    const blob = new Blob([csvContent], { type: CSV_MIME })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -1313,6 +1306,10 @@ const formatDate = (dateStr: string) => {
               <span>Skipped (duplicates)</span>
               <span class="font-medium text-yellow-600">{{ addToListResult.skipped }}</span>
             </div>
+            <div v-if="addToListResult.suppressed" class="flex justify-between p-3 bg-gray-50 rounded-lg">
+              <span>Not added (unsubscribed or suppressed)</span>
+              <span class="font-medium text-gmail-gray">{{ addToListResult.suppressed }}</span>
+            </div>
             <div v-if="addToListResult.errors?.length" class="p-3 bg-red-50 rounded-lg">
               <p class="font-medium text-red-600 mb-2">Errors ({{ addToListResult.errors.length }})</p>
               <ul class="text-sm text-red-600 list-disc list-inside max-h-24 overflow-auto">
@@ -1893,6 +1890,10 @@ const formatDate = (dateStr: string) => {
             <div class="flex justify-between p-3 bg-yellow-50 rounded-lg">
               <span>Skipped (duplicates)</span>
               <span class="font-medium text-yellow-600">{{ contactsStore.importResult.skipped }}</span>
+            </div>
+            <div v-if="contactsStore.importResult.suppressed > 0" class="flex justify-between p-3 bg-gray-50 rounded-lg">
+              <span>Not added (unsubscribed or suppressed)</span>
+              <span class="font-medium text-gmail-gray">{{ contactsStore.importResult.suppressed }}</span>
             </div>
             <div v-if="contactsStore.importResult.errors?.length" class="p-3 bg-red-50 rounded-lg">
               <p class="font-medium text-red-600 mb-2">Errors ({{ contactsStore.importResult.errors.length }})</p>

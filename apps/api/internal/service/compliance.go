@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"github.com/dublyo/mailat/api/internal/config"
 )
@@ -95,30 +96,43 @@ func (s *ComplianceService) ProcessOneClickUnsubscribe(ctx context.Context, toke
 	if err != nil {
 		return fmt.Errorf("invalid unsubscribe token")
 	}
+	return s.unsubscribeContact(ctx, data, "email", fmt.Sprintf("%d", data.EmailID), "one-click", ipAddress, userAgent, "One-click unsubscribe from email")
+}
 
-	// Update contact status
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE contacts SET status = 'unsubscribed', updated_at = NOW()
-		WHERE id = $1 AND org_id = $2
-	`, data.ContactID, data.OrgID)
+// unsubscribeContact marks the token's contact unsubscribed, suppresses the
+// address and records consent in one transaction. A missing contact (deleted
+// or erased) is treated as already unsubscribed.
+func (s *ComplianceService) unsubscribeContact(ctx context.Context, data *UnsubscribeData, suppressionSource, sourceID, consentSource, ipAddress, userAgent, details string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to unsubscribe: %w", err)
 	}
-
-	// Get email for suppression list
+	defer tx.Rollback()
 	var email string
-	s.db.QueryRowContext(ctx, "SELECT email FROM contacts WHERE id = $1", data.ContactID).Scan(&email)
-
-	// Add to suppression list
-	s.db.ExecContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
+		UPDATE contacts SET status = 'unsubscribed', updated_at = NOW()
+		WHERE id = $1 AND org_id = $2
+		RETURNING email
+	`, data.ContactID, data.OrgID).Scan(&email)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to unsubscribe: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO suppressions (org_id, email, reason, source_type, source_id, created_at)
-		VALUES ($1, $2, 'unsubscribe', 'email', $3, NOW())
+		VALUES ($1, $2, 'unsubscribe', $3, NULLIF($4, ''), NOW())
 		ON CONFLICT (org_id, email) DO NOTHING
-	`, data.OrgID, email, fmt.Sprintf("%d", data.EmailID))
-
-	// Record consent change for audit trail
-	s.recordConsentChange(ctx, data.ContactID, data.OrgID, "unsubscribe", "one-click", nil, ipAddress, userAgent, "One-click unsubscribe from email")
-
+	`, data.OrgID, email, suppressionSource, sourceID); err != nil {
+		return fmt.Errorf("failed to suppress address: %w", err)
+	}
+	if err = recordConsentChangeTx(ctx, tx, data.ContactID, data.OrgID, "unsubscribe", consentSource, nil, ipAddress, userAgent, details); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to unsubscribe: %w", err)
+	}
 	return nil
 }
 
@@ -155,35 +169,11 @@ func (s *ComplianceService) ConfirmUnsubscribe(ctx context.Context, token string
 	if err != nil {
 		return fmt.Errorf("invalid unsubscribe token")
 	}
-
-	// Update contact status
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE contacts SET status = 'unsubscribed', updated_at = NOW()
-		WHERE id = $1 AND org_id = $2
-	`, data.ContactID, data.OrgID)
-	if err != nil {
-		return fmt.Errorf("failed to unsubscribe: %w", err)
-	}
-
-	// Get email for suppression list
-	var email string
-	s.db.QueryRowContext(ctx, "SELECT email FROM contacts WHERE id = $1", data.ContactID).Scan(&email)
-
-	// Add to suppression list
-	s.db.ExecContext(ctx, `
-		INSERT INTO suppressions (org_id, email, reason, source_type, created_at)
-		VALUES ($1, $2, 'unsubscribe', 'landing_page', NOW())
-		ON CONFLICT (org_id, email) DO NOTHING
-	`, data.OrgID, email)
-
-	// Record consent change
 	details := "Unsubscribe from landing page"
 	if reason != "" {
 		details = fmt.Sprintf("Unsubscribe from landing page. Reason: %s", reason)
 	}
-	s.recordConsentChange(ctx, data.ContactID, data.OrgID, "unsubscribe", "landing_page", nil, ipAddress, userAgent, details)
-
-	return nil
+	return s.unsubscribeContact(ctx, data, "landing_page", "", "landing_page", ipAddress, userAgent, details)
 }
 
 // GetPreferenceCenter returns data for the preference center
@@ -237,169 +227,120 @@ func (s *ComplianceService) GetPreferenceCenter(ctx context.Context, token strin
 	}, nil
 }
 
-// UpdatePreferences updates subscriber preferences from the preference center
+// UpdatePreferences applies a preference-center selection. Removals are always
+// allowed; additions never reactivate an unsubscribed or suppressed address,
+// and an empty selection unsubscribes and suppresses. The signed token proves
+// mailbox control, so double opt-in lists may be joined directly.
 func (s *ComplianceService) UpdatePreferences(ctx context.Context, token string, newListIDs []int, ipAddress string, userAgent string) error {
 	data, err := s.decodeUnsubscribeData(token)
 	if err != nil {
 		return fmt.Errorf("invalid token")
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to update preferences: %w", err)
+	}
+	defer tx.Rollback()
 
-	// Get current list memberships
-	rows, _ := s.db.QueryContext(ctx, `
-		SELECT list_id FROM list_contacts WHERE contact_id = $1
-	`, data.ContactID)
-	defer rows.Close()
+	var email, status string
+	err = tx.QueryRowContext(ctx, `SELECT email, status FROM contacts WHERE id = $1 AND org_id = $2 FOR UPDATE`, data.ContactID, data.OrgID).Scan(&email, &status)
+	if err == sql.ErrNoRows {
+		return ErrContactNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("failed to load contact: %w", err)
+	}
 
-	currentLists := make(map[int]bool)
+	requested := uniqueInts(newListIDs)
+	if err = validateOrgLists(ctx, tx, data.OrgID, requested); err != nil {
+		return err
+	}
+	current := map[int]bool{}
+	rows, err := tx.QueryContext(ctx, `SELECT lc.list_id FROM list_contacts lc JOIN lists l ON l.id = lc.list_id WHERE lc.contact_id = $1 AND l.org_id = $2`, data.ContactID, data.OrgID)
+	if err != nil {
+		return fmt.Errorf("failed to load memberships: %w", err)
+	}
 	for rows.Next() {
-		var listID int
-		rows.Scan(&listID)
-		currentLists[listID] = true
+		var id int
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to load memberships: %w", err)
+		}
+		current[id] = true
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return fmt.Errorf("failed to load memberships: %w", err)
 	}
 
-	newListSet := make(map[int]bool)
-	for _, id := range newListIDs {
-		newListSet[id] = true
+	wanted := map[int]bool{}
+	var additions, changed []int
+	for _, id := range requested {
+		wanted[id] = true
+		if !current[id] {
+			additions = append(additions, id)
+		}
 	}
-
-	// Add to new lists
-	for listID := range newListSet {
-		if !currentLists[listID] {
-			s.db.ExecContext(ctx, `
-				INSERT INTO list_contacts (list_id, contact_id, created_at)
-				VALUES ($1, $2, NOW())
-				ON CONFLICT DO NOTHING
-			`, listID, data.ContactID)
-			s.recordConsentChange(ctx, data.ContactID, data.OrgID, "subscribe", "preference-center", &listID, ipAddress, userAgent, "Subscribed via preference center")
+	if len(additions) > 0 {
+		if status != "active" {
+			return ErrReactivationBlocked
+		}
+		suppressed, err := isSuppressedTx(ctx, tx, data.OrgID, email)
+		if err != nil {
+			return err
+		}
+		if suppressed {
+			return ErrReactivationBlocked
 		}
 	}
 
-	// Remove from old lists
-	for listID := range currentLists {
-		if !newListSet[listID] {
-			s.db.ExecContext(ctx, `
-				DELETE FROM list_contacts WHERE list_id = $1 AND contact_id = $2
-			`, listID, data.ContactID)
-			s.recordConsentChange(ctx, data.ContactID, data.OrgID, "unsubscribe", "preference-center", &listID, ipAddress, userAgent, "Unsubscribed via preference center")
+	for id := range current {
+		if wanted[id] {
+			continue
+		}
+		listID := id
+		if _, err = tx.ExecContext(ctx, `DELETE FROM list_contacts WHERE list_id = $1 AND contact_id = $2`, listID, data.ContactID); err != nil {
+			return fmt.Errorf("failed to leave list: %w", err)
+		}
+		if err = recordConsentChangeTx(ctx, tx, data.ContactID, data.OrgID, "unsubscribe", "preference-center", &listID, ipAddress, userAgent, "Unsubscribed via preference center"); err != nil {
+			return err
+		}
+		changed = append(changed, listID)
+	}
+	for _, id := range additions {
+		listID := id
+		if _, err = tx.ExecContext(ctx, `INSERT INTO list_contacts (list_id, contact_id, created_at) VALUES ($1, $2, NOW()) ON CONFLICT DO NOTHING`, listID, data.ContactID); err != nil {
+			return fmt.Errorf("failed to join list: %w", err)
+		}
+		if err = recordConsentChangeTx(ctx, tx, data.ContactID, data.OrgID, "subscribe", "preference-center", &listID, ipAddress, userAgent, "Subscribed via preference center"); err != nil {
+			return err
+		}
+		changed = append(changed, listID)
+	}
+	if err = recountLists(ctx, tx, data.OrgID, changed); err != nil {
+		return err
+	}
+
+	if len(requested) == 0 {
+		if status != "unsubscribed" {
+			if _, err = tx.ExecContext(ctx, `UPDATE contacts SET status = 'unsubscribed', updated_at = NOW() WHERE id = $1 AND org_id = $2`, data.ContactID, data.OrgID); err != nil {
+				return fmt.Errorf("failed to unsubscribe: %w", err)
+			}
+			if err = recordConsentChangeTx(ctx, tx, data.ContactID, data.OrgID, "unsubscribe", "preference-center", nil, ipAddress, userAgent, "Unsubscribed from all lists via preference center"); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `
+			INSERT INTO suppressions (org_id, email, reason, source_type, created_at)
+			VALUES ($1, $2, 'unsubscribe', 'preference-center', NOW())
+			ON CONFLICT (org_id, email) DO NOTHING
+		`, data.OrgID, email); err != nil {
+			return fmt.Errorf("failed to suppress address: %w", err)
 		}
 	}
-
-	// Update list counts
-	s.db.ExecContext(ctx, `
-		UPDATE lists SET contact_count = (
-			SELECT COUNT(*) FROM list_contacts WHERE list_id = lists.id
-		) WHERE org_id = $1
-	`, data.OrgID)
-
-	// If no lists selected, mark contact as unsubscribed
-	if len(newListIDs) == 0 {
-		s.db.ExecContext(ctx, `
-			UPDATE contacts SET status = 'unsubscribed', updated_at = NOW()
-			WHERE id = $1
-		`, data.ContactID)
-	} else {
-		// Ensure contact is active if subscribing to lists
-		s.db.ExecContext(ctx, `
-			UPDATE contacts SET status = 'active', updated_at = NOW()
-			WHERE id = $1 AND status = 'unsubscribed'
-		`, data.ContactID)
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to update preferences: %w", err)
 	}
-
-	return nil
-}
-
-// GenerateDoubleOptInToken generates a token for double opt-in confirmation
-func (s *ComplianceService) GenerateDoubleOptInToken(contactID int64, orgID int64, listIDs []int) string {
-	data := map[string]interface{}{
-		"c":  contactID,
-		"o":  orgID,
-		"l":  listIDs,
-		"ts": time.Now().Unix(),
-	}
-	jsonData, _ := json.Marshal(data)
-
-	// Sign the data
-	mac := hmac.New(sha256.New, []byte(s.cfg.JWTSecret))
-	mac.Write(jsonData)
-	signature := mac.Sum(nil)
-
-	combined := append(jsonData, signature[:8]...)
-	return base64.URLEncoding.EncodeToString(combined)
-}
-
-// ConfirmDoubleOptIn processes double opt-in confirmation
-func (s *ComplianceService) ConfirmDoubleOptIn(ctx context.Context, token string, ipAddress string, userAgent string) error {
-	// Decode token
-	combined, err := base64.URLEncoding.DecodeString(token)
-	if err != nil {
-		return fmt.Errorf("invalid token")
-	}
-
-	if len(combined) < 9 {
-		return fmt.Errorf("invalid token")
-	}
-
-	jsonData := combined[:len(combined)-8]
-	providedSig := combined[len(combined)-8:]
-
-	// Verify signature
-	mac := hmac.New(sha256.New, []byte(s.cfg.JWTSecret))
-	mac.Write(jsonData)
-	expectedSig := mac.Sum(nil)[:8]
-
-	if !hmac.Equal(providedSig, expectedSig) {
-		return fmt.Errorf("invalid token")
-	}
-
-	var data struct {
-		ContactID int64 `json:"c"`
-		OrgID     int64 `json:"o"`
-		ListIDs   []int `json:"l"`
-		Timestamp int64 `json:"ts"`
-	}
-	if err := json.Unmarshal(jsonData, &data); err != nil {
-		return fmt.Errorf("invalid token")
-	}
-
-	// Check token age (24 hours)
-	if time.Now().Unix()-data.Timestamp > 86400 {
-		return fmt.Errorf("token expired")
-	}
-
-	// Activate contact
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE contacts SET
-			status = 'active',
-			consent_timestamp = NOW(),
-			consent_source = COALESCE(consent_source, 'double_opt_in'),
-			consent_ip = $1,
-			consent_user_agent = $2,
-			updated_at = NOW()
-		WHERE id = $3 AND org_id = $4
-	`, ipAddress, userAgent, data.ContactID, data.OrgID)
-	if err != nil {
-		return fmt.Errorf("failed to activate contact: %w", err)
-	}
-
-	// Add to lists
-	for _, listID := range data.ListIDs {
-		s.db.ExecContext(ctx, `
-			INSERT INTO list_contacts (list_id, contact_id, created_at)
-			VALUES ($1, $2, NOW())
-			ON CONFLICT DO NOTHING
-		`, listID, data.ContactID)
-	}
-
-	// Update list counts
-	s.db.ExecContext(ctx, `
-		UPDATE lists SET contact_count = (
-			SELECT COUNT(*) FROM list_contacts WHERE list_id = lists.id
-		) WHERE id = ANY($1)
-	`, data.ListIDs)
-
-	// Record consent
-	s.recordConsentChange(ctx, data.ContactID, data.OrgID, "consent_given", "double_opt_in", nil, ipAddress, userAgent, "Double opt-in confirmed")
-
 	return nil
 }
 
@@ -520,60 +461,161 @@ func (s *ComplianceService) ExportContactData(ctx context.Context, orgID int64, 
 	}, nil
 }
 
-// DeleteContactData deletes all data for a contact (GDPR right to erasure)
-func (s *ComplianceService) DeleteContactData(ctx context.Context, orgID int64, contactUUID string) error {
-	// Get contact ID
-	var contactID int64
-	var email string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, email FROM contacts WHERE uuid = $1 AND org_id = $2
-	`, contactUUID, orgID).Scan(&contactID, &email)
-	if err != nil {
-		return fmt.Errorf("contact not found")
-	}
-
-	// Begin transaction
+// DeleteContactData erases a contact (GDPR right to erasure) in one
+// transaction: every case variant of the address in the org, automation
+// enrollments, campaign email content, webhook payloads, signup history,
+// consent rows and list memberships. A hash-only suppression is kept so the
+// address can never be mailed again. Transactional suppression_list rows,
+// the org users' own mailboxes and raw S3 mail are not touched.
+func (s *ComplianceService) DeleteContactData(ctx context.Context, orgID int64, actor ContactActor, contactUUID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	// Delete from list_contacts
-	tx.ExecContext(ctx, "DELETE FROM list_contacts WHERE contact_id = $1", contactID)
+	var email string
+	err = tx.QueryRowContext(ctx, `SELECT email FROM contacts WHERE uuid = $1 AND org_id = $2`, contactUUID, orgID).Scan(&email)
+	if err == sql.ErrNoRows {
+		return ErrContactNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("failed to load contact: %w", err)
+	}
+	addr := strings.ToLower(strings.TrimSpace(email))
+	hash := emailSHA256(addr)
 
-	// Delete consent audit records
-	tx.ExecContext(ctx, "DELETE FROM consent_audit WHERE contact_id = $1", contactID)
-
-	// Anonymize emails (keep for deliverability metrics but remove PII)
-	tx.ExecContext(ctx, `
-		UPDATE emails SET
-			contact_id = NULL,
-			to_emails = ARRAY['[redacted]'],
-			updated_at = NOW()
-		WHERE contact_id = $1
-	`, contactID)
-
-	// Public signup history contains personal data too; erasure also revokes
-	// outstanding confirmation links for this address in this organization.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM signup_requests r USING signup_forms f WHERE r.form_id=f.id AND f.org_id=$1 AND lower(r.email)=lower($2)`, orgID, email); err != nil {
-		return fmt.Errorf("failed to delete signup history: %w", err)
+	var ids []int64
+	var uuids []string
+	rows, err := tx.QueryContext(ctx, `SELECT id, uuid::text FROM contacts WHERE org_id = $1 AND lower(email) = $2 FOR UPDATE`, orgID, addr)
+	if err != nil {
+		return fmt.Errorf("failed to lock contacts: %w", err)
+	}
+	for rows.Next() {
+		var id int64
+		var u string
+		if err = rows.Scan(&id, &u); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to lock contacts: %w", err)
+		}
+		ids, uuids = append(ids, id), append(uuids, u)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return fmt.Errorf("failed to lock contacts: %w", err)
 	}
 
-	// Delete the contact
-	tx.ExecContext(ctx, "DELETE FROM contacts WHERE id = $1", contactID)
+	exec := func(step, query string, args ...any) error {
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("erasure failed (%s): %w", step, err)
+		}
+		return nil
+	}
+	collect := func(step, query string, args ...any) ([]string, error) {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("erasure failed (%s): %w", step, err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				return nil, fmt.Errorf("erasure failed (%s): %w", step, err)
+			}
+			out = append(out, v)
+		}
+		return out, rows.Err()
+	}
 
-	// Add to suppression list to prevent future mailings
-	tx.ExecContext(ctx, `
-		INSERT INTO suppressions (org_id, email, reason, source_type, created_at)
-		VALUES ($1, $2, 'gdpr_erasure', 'gdpr', NOW())
-		ON CONFLICT (org_id, email) DO UPDATE SET reason = 'gdpr_erasure'
-	`, orgID, email)
+	// Automation has no FK to contacts, so enrollments go explicitly.
+	if err = exec("automation logs", `DELETE FROM automation_logs WHERE enrollment_id IN (SELECT id FROM automation_enrollments WHERE org_id = $1 AND contact_id = ANY($2))`, orgID, pq.Array(ids)); err != nil {
+		return err
+	}
+	if err = exec("automation enrollments", `DELETE FROM automation_enrollments WHERE org_id = $1 AND contact_id = ANY($2)`, orgID, pq.Array(ids)); err != nil {
+		return err
+	}
 
-	if err := tx.Commit(); err != nil {
+	// Campaign/marketing mail: keep counters and statuses, drop content and recipients.
+	emailIDs, err := collect("emails", `
+		UPDATE emails SET contact_id = NULL, to_emails = ARRAY['[redacted]'], cc_emails = '{}', bcc_emails = '{}',
+			reply_to = NULL, subject = '[redacted]', html_content = NULL, text_content = NULL,
+			metadata = '{}', headers = '{}', updated_at = NOW()
+		WHERE org_id = $1 AND (contact_id = ANY($2)
+			OR EXISTS(SELECT 1 FROM unnest(COALESCE(to_emails,'{}') || COALESCE(cc_emails,'{}') || COALESCE(bcc_emails,'{}')) a
+				WHERE strpos(lower(a), $3) > 0))
+		RETURNING id::text`, orgID, pq.Array(ids), addr)
+	if err != nil {
+		return err
+	}
+	if err = exec("delivery events", `UPDATE delivery_events SET data = '{}' WHERE email_id = ANY($1::bigint[])`, pq.Array(emailIDs)); err != nil {
+		return err
+	}
+
+	// Webhook outbox: redact payloads naming the address or a contact uuid and
+	// stop deliveries that have not started. One already "delivering" may still go out.
+	eventIDs, err := collect("webhook events", `
+		UPDATE webhook_events SET payload = jsonb_build_object('redacted', true, 'reason', 'gdpr_erasure')
+		WHERE org_id = $1 AND (strpos(lower(payload::text), $2) > 0
+			OR EXISTS(SELECT 1 FROM unnest($3::text[]) u WHERE strpos(payload::text, u) > 0))
+		RETURNING id::text`, orgID, addr, pq.Array(uuids))
+	if err != nil {
+		return err
+	}
+	if err = exec("webhook deliveries", `UPDATE webhook_deliveries SET status = 'cancelled', updated_at = NOW() WHERE event_id = ANY($1::uuid[]) AND status IN ('pending','retry')`, pq.Array(eventIDs)); err != nil {
+		return err
+	}
+	if err = exec("webhook attempts", `UPDATE webhook_delivery_attempts SET response_body = '' WHERE delivery_id IN (SELECT id FROM webhook_deliveries WHERE event_id = ANY($1::uuid[]))`, pq.Array(eventIDs)); err != nil {
+		return err
+	}
+	if err = exec("legacy webhook calls", `
+		UPDATE webhook_calls c SET payload = '{"redacted":true}', response_body = NULL
+		FROM webhooks w WHERE w.id = c.webhook_id AND w.org_id = $1 AND strpos(lower(c.payload::text), $2) > 0`, orgID, addr); err != nil {
+		return err
+	}
+
+	// Signup history also revokes outstanding confirmation links.
+	if err = exec("signup history", `DELETE FROM signup_requests r USING signup_forms f WHERE r.form_id = f.id AND f.org_id = $1 AND lower(r.email) = $2`, orgID, addr); err != nil {
+		return err
+	}
+	if err = exec("consent audit", `DELETE FROM consent_audit WHERE org_id = $1 AND contact_id = ANY($2)`, orgID, pq.Array(ids)); err != nil {
+		return err
+	}
+	listIDs, err := collect("list memberships", `DELETE FROM list_contacts WHERE contact_id = ANY($1) RETURNING list_id::text`, pq.Array(ids))
+	if err != nil {
+		return err
+	}
+	if err = exec("contacts", `DELETE FROM contacts WHERE org_id = $1 AND id = ANY($2)`, orgID, pq.Array(ids)); err != nil {
+		return err
+	}
+	if err = exec("list counts", `UPDATE lists SET contact_count = (SELECT COUNT(*) FROM list_contacts WHERE list_id = lists.id), updated_at = NOW() WHERE org_id = $1 AND id = ANY($2::int[])`, orgID, pq.Array(listIDs)); err != nil {
+		return err
+	}
+
+	// Replace any plaintext suppression with a hash-only row that still blocks sends.
+	if err = exec("suppression cleanup", `DELETE FROM suppressions WHERE org_id = $1 AND email_sha256 = $2`, orgID, hash); err != nil {
+		return err
+	}
+	if err = exec("suppression", `
+		INSERT INTO suppressions (org_id, email, email_sha256, reason, source_type, created_at)
+		VALUES ($1, 'erased:' || $2, $2, 'gdpr_erasure', 'gdpr', NOW())
+		ON CONFLICT (org_id, email) DO NOTHING`, orgID, hash); err != nil {
+		return err
+	}
+	var userID any
+	if actor.UserID > 0 {
+		userID = actor.UserID
+	}
+	if err = exec("audit", `
+		INSERT INTO audit_logs (org_id, user_id, action, resource, description, ip_address, user_agent, new_values, status)
+		VALUES ($1, $2, 'contact_erased', 'contact', 'contact erased', $3, $4, jsonb_build_object('emailSha256', $5::text, 'contacts', $6::int), 'success')`,
+		orgID, userID, actor.IP, actor.UA, hash, len(ids)); err != nil {
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("failed to delete contact data: %w", err)
 	}
-
 	return nil
 }
 
@@ -664,12 +706,16 @@ Manage Preferences: %s
 	return htmlContent, textContent
 }
 
-// recordConsentChange records a consent change in the audit trail
-func (s *ComplianceService) recordConsentChange(ctx context.Context, contactID int64, orgID int64, action string, source string, listID *int, ipAddress string, userAgent string, details string) {
-	s.db.ExecContext(ctx, `
+// recordConsentChangeTx records a consent change in the audit trail as part of
+// the caller's transaction, so the evidence commits with the change it proves.
+func recordConsentChangeTx(ctx context.Context, tx *sql.Tx, contactID int64, orgID int64, action string, source string, listID *int, ipAddress string, userAgent string, details string) error {
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO consent_audit (contact_id, org_id, action, source, list_id, ip_address, user_agent, details, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-	`, contactID, orgID, action, source, listID, ipAddress, userAgent, details)
+	`, contactID, orgID, action, source, listID, ipAddress, userAgent, details); err != nil {
+		return fmt.Errorf("failed to record consent: %w", err)
+	}
+	return nil
 }
 
 // encodeUnsubscribeData encodes unsubscribe data to a URL-safe token
