@@ -5129,11 +5129,11 @@
           "forwardTo": {
             "type": "string"
           },
-          "identityId": {
-            "format": "int64",
-            "type": "integer"
+          "identityUuid": {
+            "type": "string"
           },
           "keepCopy": {
+            "description": "false archives (never deletes) the local copy of forwarded mail",
             "type": "boolean"
           }
         },
@@ -5431,16 +5431,22 @@
           "forwardTo": {
             "type": "string"
           },
-          "id": {
-            "format": "int64",
-            "type": "integer"
+          "identityEmail": {
+            "type": "string"
           },
-          "identityId": {
-            "format": "int64",
-            "type": "integer"
+          "identityUuid": {
+            "type": "string"
           },
           "keepCopy": {
             "type": "boolean"
+          },
+          "lastError": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
           },
           "lastForwardedAt": {
             "allOf": [
@@ -5451,17 +5457,12 @@
             ],
             "nullable": true
           },
-          "orgId": {
-            "format": "int64",
-            "type": "integer"
+          "status": {
+            "type": "string"
           },
           "updatedAt": {
             "format": "date-time",
             "type": "string"
-          },
-          "userId": {
-            "format": "int64",
-            "type": "integer"
           },
           "uuid": {
             "type": "string"
@@ -5470,6 +5471,15 @@
             "type": "boolean"
           },
           "verifiedAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "verifyExpiresAt": {
             "allOf": [
               {
                 "format": "date-time",
@@ -6717,6 +6727,28 @@
             "allOf": [
               {
                 "type": "string"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "type": "object"
+      },
+      "service.UpdateEmailForwardInput": {
+        "properties": {
+          "active": {
+            "allOf": [
+              {
+                "type": "boolean"
+              }
+            ],
+            "description": "resume only a verified, paused forward",
+            "nullable": true
+          },
+          "keepCopy": {
+            "allOf": [
+              {
+                "type": "boolean"
               }
             ],
             "nullable": true
@@ -31814,7 +31846,7 @@
     },
     "/api/v1/forwards": {
       "get": {
-        "description": "ListEmailForwards lists all email forwards for the user\nGET /api/v1/forwards",
+        "description": "ListEmailForwards lists the user's forwards.\nGET /api/v1/forwards",
         "operationId": "get_api_v1_forwards",
         "responses": {
           "200": {
@@ -32055,17 +32087,787 @@
           "forwards"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
       },
       "post": {
-        "description": "CreateEmailForward creates a new email forward\nPOST /api/v1/forwards",
+        "description": "CreateEmailForward creates a pending forward and emails the destination a\nverification link.\nPOST /api/v1/forwards",
         "operationId": "post_api_v1_forwards",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/service.CreateEmailForwardInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.EmailForward"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "CreateEmailForward",
+        "tags": [
+          "forwards"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
+      }
+    },
+    "/api/v1/forwards/verify": {
+      "post": {
+        "description": "VerifyEmailForward activates a forward from the link in its verification\nemail. Public; limited per client IP, and every failure looks the same.\nPOST /api/v1/forwards/verify",
+        "operationId": "post_api_v1_forwards_verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "token": {
+                    "type": "string"
+                  },
+                  "uuid": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "properties": {
+                        "verified": {
+                          "type": "boolean"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the current rate-limit window ends.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [],
+        "summary": "VerifyEmailForward",
+        "tags": [
+          "forwards"
+        ],
+        "x-human-session-required": false,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
+      }
+    },
+    "/api/v1/forwards/{uuid}": {
+      "delete": {
+        "description": "DeleteEmailForward deletes a forward.\nDELETE /api/v1/forwards/:uuid",
+        "operationId": "delete_api_v1_forwards_uuid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "DeleteEmailForward",
+        "tags": [
+          "forwards"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
+      },
+      "put": {
+        "description": "UpdateEmailForward pauses or resumes a forward or changes keepCopy.\nPUT /api/v1/forwards/:uuid",
+        "operationId": "put_api_v1_forwards_uuid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/service.UpdateEmailForwardInput"
               }
             }
           },
@@ -32302,23 +33104,23 @@
             "bearerAuth": []
           }
         ],
-        "summary": "CreateEmailForward",
+        "summary": "UpdateEmailForward",
         "tags": [
           "forwards"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
       }
     },
-    "/api/v1/forwards/{id}": {
-      "delete": {
-        "description": "DeleteEmailForward deletes an email forward\nDELETE /api/v1/forwards/:id",
-        "operationId": "delete_api_v1_forwards_id",
+    "/api/v1/forwards/{uuid}/resend-verification": {
+      "post": {
+        "description": "ResendForwardVerification sends a new verification link; the old one stops working.\nPOST /api/v1/forwards/:uuid/resend-verification",
+        "operationId": "post_api_v1_forwards_uuid_resend_verification",
         "parameters": [
           {
             "in": "path",
-            "name": "id",
+            "name": "uuid",
             "required": true,
             "schema": {
               "type": "string"
@@ -32334,6 +33136,14 @@
                     "code": {
                       "example": 0,
                       "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.EmailForward"
+                        }
+                      ],
+                      "nullable": true
                     },
                     "message": {
                       "type": "string"
@@ -32548,274 +33358,13 @@
             "bearerAuth": []
           }
         ],
-        "summary": "DeleteEmailForward",
+        "summary": "ResendForwardVerification",
         "tags": [
           "forwards"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
-      }
-    },
-    "/api/v1/forwards/{id}/verify": {
-      "post": {
-        "description": "VerifyEmailForward verifies an email forward. Public; limited to 60 requests\nper client IP per 15 minutes.\nPOST /api/v1/forwards/:id/verify",
-        "operationId": "post_api_v1_forwards_id_verify",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "properties": {
-                  "token": {
-                    "type": "string"
-                  }
-                },
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 0,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 400,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Invalid input"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 401,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Missing, expired or revoked authentication"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 403,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Insufficient permission"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 404,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Resource not found"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 409,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Conflict or changed idempotency payload"
-          },
-          "410": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 410,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Recovery cursor expired; resynchronize"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "code": 429,
-                  "message": "Too many attempts. Try again in 12 minutes."
-                },
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 429,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Too many attempts from this client, account or user; respect Retry-After",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds until the current rate-limit window ends.",
-                "schema": {
-                  "minimum": 1,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "example": 500,
-                      "type": "integer"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Internal failure; retain the idempotency key"
-          }
-        },
-        "security": [],
-        "summary": "VerifyEmailForward",
-        "tags": [
-          "forwards"
-        ],
-        "x-human-session-required": false,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
       }
     },
     "/api/v1/health": {
@@ -62123,7 +62672,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       },
       "post": {
         "description": "CreateSharedMailbox creates a new shared mailbox\nPOST /api/v1/shared-mailboxes",
@@ -62375,7 +62924,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       }
     },
     "/api/v1/shared-mailboxes/{id}": {
@@ -62621,7 +63170,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       },
       "get": {
         "description": "GetSharedMailbox gets a shared mailbox\nGET /api/v1/shared-mailboxes/:id",
@@ -62873,7 +63422,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       }
     },
     "/api/v1/shared-mailboxes/{id}/members": {
@@ -63130,7 +63679,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       },
       "post": {
         "description": "AddSharedMailboxMember adds a member to a shared mailbox\nPOST /api/v1/shared-mailboxes/:id/members",
@@ -63392,7 +63941,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       }
     },
     "/api/v1/shared-mailboxes/{id}/members/{userId}": {
@@ -63646,7 +64195,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       }
     },
     "/api/v1/sieve-scripts": {
@@ -63893,7 +64442,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       },
       "post": {
         "description": "CreateSieveScript creates a new Sieve script\nPOST /api/v1/sieve-scripts",
@@ -64145,7 +64694,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       }
     },
     "/api/v1/sieve-scripts/validate": {
@@ -64407,7 +64956,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       }
     },
     "/api/v1/sieve-scripts/{id}": {
@@ -64653,7 +65202,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       },
       "get": {
         "description": "GetSieveScript gets a Sieve script\nGET /api/v1/sieve-scripts/:id",
@@ -64905,7 +65454,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       },
       "put": {
         "description": "UpdateSieveScript updates a Sieve script\nPUT /api/v1/sieve-scripts/:id",
@@ -65193,7 +65742,7 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script, shared mailbox or forward does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization/forward automation."
+        "x-mailat-backend-note": "Legacy stored configuration; not wired to SES ingestion. Storing a Sieve script or shared mailbox does not enable its execution. Use /inbox/filters and external webhook workflows for supported SES organization automation."
       }
     },
     "/api/v1/signup-forms": {

@@ -32,9 +32,9 @@ These labels describe dependencies, not proof that a deployment is ready or that
 every route has been exercised against its external provider. In particular,
 `/inbox`, `/inbox/emails`, `/inbox/threads` and the older inbox mutation/search
 routes use JMAP; SES integrations should use `/inbox/received`, `/inbox/changes`
-and `/inbox/filters`. Stored Sieve, shared-mailbox, auto-reply or forwarding
-configuration does not by itself prove that the SES receive pipeline executes
-it. Use the domain sending-setup and explicit inbox receiving-setup routes for
+and `/inbox/filters`. Auto-replies and verified forwards run when mail
+arrives through SES; stored Sieve or shared-mailbox configuration does not by
+itself prove that the SES receive pipeline executes it. Use the domain sending-setup and explicit inbox receiving-setup routes for
 SES configuration (the legacy `/settings/aws/*` provisioning endpoints were
 removed).
 
@@ -132,8 +132,8 @@ The change feed instead uses `cursor`, `limit`, `nextCursor` and `hasMore`.
 
 Use `/inbox/filters` for rules applied by the SES ingestion pipeline. The test
 endpoint previews a sample without altering messages. Supported actions are
-labels, folder, star, read, archive and trash. Forward/auto-reply actions belong in
-your external workflow. The legacy `/rules` API remains synchronized with these
+labels, folder, star, read, archive and trash. Forwarding and auto-replies are
+configured with `/forwards` and `/auto-replies`, not as filter actions. The legacy `/rules` API remains synchronized with these
 filters. Unsupported legacy rules are disabled with a `migrationWarning` instead
 of silently remaining active but ineffective.
 

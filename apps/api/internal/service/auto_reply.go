@@ -14,6 +14,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/dublyo/mailat/api/internal/config"
+	"github.com/dublyo/mailat/api/internal/worker"
 )
 
 // AutoReply represents an auto-reply/vacation responder configuration
@@ -73,40 +74,23 @@ type UpdateAutoReplyInput struct {
 	Active            *bool      `json:"active,omitempty"`
 }
 
-// EmailForward represents an email forwarding configuration
-type EmailForward struct {
-	ID              int        `json:"id"`
-	UUID            string     `json:"uuid"`
-	UserID          int        `json:"userId"`
-	OrgID           int        `json:"orgId"`
-	IdentityID      int        `json:"identityId"`
-	ForwardTo       string     `json:"forwardTo"`
-	KeepCopy        bool       `json:"keepCopy"`
-	Active          bool       `json:"active"`
-	Verified        bool       `json:"verified"`
-	VerifiedAt      *time.Time `json:"verifiedAt,omitempty"`
-	ForwardCount    int        `json:"forwardCount"`
-	LastForwardedAt *time.Time `json:"lastForwardedAt,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
-}
-
-// CreateEmailForwardInput is the input for creating an email forward
-type CreateEmailForwardInput struct {
-	IdentityID int    `json:"identityId"`
-	ForwardTo  string `json:"forwardTo"`
-	KeepCopy   bool   `json:"keepCopy"`
-}
-
 // AutoReplyService handles auto-reply and forwarding operations
 type AutoReplyService struct {
-	db  *sql.DB
-	cfg *config.Config
+	db       *sql.DB
+	cfg      *config.Config
+	sender   *TransactionalService
+	dispatch func(*worker.EmailSendPayload)
 }
 
 // NewAutoReplyService creates a new auto-reply service
 func NewAutoReplyService(db *sql.DB, cfg *config.Config) *AutoReplyService {
 	return &AutoReplyService{db: db, cfg: cfg}
+}
+
+// SetSender enables forward verification mail; without it creating or
+// re-verifying a forward fails with ErrProviderNotConfigured.
+func (s *AutoReplyService) SetSender(sender *TransactionalService) {
+	s.sender, s.dispatch = sender, sender.Dispatch
 }
 
 // AutoReplyValidationError is a rejected auto-reply; its message is safe to show.
@@ -324,130 +308,6 @@ func (s *AutoReplyService) DeleteAutoReply(ctx context.Context, userID int64, au
 		return ErrAutoReplyNotFound
 	}
 	return nil
-}
-
-// CreateEmailForward creates a new email forward
-func (s *AutoReplyService) CreateEmailForward(ctx context.Context, userID, orgID int64, input *CreateEmailForwardInput) (*EmailForward, error) {
-	// Verify identity belongs to user
-	var identityUserID int64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT user_id FROM identities WHERE id = $1
-	`, input.IdentityID).Scan(&identityUserID)
-	if err != nil {
-		return nil, fmt.Errorf("identity not found")
-	}
-	if identityUserID != userID {
-		return nil, fmt.Errorf("identity does not belong to user")
-	}
-
-	// Generate verification token
-	verifyToken := generateRandomToken(32)
-
-	var forward EmailForward
-	err = s.db.QueryRowContext(ctx, `
-		INSERT INTO email_forwards (user_id, org_id, identity_id, forward_to, keep_copy, verify_token, active, verified)
-		VALUES ($1, $2, $3, $4, $5, $6, false, false)
-		RETURNING id, uuid, user_id, org_id, identity_id, forward_to, keep_copy, active, verified, verify_token, verified_at, forward_count, last_forwarded_at, created_at, updated_at
-	`, userID, orgID, input.IdentityID, input.ForwardTo, input.KeepCopy, verifyToken,
-	).Scan(&forward.ID, &forward.UUID, &forward.UserID, &forward.OrgID, &forward.IdentityID,
-		&forward.ForwardTo, &forward.KeepCopy, &forward.Active, &forward.Verified, &verifyToken,
-		&forward.VerifiedAt, &forward.ForwardCount, &forward.LastForwardedAt, &forward.CreatedAt, &forward.UpdatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create email forward: %w", err)
-	}
-
-	// TODO: Send verification email to forward_to address
-
-	return &forward, nil
-}
-
-// VerifyEmailForward verifies an email forward using the verification token
-func (s *AutoReplyService) VerifyEmailForward(ctx context.Context, forwardID int, token string) error {
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE email_forwards
-		SET verified = true, verified_at = NOW(), active = true, updated_at = NOW()
-		WHERE id = $1 AND verify_token = $2 AND verified = false
-	`, forwardID, token)
-	if err != nil {
-		return fmt.Errorf("failed to verify email forward: %w", err)
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return fmt.Errorf("invalid or expired verification token")
-	}
-
-	return nil
-}
-
-// ListEmailForwards lists all email forwards for a user
-func (s *AutoReplyService) ListEmailForwards(ctx context.Context, userID int64) ([]*EmailForward, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, uuid, user_id, org_id, identity_id, forward_to, keep_copy, active, verified, verified_at, forward_count, last_forwarded_at, created_at, updated_at
-		FROM email_forwards
-		WHERE user_id = $1
-		ORDER BY created_at DESC
-	`, userID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list email forwards: %w", err)
-	}
-	defer rows.Close()
-
-	var forwards []*EmailForward
-	for rows.Next() {
-		var f EmailForward
-		if err := rows.Scan(&f.ID, &f.UUID, &f.UserID, &f.OrgID, &f.IdentityID,
-			&f.ForwardTo, &f.KeepCopy, &f.Active, &f.Verified, &f.VerifiedAt,
-			&f.ForwardCount, &f.LastForwardedAt, &f.CreatedAt, &f.UpdatedAt); err != nil {
-			continue
-		}
-		forwards = append(forwards, &f)
-	}
-
-	return forwards, nil
-}
-
-// DeleteEmailForward deletes an email forward
-func (s *AutoReplyService) DeleteEmailForward(ctx context.Context, userID int64, forwardID int) error {
-	result, err := s.db.ExecContext(ctx, `
-		DELETE FROM email_forwards WHERE id = $1 AND user_id = $2
-	`, forwardID, userID)
-	if err != nil {
-		return fmt.Errorf("failed to delete email forward: %w", err)
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return fmt.Errorf("email forward not found")
-	}
-
-	return nil
-}
-
-// GetActiveForwardsForIdentity gets active forwards for an identity
-func (s *AutoReplyService) GetActiveForwardsForIdentity(ctx context.Context, identityID int) ([]*EmailForward, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, uuid, user_id, org_id, identity_id, forward_to, keep_copy, active, verified, verified_at, forward_count, last_forwarded_at, created_at, updated_at
-		FROM email_forwards
-		WHERE identity_id = $1 AND active = true AND verified = true
-	`, identityID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get active forwards: %w", err)
-	}
-	defer rows.Close()
-
-	var forwards []*EmailForward
-	for rows.Next() {
-		var f EmailForward
-		if err := rows.Scan(&f.ID, &f.UUID, &f.UserID, &f.OrgID, &f.IdentityID,
-			&f.ForwardTo, &f.KeepCopy, &f.Active, &f.Verified, &f.VerifiedAt,
-			&f.ForwardCount, &f.LastForwardedAt, &f.CreatedAt, &f.UpdatedAt); err != nil {
-			continue
-		}
-		forwards = append(forwards, &f)
-	}
-
-	return forwards, nil
 }
 
 // generateRandomToken generates a cryptographically secure random token

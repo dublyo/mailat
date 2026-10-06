@@ -139,8 +139,12 @@ func EnqueueArrivalJobs(ctx context.Context, tx *sql.Tx, in ArrivalInput) error 
 	if err = rows.Err(); err != nil {
 		return err
 	}
+	forwardPayload := arrivalForward{LoopTokens: LoopTokens(in.Header), DMARCReport: in.DMARCReport}
+	if len(forwardPayload.LoopTokens) > maxForwardHops {
+		forwardPayload.LoopTokens = forwardPayload.LoopTokens[:maxForwardHops]
+	}
 	for _, f := range forwards {
-		if err = insertArrivalJob(ctx, tx, in.OrgID, in.IdentityID, f.user, f.id, owner.EmailID, "forward", sesID, fmt.Sprintf("fw:%d:%s", f.id, sesID), struct{}{}); err != nil {
+		if err = insertArrivalJob(ctx, tx, in.OrgID, in.IdentityID, f.user, f.id, owner.EmailID, "forward", sesID, fmt.Sprintf("fw:%d:%s", f.id, sesID), forwardPayload); err != nil {
 			return err
 		}
 	}
@@ -178,6 +182,9 @@ type arrivalJob struct {
 type arrivalResult struct {
 	Status, Reason string
 	Payload        *worker.EmailSendPayload
+	// After runs for a skipped or failed result, after the handler's writes
+	// rolled back, in the transaction that finishes the job.
+	After func(context.Context, queryer) error
 }
 
 func arrivalDone() arrivalResult { return arrivalResult{Status: "done"} }
@@ -213,7 +220,7 @@ func NewArrivalRunner(db *sql.DB, cfg *config.Config, tx *TransactionalService) 
 	if tx != nil {
 		r.dispatch = tx.Dispatch
 	}
-	r.handlers = map[string]arrivalHandler{"auto_reply": r.runAutoReply, "push": r.runPush}
+	r.handlers = map[string]arrivalHandler{"auto_reply": r.runAutoReply, "forward": r.runForward, "push": r.runPush}
 	return r
 }
 
@@ -317,7 +324,10 @@ func (r *ArrivalRunner) processOne(ctx context.Context, job *arrivalJob) error {
 	if result.Status != "done" {
 		// Final without effects: drop any claim or counter the handler wrote.
 		_ = tx.Rollback()
-		return r.finish(ctx, r.db, job, result)
+		if result.After == nil {
+			return r.finish(ctx, r.db, job, result)
+		}
+		return r.finishAfter(ctx, job, result)
 	}
 	if err = r.finish(ctx, tx, job, result); err != nil {
 		return err
@@ -329,6 +339,22 @@ func (r *ArrivalRunner) processOne(ctx context.Context, job *arrivalJob) error {
 		r.dispatch(result.Payload)
 	}
 	return nil
+}
+
+// finishAfter records a skipped or failed job's side effect and completion together.
+func (r *ArrivalRunner) finishAfter(ctx context.Context, job *arrivalJob, result arrivalResult) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = result.After(ctx, tx); err != nil {
+		return err
+	}
+	if err = r.finish(ctx, tx, job, result); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *ArrivalRunner) finish(ctx context.Context, q queryer, job *arrivalJob, result arrivalResult) error {

@@ -233,6 +233,13 @@ func (h *EmailHandler) finishEmailTx(ctx context.Context, tx *sql.Tx, id int64, 
 	if _, err = tx.ExecContext(ctx, `INSERT INTO transactional_delivery_events(email_id,event_type,details) VALUES($1,$2,$3)`, id, status, details); err != nil {
 		return err
 	}
+	// A forward keeps running after a rejected send; the owner sees why.
+	if status == "failed" || status == "unknown" {
+		if _, err = tx.ExecContext(ctx, `UPDATE email_forwards SET last_error=$2,updated_at=NOW()
+ WHERE uuid=(SELECT system_ref FROM transactional_emails WHERE id=$1 AND system_kind='forward')`, id, "Last forward was not delivered: "+details); err != nil {
+			return err
+		}
+	}
 	// Referenced objects are no longer needed once the outcome is final.
 	if _, err = tx.ExecContext(ctx, `DELETE FROM send_attachment_refs WHERE transactional_email_id=$1`, id); err != nil {
 		return err

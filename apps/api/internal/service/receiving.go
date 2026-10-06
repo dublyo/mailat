@@ -410,6 +410,10 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 		if err = s.applyReceivedFilters(ctx, tx, ident.UserID, email); err != nil {
 			return err
 		}
+		// Forwarding with keepCopy=false archives the local copy; it is never deleted.
+		if email.Folder, err = keepCopyArchive(ctx, tx, ident.ID, emailID, email.Folder); err != nil {
+			return err
+		}
 		if err = eventoutbox.Emit(ctx, tx, eventoutbox.Event{Type: "email.received", OrgID: ident.OrgID, UserID: ident.UserID, IdentityID: ident.ID, MessageUUID: emailUUID, DedupeKey: fmt.Sprintf("received:%s:%d", n.Mail.MessageId, ident.ID), Data: map[string]any{"from": email.FromEmail, "to": email.ToEmails, "subject": email.Subject, "folder": email.Folder, "inReplyTo": parsed.Header.Get("In-Reply-To"), "hasAttachments": email.HasAttachments}}); err != nil {
 			return err
 		}

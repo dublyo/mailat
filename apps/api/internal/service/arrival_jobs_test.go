@@ -503,7 +503,7 @@ func TestArrivalRunnerRetryFailureAndRetention(t *testing.T) {
 		t.Fatal(status, result)
 	}
 
-	// Unknown kinds (forwards until they are executed) finish without effect.
+	// A forward job whose forward is gone finishes without effect.
 	insert("forward", "fw")
 	f.runOnce(t)
 	if status, _ := f.job(t, "fw", "forward"); status != "skipped" {

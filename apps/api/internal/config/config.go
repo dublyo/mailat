@@ -79,6 +79,10 @@ type Config struct {
 
 	// Arrival features: replies one auto-reply rule may send per day (0 means 200).
 	AutoReplyDailyLimit int
+	// Forwarding: largest received message forwarded (0 means 10 MiB) and
+	// messages one forward may send per day (0 means 200).
+	ForwardMaxBytes   int
+	ForwardDailyLimit int
 
 	// OAuth2 Providers (Phase 5.3)
 	GoogleClientID        string
@@ -113,6 +117,14 @@ func Load() (*Config, error) {
 	autoReplyDailyLimit, autoReplyErr := strconv.Atoi(getEnv("AUTO_REPLY_DAILY_LIMIT", "200"))
 	if autoReplyErr != nil {
 		autoReplyDailyLimit = -1
+	}
+	forwardMaxBytes, forwardMaxErr := strconv.Atoi(getEnv("FORWARD_MAX_BYTES", "10485760"))
+	if forwardMaxErr != nil {
+		forwardMaxBytes = -1
+	}
+	forwardDailyLimit, forwardDailyErr := strconv.Atoi(getEnv("FORWARD_DAILY_LIMIT", "200"))
+	if forwardDailyErr != nil {
+		forwardDailyLimit = -1
 	}
 
 	// Organization limits
@@ -178,6 +190,8 @@ func Load() (*Config, error) {
 		CampaignMaxSendRate:     max(campaignMaxSendRate, 0),
 		CampaignSendConcurrency: min(max(campaignSendConcurrency, 1), 16),
 		AutoReplyDailyLimit:     autoReplyDailyLimit,
+		ForwardMaxBytes:         forwardMaxBytes,
+		ForwardDailyLimit:       forwardDailyLimit,
 
 		// OAuth2 Providers
 		GoogleClientID:        getEnv("GOOGLE_CLIENT_ID", ""),
@@ -253,6 +267,13 @@ func (c *Config) Validate() error {
 	}
 	if c.AutoReplyDailyLimit < 0 || c.AutoReplyDailyLimit > 10000 {
 		add("AUTO_REPLY_DAILY_LIMIT must be a whole number from 1 to 10000")
+	}
+	// Forwarded attachments are capped at the 10 MiB send limit anyway.
+	if c.ForwardMaxBytes < 0 || c.ForwardMaxBytes > 10<<20 {
+		add("FORWARD_MAX_BYTES must be a whole number from 1 to 10485760")
+	}
+	if c.ForwardDailyLimit < 0 || c.ForwardDailyLimit > 10000 {
+		add("FORWARD_DAILY_LIMIT must be a whole number from 1 to 10000")
 	}
 	if c.EmailProvider != "ses" && c.EmailProvider != "smtp" {
 		add("EMAIL_PROVIDER must be ses or smtp")

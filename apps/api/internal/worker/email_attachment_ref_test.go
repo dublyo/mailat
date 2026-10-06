@@ -102,4 +102,31 @@ func TestEmailWorkerLoadsReferencedAttachmentsAndHeaders(t *testing.T) {
 			t.Fatal(fake.calls, status, refs)
 		}
 	})
+	t.Run("failed forward is noted", func(t *testing.T) {
+		var user, domain, identity int64
+		var forward string
+		if err := db.QueryRow(`INSERT INTO users(org_id,email,password_hash,updated_at) VALUES($1,'u@refs.test','x',now()) RETURNING id`, org).Scan(&user); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRow(`INSERT INTO domains(org_id,name,verification_token,updated_at) VALUES($1,'refs.test','t',now()) RETURNING id`, org).Scan(&domain); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRow(`INSERT INTO identities(user_id,domain_id,email,updated_at) VALUES($1,$2,'u@refs.test',now()) RETURNING id`, user, domain).Scan(&identity); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRow(`INSERT INTO email_forwards(user_id,org_id,identity_id,forward_to,status,active,verified,updated_at) VALUES($1,$2,$3,'d@out.test','active',true,true,now()) RETURNING uuid::text`, user, org, identity).Scan(&forward); err != nil {
+			t.Fatal(err)
+		}
+		p := queue("gone")
+		if _, err := db.Exec(`UPDATE transactional_emails SET system_kind='forward',system_ref=$2 WHERE id=$1`, p.EmailID, forward); err != nil {
+			t.Fatal(err)
+		}
+		if err := NewEmailHandlerWithProvider(db, &config.Config{}, &guardTestProvider{}).WithAttachmentStorage(storage).ProcessEmail(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+		var status, lastError string
+		if err := db.QueryRow(`SELECT status,COALESCE(last_error,'') FROM email_forwards WHERE uuid=$1`, forward).Scan(&status, &lastError); err != nil || status != "active" || lastError != "Last forward was not delivered: Attachment unavailable" {
+			t.Fatal(status, lastError, err)
+		}
+	})
 }

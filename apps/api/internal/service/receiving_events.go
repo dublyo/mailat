@@ -112,6 +112,9 @@ func (s *ReceivingService) ProcessDeliveryEvent(ctx context.Context, auth *Recei
 	if err = insertFeedbackSuppressions(ctx, tx, auth.OrgID, recipients, source, n.Mail.MessageId); err != nil {
 		return err
 	}
+	if err = suspendForwardOnFeedback(ctx, tx, auth.OrgID, source, n.Mail.MessageId, mailboxUUID); err != nil {
+		return err
+	}
 	if err = applyCampaignFeedback(ctx, tx, auth.OrgID, notificationID, n, mailboxUUID); err != nil {
 		return err
 	}
@@ -337,6 +340,19 @@ const unmatchedFeedbackGrace = time.Hour
 
 // insertFeedbackSuppressions records permanent bounces and complaints in both the
 // transactional (suppression_list) and marketing (suppressions) lists.
+// suspendForwardOnFeedback stops a forward whose destination complained or
+// hard-bounced; it needs a fresh verification before it runs again.
+func suspendForwardOnFeedback(ctx context.Context, tx *sql.Tx, orgID int64, source, providerMessageID, mailboxUUID string) error {
+	reason := map[string]string{"bounce": "The destination permanently bounced a forwarded message", "complaint": "The destination marked a forwarded message as spam"}[source]
+	if reason == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE email_forwards SET status='suspended',active=false,last_error=$4,updated_at=now()
+		WHERE org_id=$1 AND uuid IN (SELECT system_ref FROM transactional_emails WHERE org_id=$1 AND system_kind='forward'
+			AND (provider_message_id=$2 OR uuid::text=$3))`, orgID, providerMessageID, mailboxUUID, reason)
+	return err
+}
+
 func insertFeedbackSuppressions(ctx context.Context, tx *sql.Tx, orgID int64, recipients []string, source, providerMessageID string) error {
 	for _, address := range recipients {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO suppression_list(org_id,email,reason,source) VALUES($1,$2,$3::text,$3::text) ON CONFLICT(org_id,email) DO NOTHING`, orgID, address, source); err != nil {

@@ -3,11 +3,15 @@ package controller
 import (
 	"errors"
 	"log"
+	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gogf/gf/v2/net/ghttp"
 
 	"github.com/dublyo/mailat/api/internal/middleware"
+	"github.com/dublyo/mailat/api/internal/provider"
 	"github.com/dublyo/mailat/api/internal/service"
 	"github.com/dublyo/mailat/api/pkg/response"
 )
@@ -350,7 +354,33 @@ func (c *EmailRulesController) DeleteAutoReply(r *ghttp.Request) {
 // EMAIL FORWARDING
 // ====================
 
-// CreateEmailForward creates a new email forward
+// forwardError maps forward service errors without exposing internals.
+func forwardError(r *ghttp.Request, err error) {
+	var invalid *service.ForwardValidationError
+	var mailInvalid *provider.MailValidationError
+	switch {
+	case errors.As(err, &invalid):
+		response.BadRequest(r, invalid.Message)
+	case errors.Is(err, service.ErrForwardNotFound):
+		response.NotFound(r, "Email forward not found")
+	case errors.Is(err, service.ErrForwardConflict):
+		response.WithStatus(r, http.StatusConflict, http.StatusConflict, strings.TrimPrefix(err.Error(), service.ErrForwardConflict.Error()+": "), nil)
+	case errors.Is(err, service.ErrForwardResendLimited):
+		response.TooManyRequests(r, time.Minute, "Wait a minute between verification emails; at most 3 are sent per day")
+	case errors.Is(err, service.ErrMonthlySendQuota):
+		response.TooManyRequests(r, time.Hour, "The monthly send quota is used up")
+	case errors.Is(err, service.ErrProviderNotConfigured):
+		response.WithStatus(r, http.StatusServiceUnavailable, http.StatusServiceUnavailable, "Email sending is not configured on this server", nil)
+	case errors.As(err, &mailInvalid):
+		response.BadRequest(r, mailInvalid.Message)
+	default:
+		log.Printf("Email forward request failed: %v", err)
+		response.InternalError(r, "Email forward request failed")
+	}
+}
+
+// CreateEmailForward creates a pending forward and emails the destination a
+// verification link.
 // POST /api/v1/forwards
 func (c *EmailRulesController) CreateEmailForward(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -358,52 +388,45 @@ func (c *EmailRulesController) CreateEmailForward(r *ghttp.Request) {
 		response.Unauthorized(r, "Not authenticated")
 		return
 	}
-
 	var req service.CreateEmailForwardInput
 	if err := r.Parse(&req); err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, "Invalid request body")
 		return
 	}
-
 	forward, err := c.autoReplyService.CreateEmailForward(r.Context(), claims.UserID, claims.OrgID, &req)
 	if err != nil {
-		response.BadRequest(r, err.Error())
+		forwardError(r, err)
 		return
 	}
-
-	response.SuccessWithMessage(r, "Email forward created. Please check your email to verify.", forward)
+	response.Created(r, forward)
 }
 
-// VerifyEmailForward verifies an email forward. Public; limited to 60 requests
-// per client IP per 15 minutes.
-// POST /api/v1/forwards/:id/verify
+// VerifyEmailForward activates a forward from the link in its verification
+// email. Public; limited per client IP, and every failure looks the same.
+// POST /api/v1/forwards/verify
 func (c *EmailRulesController) VerifyEmailForward(r *ghttp.Request) {
-	if rateLimited(r, c.limiter, service.RulePublicComplianceIP, middleware.ClientIP(r)) {
+	if rateLimited(r, c.limiter, service.RuleForwardVerifyIP, middleware.ClientIP(r)) {
 		return
 	}
-	forwardID, err := strconv.Atoi(r.Get("id").String())
-	if err != nil {
-		response.BadRequest(r, "Invalid forward ID")
-		return
-	}
-
 	var req struct {
+		UUID  string `json:"uuid"`
 		Token string `json:"token"`
 	}
 	if err := r.Parse(&req); err != nil {
-		response.BadRequest(r, err.Error())
+		response.BadRequest(r, service.ErrForwardVerifyFailed.Error())
 		return
 	}
-
-	if err := c.autoReplyService.VerifyEmailForward(r.Context(), forwardID, req.Token); err != nil {
-		response.BadRequest(r, err.Error())
+	if err := c.autoReplyService.VerifyEmailForward(r.Context(), req.UUID, req.Token); err != nil {
+		if !errors.Is(err, service.ErrForwardVerifyFailed) {
+			log.Printf("Forward verification failed: %v", err)
+		}
+		response.BadRequest(r, service.ErrForwardVerifyFailed.Error())
 		return
 	}
-
-	response.SuccessWithMessage(r, "Email forward verified and activated", nil)
+	response.Success(r, map[string]bool{"verified": true})
 }
 
-// ListEmailForwards lists all email forwards for the user
+// ListEmailForwards lists the user's forwards.
 // GET /api/v1/forwards
 func (c *EmailRulesController) ListEmailForwards(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -411,35 +434,62 @@ func (c *EmailRulesController) ListEmailForwards(r *ghttp.Request) {
 		response.Unauthorized(r, "Not authenticated")
 		return
 	}
-
 	forwards, err := c.autoReplyService.ListEmailForwards(r.Context(), claims.UserID)
 	if err != nil {
-		response.InternalError(r, err.Error())
+		forwardError(r, err)
 		return
 	}
-
 	response.Success(r, forwards)
 }
 
-// DeleteEmailForward deletes an email forward
-// DELETE /api/v1/forwards/:id
+// UpdateEmailForward pauses or resumes a forward or changes keepCopy.
+// PUT /api/v1/forwards/:uuid
+func (c *EmailRulesController) UpdateEmailForward(r *ghttp.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+	var req service.UpdateEmailForwardInput
+	if err := r.Parse(&req); err != nil {
+		response.BadRequest(r, "Invalid request body")
+		return
+	}
+	forward, err := c.autoReplyService.UpdateEmailForward(r.Context(), claims.UserID, r.Get("uuid").String(), &req)
+	if err != nil {
+		forwardError(r, err)
+		return
+	}
+	response.Success(r, forward)
+}
+
+// ResendForwardVerification sends a new verification link; the old one stops working.
+// POST /api/v1/forwards/:uuid/resend-verification
+func (c *EmailRulesController) ResendForwardVerification(r *ghttp.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+	forward, err := c.autoReplyService.ResendForwardVerification(r.Context(), claims.UserID, claims.OrgID, r.Get("uuid").String())
+	if err != nil {
+		forwardError(r, err)
+		return
+	}
+	response.SuccessWithMessage(r, "Verification email sent", forward)
+}
+
+// DeleteEmailForward deletes a forward.
+// DELETE /api/v1/forwards/:uuid
 func (c *EmailRulesController) DeleteEmailForward(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
 		return
 	}
-
-	forwardID, err := strconv.Atoi(r.Get("id").String())
-	if err != nil {
-		response.BadRequest(r, "Invalid forward ID")
+	if err := c.autoReplyService.DeleteEmailForward(r.Context(), claims.UserID, r.Get("uuid").String()); err != nil {
+		forwardError(r, err)
 		return
 	}
-
-	if err := c.autoReplyService.DeleteEmailForward(r.Context(), claims.UserID, forwardID); err != nil {
-		response.NotFound(r, err.Error())
-		return
-	}
-
 	response.SuccessWithMessage(r, "Email forward deleted", nil)
 }

@@ -30,6 +30,7 @@ var (
 	Rule2FAManageUser      = RateRule{Name: "2fa-manage-user", Limit: 10, Window: 15 * time.Minute}
 	RuleOAuthIP            = RateRule{Name: "oauth-ip", Limit: 30, Window: 15 * time.Minute}
 	RulePublicComplianceIP = RateRule{Name: "public-compliance-ip", Limit: 60, Window: 15 * time.Minute}
+	RuleForwardVerifyIP    = RateRule{Name: "forward-verify-ip", Limit: 20, Window: 15 * time.Minute}
 )
 
 // RateLimiter counts hits in Postgres so limits hold across API replicas.
