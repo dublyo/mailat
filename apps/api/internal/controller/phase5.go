@@ -14,7 +14,6 @@ import (
 type Phase5Controller struct {
 	webauthnService       *service.WebAuthnService
 	sharedMailboxService  *service.SharedMailboxService
-	sieveService          *service.SieveService
 	webhookTriggerService *service.WebhookTriggerService
 	pushService           *service.PushNotificationService
 	brandingService       *service.BrandingService
@@ -25,7 +24,6 @@ type Phase5Controller struct {
 func NewPhase5Controller(
 	webauthnService *service.WebAuthnService,
 	sharedMailboxService *service.SharedMailboxService,
-	sieveService *service.SieveService,
 	webhookTriggerService *service.WebhookTriggerService,
 	pushService *service.PushNotificationService,
 	brandingService *service.BrandingService,
@@ -34,7 +32,6 @@ func NewPhase5Controller(
 	return &Phase5Controller{
 		webauthnService:       webauthnService,
 		sharedMailboxService:  sharedMailboxService,
-		sieveService:          sieveService,
 		webhookTriggerService: webhookTriggerService,
 		pushService:           pushService,
 		brandingService:       brandingService,
@@ -349,138 +346,6 @@ func (c *Phase5Controller) RemoveSharedMailboxMember(r *ghttp.Request) {
 	}
 
 	response.SuccessWithMessage(r, "Member removed", nil)
-}
-
-// ====================
-// SIEVE SCRIPT ENDPOINTS
-// ====================
-
-// CreateSieveScript creates a new Sieve script
-// POST /api/v1/sieve-scripts
-func (c *Phase5Controller) CreateSieveScript(r *ghttp.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		response.Unauthorized(r, "Not authenticated")
-		return
-	}
-
-	var input service.CreateSieveScriptInput
-	if err := r.Parse(&input); err != nil {
-		response.BadRequest(r, err.Error())
-		return
-	}
-
-	script, err := c.sieveService.Create(r.Context(), claims.UserID, claims.OrgID, &input)
-	if err != nil {
-		response.BadRequest(r, err.Error())
-		return
-	}
-
-	response.Created(r, script)
-}
-
-// ListSieveScripts lists all Sieve scripts
-// GET /api/v1/sieve-scripts
-func (c *Phase5Controller) ListSieveScripts(r *ghttp.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		response.Unauthorized(r, "Not authenticated")
-		return
-	}
-
-	scripts, err := c.sieveService.List(r.Context(), claims.UserID)
-	if err != nil {
-		response.InternalError(r, err.Error())
-		return
-	}
-
-	response.Success(r, scripts)
-}
-
-// GetSieveScript gets a Sieve script
-// GET /api/v1/sieve-scripts/:id
-func (c *Phase5Controller) GetSieveScript(r *ghttp.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		response.Unauthorized(r, "Not authenticated")
-		return
-	}
-
-	id := r.Get("id").Int()
-	script, err := c.sieveService.Get(r.Context(), claims.UserID, id)
-	if err != nil {
-		response.NotFound(r, err.Error())
-		return
-	}
-
-	response.Success(r, script)
-}
-
-// UpdateSieveScript updates a Sieve script
-// PUT /api/v1/sieve-scripts/:id
-func (c *Phase5Controller) UpdateSieveScript(r *ghttp.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		response.Unauthorized(r, "Not authenticated")
-		return
-	}
-
-	id := r.Get("id").Int()
-
-	var req struct {
-		Name   *string `json:"name,omitempty"`
-		Script *string `json:"script,omitempty"`
-		Active *bool   `json:"active,omitempty"`
-	}
-	if err := r.Parse(&req); err != nil {
-		response.BadRequest(r, err.Error())
-		return
-	}
-
-	script, err := c.sieveService.Update(r.Context(), claims.UserID, id, req.Name, req.Script, req.Active)
-	if err != nil {
-		response.BadRequest(r, err.Error())
-		return
-	}
-
-	response.Success(r, script)
-}
-
-// DeleteSieveScript deletes a Sieve script
-// DELETE /api/v1/sieve-scripts/:id
-func (c *Phase5Controller) DeleteSieveScript(r *ghttp.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		response.Unauthorized(r, "Not authenticated")
-		return
-	}
-
-	id := r.Get("id").Int()
-	err := c.sieveService.Delete(r.Context(), claims.UserID, id)
-	if err != nil {
-		response.BadRequest(r, err.Error())
-		return
-	}
-
-	response.SuccessWithMessage(r, "Sieve script deleted", nil)
-}
-
-// ValidateSieveScript validates a Sieve script
-// POST /api/v1/sieve-scripts/validate
-func (c *Phase5Controller) ValidateSieveScript(r *ghttp.Request) {
-	var req struct {
-		Script string `json:"script"`
-	}
-	if err := r.Parse(&req); err != nil {
-		response.BadRequest(r, err.Error())
-		return
-	}
-
-	isValid, errorMsg := c.sieveService.Validate(req.Script)
-	response.Success(r, map[string]interface{}{
-		"valid": isValid,
-		"error": errorMsg,
-	})
 }
 
 // ====================

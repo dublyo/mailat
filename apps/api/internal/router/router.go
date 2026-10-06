@@ -94,7 +94,6 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 	// Phase 5 additional services
 	webauthnService := service.NewWebAuthnService(database.DB, cfg)
 	sharedMailboxService := service.NewSharedMailboxService(database.DB, cfg)
-	sieveService := service.NewSieveService(database.DB, cfg)
 	webhookTriggerService := service.NewWebhookTriggerService(database.DB, cfg)
 	pushService := service.NewPushNotificationService(database.DB, cfg)
 	brandingService := service.NewBrandingService(database.DB, cfg)
@@ -135,7 +134,7 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 	emailRulesCtrl := controller.NewEmailRulesController(emailRulesService, autoReplyService, rateLimiter)
 	securityCtrl := controller.NewSecurityController(twoFactorService, auditLogService, sessionService, rateLimiter)
 	oauthCtrl := controller.NewOAuthController(oauthService, auditLogService, cfg, rateLimiter)
-	phase5Ctrl := controller.NewPhase5Controller(webauthnService, sharedMailboxService, sieveService, webhookTriggerService, pushService, brandingService, auditLogService)
+	phase5Ctrl := controller.NewPhase5Controller(webauthnService, sharedMailboxService, webhookTriggerService, pushService, brandingService, auditLogService)
 	settingsCtrl := controller.NewSettingsController(settingsService)
 
 	// Email Receiving controllers
@@ -487,14 +486,6 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.POST("/shared-mailboxes/:id/members", phase5Ctrl.AddSharedMailboxMember)
 			protectedGroup.GET("/shared-mailboxes/:id/members", phase5Ctrl.ListSharedMailboxMembers)
 			protectedGroup.DELETE("/shared-mailboxes/:id/members/:userId", phase5Ctrl.RemoveSharedMailboxMember)
-
-			// Phase 5.1: Sieve Scripts
-			protectedGroup.POST("/sieve-scripts", phase5Ctrl.CreateSieveScript)
-			protectedGroup.GET("/sieve-scripts", phase5Ctrl.ListSieveScripts)
-			protectedGroup.GET("/sieve-scripts/:id", phase5Ctrl.GetSieveScript)
-			protectedGroup.PUT("/sieve-scripts/:id", phase5Ctrl.UpdateSieveScript)
-			protectedGroup.DELETE("/sieve-scripts/:id", phase5Ctrl.DeleteSieveScript)
-			protectedGroup.POST("/sieve-scripts/validate", phase5Ctrl.ValidateSieveScript)
 
 			// Phase 5.3: Webhook Triggers (Zapier/n8n integration)
 			protectedGroup.GET("/webhook-triggers/types", phase5Ctrl.GetWebhookTriggerTypes)

@@ -109,7 +109,7 @@ func TestPublishedResponseAndQueryCorrections(t *testing.T) {
 	if queries["pageSize"].(map[string]interface{})["type"] != "integer" || queries["pageSize"].(map[string]interface{})["default"] != float64(50) {
 		t.Fatal("delivery page size lost its actual type/default")
 	}
-	for _, path := range []string{"/api/v1/webhook-triggers", "/api/v1/shared-mailboxes", "/api/v1/shared-mailboxes/{id}/members", "/api/v1/sieve-scripts", "/api/v1/forwards", "/api/v1/push/subscribe"} {
+	for _, path := range []string{"/api/v1/webhook-triggers", "/api/v1/shared-mailboxes", "/api/v1/shared-mailboxes/{id}/members", "/api/v1/forwards", "/api/v1/push/subscribe"} {
 		r := op(path, "post")["responses"].(map[string]interface{})
 		if r["201"] == nil || r["200"] != nil {
 			t.Errorf("Created handler must advertise 201: %s", path)
@@ -142,8 +142,10 @@ func TestPublishedResponseAndQueryCorrections(t *testing.T) {
 	if op("/api/v1/inbox/received", "get")["x-mailat-backend"] != "ses" {
 		t.Fatal("SES mailbox misclassified")
 	}
-	if op("/api/v1/sieve-scripts", "get")["x-mailat-backend"] != "mailat" {
-		t.Fatal("stored Sieve configuration must not promise live JMAP execution")
+	for path := range paths {
+		if strings.Contains(path, "sieve") {
+			t.Fatalf("Sieve is removed but %s is documented", path)
+		}
 	}
 	if op("/api/v1/forwards", "post")["x-mailat-backend"] != "ses" || len(op("/api/v1/forwards/verify", "post")["security"].([]interface{})) != 0 {
 		t.Fatal("forwarding must be documented as SES-executed with a public verify route")
