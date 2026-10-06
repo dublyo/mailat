@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import AppLayout from '@/components/layout/AppLayout.vue'
-import { api } from '@/lib/api'
+import { automationApi, type Automation, type AutomationStatus, type AutomationValidationError } from '@/lib/api'
+import { triggerLabel } from '@/lib/automationGraph'
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -10,34 +11,28 @@ import {
   Pause,
   Trash2,
   Edit3,
-  Users,
+  Archive,
   CheckCircle2,
   AlertCircle,
-  Search,
-  Filter,
-  MoreHorizontal
+  Search
 } from 'lucide-vue-next'
-
-interface Automation {
-  id: number
-  uuid: string
-  name: string
-  description: string
-  status: 'active' | 'paused' | 'draft'
-  triggerType: string
-  enrolledCount: number
-  completedCount: number
-  inProgressCount: number
-  createdAt: string
-  updatedAt: string
-}
 
 const router = useRouter()
 const automations = ref<Automation[]>([])
 const loading = ref(true)
 const error = ref('')
+const errorDetails = ref<AutomationValidationError[]>([])
+const errorAutomation = ref<string | null>(null)
 const searchQuery = ref('')
-const filterStatus = ref<string>('all')
+const filterStatus = ref<'all' | AutomationStatus>('all')
+const filterTabs: { value: 'all' | AutomationStatus; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'active', label: 'Active' },
+  { value: 'paused', label: 'Paused' },
+  { value: 'draft', label: 'Draft' },
+  { value: 'archived', label: 'Archived' },
+]
+const confirmState = ref<{ title: string; message: string; confirmLabel: string; run: () => unknown } | null>(null)
 
 onMounted(async () => {
   await loadAutomations()
@@ -46,14 +41,31 @@ onMounted(async () => {
 const loadAutomations = async () => {
   loading.value = true
   try {
-    error.value = ''
-    const data = await api.get<{ automations: Automation[] }>('/api/v1/automations?page=1&pageSize=50')
+    clearError()
+    const data = await automationApi.list({ page: 1, pageSize: 100 })
     automations.value = data.automations || []
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not load automations'
   } finally {
     loading.value = false
   }
+}
+
+function clearError() {
+  error.value = ''
+  errorDetails.value = []
+  errorAutomation.value = null
+}
+
+function showError(e: unknown, fallback: string, automation?: Automation) {
+  const details = (e as { data?: { errors?: AutomationValidationError[] } })?.data?.errors ?? []
+  error.value = e instanceof Error && e.message ? e.message : fallback
+  errorDetails.value = details
+  errorAutomation.value = details.length && automation ? automation.uuid : null
+}
+
+const replaceRow = (updated: Automation) => {
+  automations.value = automations.value.map(a => a.uuid === updated.uuid ? { ...a, ...updated } : a)
 }
 
 const createAutomation = () => {
@@ -64,27 +76,54 @@ const editAutomation = (automation: Automation) => {
   router.push(`/automations/${automation.uuid}`)
 }
 
-const toggleStatus = async (automation: Automation, event: Event) => {
-  event.stopPropagation()
+// Resume publishes the saved draft, like the editor's Resume button.
+const toggleStatus = async (automation: Automation) => {
+  clearError()
   try {
-    const action = automation.status === 'active' ? 'pause' : 'activate'
-    await api.post(`/api/v1/automations/${automation.uuid}/${action}`)
-    automation.status = automation.status === 'active' ? 'paused' : 'active'
+    if (automation.status === 'active') replaceRow(await automationApi.pause(automation.uuid))
+    else replaceRow((await automationApi.activate(automation.uuid)).automation)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Could not change automation status'
+    showError(e, 'Could not change automation status', automation)
   }
 }
 
-const deleteAutomation = async (automation: Automation, event: Event) => {
-  event.stopPropagation()
-  if (!confirm(`Are you sure you want to delete "${automation.name}"?`)) return
-
-  try {
-    await api.delete(`/api/v1/automations/${automation.uuid}`)
-    automations.value = automations.value.filter(a => a.uuid !== automation.uuid)
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Could not delete automation'
+const askArchive = (automation: Automation) => {
+  confirmState.value = {
+    title: `Archive "${automation.name}"?`,
+    message: 'Every contact in progress is cancelled, and the automation becomes read-only. This cannot be undone.',
+    confirmLabel: 'Archive',
+    run: async () => {
+      clearError()
+      try {
+        replaceRow((await automationApi.archive(automation.uuid)).automation)
+      } catch (e) {
+        showError(e, 'Could not archive automation')
+      }
+    }
   }
+}
+
+const askDelete = (automation: Automation) => {
+  confirmState.value = {
+    title: `Delete "${automation.name}"?`,
+    message: 'The automation and its history are removed permanently.',
+    confirmLabel: 'Delete',
+    run: async () => {
+      clearError()
+      try {
+        await automationApi.remove(automation.uuid)
+        automations.value = automations.value.filter(a => a.uuid !== automation.uuid)
+      } catch (e) {
+        showError(e, 'Could not delete automation')
+      }
+    }
+  }
+}
+
+const confirmRun = async () => {
+  const state = confirmState.value
+  confirmState.value = null
+  await state?.run()
 }
 
 const filteredAutomations = computed(() => {
@@ -105,11 +144,17 @@ const filteredAutomations = computed(() => {
   return result
 })
 
+const counts = (a: Automation) => ({
+  enrolled: a.stats?.enrolled ?? a.enrolledCount ?? 0,
+  inProgress: a.stats?.active ?? a.inProgressCount ?? 0,
+  completed: a.stats?.completed ?? a.completedCount ?? 0,
+})
+
 const getStatusColor = (status: string) => {
   switch (status) {
     case 'active': return 'bg-green-100 text-green-700'
     case 'paused': return 'bg-yellow-100 text-yellow-700'
-    case 'draft': return 'bg-gray-100 text-gray-600'
+    case 'archived': return 'bg-gray-200 text-gray-700'
     default: return 'bg-gray-100 text-gray-600'
   }
 }
@@ -119,18 +164,9 @@ const getStatusIcon = (status: string) => {
     case 'active': return CheckCircle2
     case 'paused': return Pause
     case 'draft': return Edit3
+    case 'archived': return Archive
     default: return AlertCircle
   }
-}
-
-const getTriggerLabel = (triggerType: string) => {
-  const labels: Record<string, string> = {
-    'contact.subscribed': 'Contact subscribed to list',
-    'contact.created': 'Contact created',
-    'manual': 'Manual enrollment',
-    'contact_added': 'Contact created'
-  }
-  return labels[triggerType] || triggerType
 }
 
 const formatDate = (dateStr: string) => {
@@ -145,7 +181,10 @@ const formatDate = (dateStr: string) => {
 <template>
   <AppLayout>
   <div class="automations-page">
-    <p v-if="error" role="alert" class="m-4 rounded-lg bg-red-50 text-red-700 p-3">{{ error }}</p>
+    <div v-if="error" role="alert" class="m-4 rounded-lg bg-red-50 text-red-700 p-3 text-sm">
+      <p>{{ error }}<template v-if="errorDetails.length">: {{ errorDetails.map(e => e.message).join('; ') }}</template></p>
+      <button v-if="errorAutomation" class="mt-1 underline" @click="router.push(`/automations/${errorAutomation}`)">Open in editor</button>
+    </div>
     <!-- Header -->
     <header class="page-header">
       <div class="header-content">
@@ -171,28 +210,12 @@ const formatDate = (dateStr: string) => {
         </div>
         <div class="filter-tabs">
           <button
-            :class="['filter-tab', { active: filterStatus === 'all' }]"
-            @click="filterStatus = 'all'"
+            v-for="tab in filterTabs"
+            :key="tab.value"
+            :class="['filter-tab', { active: filterStatus === tab.value }]"
+            @click="filterStatus = tab.value"
           >
-            All
-          </button>
-          <button
-            :class="['filter-tab', { active: filterStatus === 'active' }]"
-            @click="filterStatus = 'active'"
-          >
-            Active
-          </button>
-          <button
-            :class="['filter-tab', { active: filterStatus === 'paused' }]"
-            @click="filterStatus = 'paused'"
-          >
-            Paused
-          </button>
-          <button
-            :class="['filter-tab', { active: filterStatus === 'draft' }]"
-            @click="filterStatus = 'draft'"
-          >
-            Draft
+            {{ tab.label }}
           </button>
         </div>
       </div>
@@ -252,20 +275,22 @@ const formatDate = (dateStr: string) => {
 
           <div class="card-trigger">
             <Zap class="w-3.5 h-3.5" />
-            <span>{{ getTriggerLabel(automation.triggerType) }}</span>
+            <span>{{ triggerLabel(automation.triggerType) }}</span>
+            <span v-if="automation.publishedVersion" class="text-gray-400">· v{{ automation.publishedVersion }}</span>
+            <span v-if="automation.hasUnpublishedChanges && automation.status !== 'archived'" class="text-indigo-600">· unpublished changes</span>
           </div>
 
           <div class="card-stats">
             <div class="stat">
-              <span class="stat-value">{{ automation.enrolledCount?.toLocaleString() || 0 }}</span>
+              <span class="stat-value">{{ counts(automation).enrolled.toLocaleString() }}</span>
               <span class="stat-label">Enrolled</span>
             </div>
             <div class="stat">
-              <span class="stat-value">{{ automation.inProgressCount?.toLocaleString() || 0 }}</span>
+              <span class="stat-value">{{ counts(automation).inProgress.toLocaleString() }}</span>
               <span class="stat-label">In Progress</span>
             </div>
             <div class="stat">
-              <span class="stat-value text-green-600">{{ automation.completedCount?.toLocaleString() || 0 }}</span>
+              <span class="stat-value text-green-600">{{ counts(automation).completed.toLocaleString() }}</span>
               <span class="stat-label">Completed</span>
             </div>
           </div>
@@ -274,18 +299,30 @@ const formatDate = (dateStr: string) => {
             <span class="updated-at">Updated {{ formatDate(automation.updatedAt) }}</span>
             <div class="card-actions" @click.stop>
               <button
-                v-if="automation.status !== 'draft'"
-                @click="toggleStatus(automation, $event)"
+                v-if="automation.status === 'active' || automation.status === 'paused'"
+                @click="toggleStatus(automation)"
                 class="action-btn"
                 :title="automation.status === 'active' ? 'Pause' : 'Resume'"
+                :aria-label="`${automation.status === 'active' ? 'Pause' : 'Resume'} ${automation.name}`"
               >
                 <Pause v-if="automation.status === 'active'" class="w-4 h-4" />
                 <Play v-else class="w-4 h-4" />
               </button>
               <button
-                @click="deleteAutomation(automation, $event)"
+                v-if="automation.status !== 'archived'"
+                @click="askArchive(automation)"
+                class="action-btn"
+                title="Archive"
+                :aria-label="`Archive ${automation.name}`"
+              >
+                <Archive class="w-4 h-4" />
+              </button>
+              <button
+                v-if="automation.status === 'draft' || automation.status === 'archived'"
+                @click="askDelete(automation)"
                 class="action-btn delete"
                 title="Delete"
+                :aria-label="`Delete ${automation.name}`"
               >
                 <Trash2 class="w-4 h-4" />
               </button>
@@ -294,6 +331,17 @@ const formatDate = (dateStr: string) => {
         </div>
       </div>
     </main>
+
+    <div v-if="confirmState" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" @click.self="confirmState = null">
+      <div class="w-full max-w-md rounded-xl bg-white p-5 shadow-xl" role="dialog" aria-modal="true" :aria-label="confirmState.title">
+        <h3 class="text-base font-semibold text-gray-900">{{ confirmState.title }}</h3>
+        <p class="mt-2 text-sm text-gray-600">{{ confirmState.message }}</p>
+        <div class="mt-4 flex justify-end gap-2">
+          <button class="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200" @click="confirmState = null">Cancel</button>
+          <button class="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700" @click="confirmRun">{{ confirmState.confirmLabel }}</button>
+        </div>
+      </div>
+    </div>
   </div>
   </AppLayout>
 </template>
@@ -526,6 +574,11 @@ const formatDate = (dateStr: string) => {
 .status-icon.status-paused {
   background: #fef3c7;
   color: #d97706;
+}
+
+.status-icon.status-archived {
+  background: #e5e7eb;
+  color: #4b5563;
 }
 
 .status-icon.status-draft {

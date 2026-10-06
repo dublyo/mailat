@@ -161,7 +161,7 @@ export function normalizeGraph(w: Graph | null | undefined, triggerType = '', cf
     }
   })
   const edges = (source.edges ?? []).map(e => {
-    const out: GraphEdge = { id: e.id ?? '', source: e.source ?? '', target: e.target ?? '' }
+    const out: GraphEdge & { id: string } = { id: e.id ?? '', source: e.source ?? '', target: e.target ?? '' }
     if (e.sourceHandle) out.sourceHandle = e.sourceHandle
     if (e.targetHandle) out.targetHandle = e.targetHandle
     if (e.type) out.type = e.type
