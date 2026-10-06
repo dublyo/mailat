@@ -472,8 +472,11 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   // Called on logout: forget every browser-local copy of account data.
-  function clearLocalSettings() {
+  // keepLegacyRules leaves the pre-server filters and blocked senders in place
+  // after an expired session, so they can still be imported after signing in.
+  function clearLocalSettings(options: { keepLegacyRules?: boolean } = {}) {
     for (const key of LOCAL_SETTINGS_KEYS) {
+      if (options.keepLegacyRules && key !== 'userSettings') continue
       try { localStorage.removeItem(key) } catch { /* storage unavailable */ }
     }
     settingsRequest++

@@ -81,6 +81,14 @@ test('clearLocalSettings removes the three browser-local keys and resets state',
 const legacyBlocked = JSON.stringify([{ id: '1', email: 'spam@example.com', blockedAt: '2025-01-01' }, { id: '2', email: '@junk.example' }])
 const legacyFilters = JSON.stringify([{ id: 'f1', name: 'News', conditions: 'From: *@news.*', actions: 'Label: News', enabled: true }])
 
+test('clearLocalSettings with keepLegacyRules keeps unimported filters and blocked senders', () => {
+  const { store, saved } = fixture({ blockedSenders: legacyBlocked, userFilters: legacyFilters })
+  store.clearLocalSettings({ keepLegacyRules: true })
+  assert.equal(saved.has('userSettings'), false)
+  assert.equal(saved.get('blockedSenders'), legacyBlocked)
+  assert.equal(saved.get('userFilters'), legacyFilters)
+})
+
 test('local rules are detected but never applied or uploaded silently', () => {
   const { store, calls } = fixture({ blockedSenders: legacyBlocked, userFilters: legacyFilters })
   assert.equal(store.localRules.blockedSenders.length, 2)

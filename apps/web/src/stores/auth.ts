@@ -60,14 +60,16 @@ export const useAuthStore = defineStore('auth', () => {
     api.setToken(result.token)
   }
 
-  function logout() {
+  // An involuntary logout (expired or revoked session) keeps the legacy
+  // browser-only mail rules for import; a user-initiated one clears them.
+  function logout(options: { keepLegacyRules?: boolean } = {}) {
     const currentToken = api.getToken()
     if (currentToken) void authApi.logout(currentToken).catch(() => { /* Local logout remains possible offline. */ })
     challengeToken.value = null
     useReceivedInboxStore().reset()
     useInboxStore().closeCompose()
     useDomainsStore().reset()
-    useSettingsStore().clearLocalSettings()
+    useSettingsStore().clearLocalSettings({ keepLegacyRules: !!options.keepLegacyRules })
     authError.value = null
     user.value = null
     token.value = null
@@ -92,7 +94,7 @@ export const useAuthStore = defineStore('auth', () => {
       // sign the user out of every tab.
       const status = (e as { status?: number }).status
       if (status === 401 || status === 403) {
-        logout()
+        logout({ keepLegacyRules: true })
       } else {
         authError.value = 'Mailat could not reach the server to restore your session.'
       }

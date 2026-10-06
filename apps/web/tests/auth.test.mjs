@@ -25,7 +25,7 @@ const storesBuild = await build({
     builder.onResolve({ filter: /^\.\/(receivedInbox|inbox|settings)$/ }, () => ({ path: 'other-stores', namespace: 'fixture' }))
     builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: args.path === 'api'
       ? 'export const { api, authApi, domainApi, identityApi, receivedInboxApi } = globalThis.__authFixture'
-      : 'export const useReceivedInboxStore = () => ({ reset() {} }); export const useInboxStore = () => ({ closeCompose() {} }); export const useSettingsStore = () => ({ clearLocalSettings() { globalThis.__settingsCleared = (globalThis.__settingsCleared || 0) + 1 } })', loader: 'js' }))
+      : 'export const useReceivedInboxStore = () => ({ reset() {} }); export const useInboxStore = () => ({ closeCompose() {} }); export const useSettingsStore = () => ({ clearLocalSettings(options) { globalThis.__settingsCleared = (globalThis.__settingsCleared || 0) + 1; globalThis.__settingsClearedWith = options } })', loader: 'js' }))
   } }],
 })
 function apiFixture() {
@@ -223,4 +223,16 @@ test('session check signs out on a rejected credential and clears local settings
     assert.equal(auth.authError, null)
     assert.equal(globalThis.__settingsCleared, 1)
   }
+})
+
+test('an expired session keeps legacy browser-only mail rules; a user logout clears them', async () => {
+  apiFixture()
+  const { endpoints, auth } = storesFixture()
+  localStorage.setItem('token', 'expired-token')
+  endpoints.authApi.me = async () => { throw Object.assign(new Error('expired'), { status: 401 }) }
+  await auth.checkAuth()
+  assert.equal(auth.isAuthenticated, false)
+  assert.deepEqual(globalThis.__settingsClearedWith, { keepLegacyRules: true })
+  auth.logout()
+  assert.deepEqual(globalThis.__settingsClearedWith, { keepLegacyRules: false })
 })
