@@ -615,6 +615,16 @@ func (s *ComplianceService) DeleteContactData(ctx context.Context, orgID int64, 
 	addr := strings.ToLower(strings.TrimSpace(email))
 	hash := emailSHA256(addr)
 
+	// Lock in the executor's order (enrollment or trigger event, then contact)
+	// so erasure waits for an in-flight step or enroller batch instead of
+	// deadlocking with its contact FK checks.
+	for _, table := range []string{"automation_enrollments", "automation_trigger_events"} {
+		if _, err = tx.ExecContext(ctx, `SELECT 1 FROM `+table+` WHERE org_id = $1
+			AND contact_id IN (SELECT id FROM contacts WHERE org_id = $1 AND lower(email) = $2) FOR UPDATE`, orgID, addr); err != nil {
+			return fmt.Errorf("failed to lock %s: %w", table, err)
+		}
+	}
+
 	var ids []int64
 	var uuids []string
 	rows, err := tx.QueryContext(ctx, `SELECT id, uuid::text FROM contacts WHERE org_id = $1 AND lower(email) = $2 FOR UPDATE`, orgID, addr)

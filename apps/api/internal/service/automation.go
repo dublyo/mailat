@@ -369,7 +369,9 @@ func loadAutomationDraft(ctx context.Context, q eventoutbox.DBTX, orgID int64, a
 		FROM automations a LEFT JOIN automation_versions v ON v.id = a.published_version_id
 		WHERE a.uuid = $1 AND a.org_id = $2`
 	if lock {
-		query += ` FOR UPDATE OF a`
+		// NO KEY UPDATE: step transactions take KEY SHARE on the automation
+		// for their FK checks, so FOR UPDATE here would deadlock with them.
+		query += ` FOR NO KEY UPDATE OF a`
 	}
 	var d automationDraftRow
 	var workflow []byte
@@ -522,7 +524,8 @@ func checkAutomationRefs(ctx context.Context, q eventoutbox.DBTX, orgID, userID 
 	add := func(nodeID, field, msg string) { errs = append(errs, errAt(nodeID, field, "%s", msg)) }
 	staticList := func(nodeID, listUUID string) error {
 		var listType string
-		err := q.QueryRowContext(ctx, `SELECT type FROM lists WHERE uuid = $1 AND org_id = $2`, listUUID, orgID).Scan(&listType)
+		// KEY SHARE holds the row against a concurrent DeleteList until commit.
+		err := q.QueryRowContext(ctx, `SELECT type FROM lists WHERE uuid = $1 AND org_id = $2 FOR KEY SHARE`, listUUID, orgID).Scan(&listType)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			add(nodeID, "listUuid", "Choose a list in this workspace")
@@ -547,7 +550,7 @@ func checkAutomationRefs(ctx context.Context, q eventoutbox.DBTX, orgID, userID 
 			}
 		case KindEmail:
 			var active bool
-			err = q.QueryRowContext(ctx, `SELECT is_active FROM email_templates WHERE uuid = $1 AND org_id = $2`, n.Email.TemplateUUID, orgID).Scan(&active)
+			err = q.QueryRowContext(ctx, `SELECT is_active FROM email_templates WHERE uuid = $1 AND org_id = $2 FOR KEY SHARE`, n.Email.TemplateUUID, orgID).Scan(&active)
 			switch {
 			case errors.Is(err, sql.ErrNoRows):
 				add(id, "templateUuid", "Choose a template in this workspace")
@@ -636,7 +639,7 @@ func (s *AutomationService) ArchiveAutomation(ctx context.Context, orgID int64, 
 	defer tx.Rollback()
 	var id int64
 	var status string
-	err = tx.QueryRowContext(ctx, `SELECT id, status FROM automations WHERE uuid = $1 AND org_id = $2 FOR UPDATE`, automationUUID, orgID).Scan(&id, &status)
+	err = tx.QueryRowContext(ctx, `SELECT id, status FROM automations WHERE uuid = $1 AND org_id = $2 FOR NO KEY UPDATE`, automationUUID, orgID).Scan(&id, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, 0, ErrAutomationNotFound
 	}

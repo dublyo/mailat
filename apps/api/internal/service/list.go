@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -242,23 +243,30 @@ func (s *ListService) DeleteList(ctx context.Context, orgID int64, listUUID stri
 	if campaignCount > 0 {
 		return fmt.Errorf("cannot delete list with active campaigns")
 	}
-	if err := automationRefInUse(ctx, s.db, orgID, listUUID); err != nil {
-		return err
-	}
-
-	result, err := s.db.ExecContext(ctx,
-		"DELETE FROM lists WHERE org_id = $1 AND uuid = $2",
-		orgID, listUUID,
-	)
+	// Lock the list first so an automation activation (which reads it FOR KEY
+	// SHARE) cannot publish a reference between the guard and the delete.
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to delete list: %w", err)
 	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
+	defer tx.Rollback()
+	var listID int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM lists WHERE org_id = $1 AND uuid = $2 FOR UPDATE`, orgID, listUUID).Scan(&listID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("list not found")
 	}
-
+	if err != nil {
+		return fmt.Errorf("failed to delete list: %w", err)
+	}
+	if err := automationRefInUse(ctx, tx, orgID, listUUID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM lists WHERE id = $1", listID); err != nil {
+		return fmt.Errorf("failed to delete list: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to delete list: %w", err)
+	}
 	return nil
 }
 

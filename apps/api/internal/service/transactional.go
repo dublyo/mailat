@@ -678,21 +678,30 @@ func (s *TransactionalService) UpdateTemplate(ctx context.Context, orgID int64, 
 
 // DeleteTemplate deletes a template
 func (s *TransactionalService) DeleteTemplate(ctx context.Context, orgID int64, templateUUID string) error {
-	if err := automationRefInUse(ctx, s.db, orgID, templateUUID); err != nil {
-		return err
-	}
-	result, err := s.db.ExecContext(ctx, `
-		DELETE FROM email_templates WHERE uuid = $1 AND org_id = $2
-	`, templateUUID, orgID)
+	// Lock the template first so an automation activation (which reads it FOR
+	// KEY SHARE) cannot publish a reference between the guard and the delete.
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to delete template: %w", err)
 	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
+	defer tx.Rollback()
+	var templateID int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM email_templates WHERE uuid = $1 AND org_id = $2 FOR UPDATE`, templateUUID, orgID).Scan(&templateID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("template not found")
 	}
-
+	if err != nil {
+		return fmt.Errorf("failed to delete template: %w", err)
+	}
+	if err := automationRefInUse(ctx, tx, orgID, templateUUID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM email_templates WHERE id = $1`, templateID); err != nil {
+		return fmt.Errorf("failed to delete template: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to delete template: %w", err)
+	}
 	return nil
 }
 
