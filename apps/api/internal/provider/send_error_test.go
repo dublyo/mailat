@@ -68,3 +68,20 @@ func TestIsQuotaExhausted(t *testing.T) {
 		}
 	}
 }
+
+func TestSESErrorCode(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&types.SendingPausedException{}, "SendingPausedException"},
+		{fmt.Errorf("operation SendEmail: %w", &types.MessageRejected{}), "MessageRejected"},
+		{&smithy.GenericAPIError{Code: "Throttling"}, "Throttling"},
+		{context.DeadlineExceeded, ""},
+		{nil, ""},
+	} {
+		if got := SESErrorCode(tc.err); got != tc.want {
+			t.Errorf("%v: got %q want %q", tc.err, got, tc.want)
+		}
+	}
+}

@@ -100,6 +100,15 @@ func IsQuotaExhausted(err error) bool {
 	return strings.Contains(text, "quota") || strings.Contains(text, "daily")
 }
 
+// SESErrorCode returns the AWS API error code wrapped in err, or "".
+func SESErrorCode(err error) string {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode()
+	}
+	return ""
+}
+
 func singleAddress(value string) (string, error) {
 	if strings.ContainsAny(value, "\r\n") {
 		return "", &MailValidationError{"email addresses must not contain line breaks"}
