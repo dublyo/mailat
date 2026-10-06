@@ -683,7 +683,7 @@ func (r *campaignRunner) sendOne(ctx context.Context, c *senderCampaign, snap ca
 	}
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), campaignFinishTimeout)
 	defer cancel()
-	if ferr := r.finishRecipient(finishCtx, c, rcpt.ID, outcome, messageID, err); ferr != nil {
+	if ferr := r.finishRecipient(finishCtx, c, rcpt.ID, rcpt.Email, outcome, messageID, err); ferr != nil {
 		// The row stays sending and recovery turns it into unknown: never resent.
 		log.Printf("Campaign %d: cannot record send outcome: %v", c.ID, ferr)
 	}
@@ -771,7 +771,7 @@ func (r *campaignRunner) skipUnsendable(ctx context.Context, c *senderCampaign, 
 // finishRecipient records a send outcome and the campaign counters in one
 // transaction. A row SES never accepted goes back to pending uncounted. SNS
 // may already have promoted the row (sending/unknown -> sent); that is kept.
-func (r *campaignRunner) finishRecipient(ctx context.Context, c *senderCampaign, id int64, outcome, messageID string, sendErr error) error {
+func (r *campaignRunner) finishRecipient(ctx context.Context, c *senderCampaign, id int64, email, outcome, messageID string, sendErr error) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -784,7 +784,7 @@ func (r *campaignRunner) finishRecipient(ctx context.Context, c *senderCampaign,
 	}
 	errText := ""
 	if sendErr != nil {
-		errText = truncateRunes(sendErr.Error(), 500)
+		errText = sendErrorText(sendErr, email)
 	}
 	var sent, failed, unknown int
 	switch {

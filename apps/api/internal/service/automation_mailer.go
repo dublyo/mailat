@@ -158,8 +158,9 @@ func (r *automationMailRunner) runOnce(ctx context.Context) (int, error) {
 	}
 	rows, err := r.db.QueryContext(ctx, `UPDATE automation_messages SET status='claimed', lease_owner=$1::uuid,
 			lease_expires_at=now()+interval '`+automationMailLease+`', updated_at=now()
-		WHERE id IN (SELECT id FROM automation_messages WHERE status='pending' AND next_attempt_at<=now()
-			ORDER BY next_attempt_at, id LIMIT $2 FOR UPDATE SKIP LOCKED)
+		WHERE id IN (SELECT m.id FROM automation_messages m WHERE m.status='pending' AND m.next_attempt_at<=now()
+			AND EXISTS (SELECT 1 FROM automations a WHERE a.id=m.automation_id AND a.status='active')
+			ORDER BY m.next_attempt_at, m.id LIMIT $2 FOR UPDATE OF m SKIP LOCKED)
 		RETURNING id`, r.run, automationMailBatch)
 	if err != nil {
 		return 0, fmt.Errorf("claim automation emails: %w", err)
@@ -263,13 +264,13 @@ func (r *automationMailRunner) start(ctx context.Context, id int64) (*automation
 	var userID, identityID, templateID sql.NullInt64
 	var subject sql.NullString
 	var reserved bool
-	var automationStatus string
+	var automationStatus, enrollmentStatus string
 	err = tx.QueryRowContext(ctx, `SELECT m.org_id, m.automation_id, m.contact_id, m.email, m.message_uuid::text, m.sender_user_id, m.identity_id,
-			m.template_id, m.subject_override, m.track_opens, m.track_clicks, m.quota_reserved, a.status
-		FROM automation_messages m JOIN automations a ON a.id=m.automation_id
+			m.template_id, m.subject_override, m.track_opens, m.track_clicks, m.quota_reserved, a.status, e.status
+		FROM automation_messages m JOIN automations a ON a.id=m.automation_id JOIN automation_enrollments e ON e.id=m.enrollment_id
 		WHERE m.id=$1 AND m.status='claimed' AND m.lease_owner=$2::uuid AND m.lease_expires_at>now() FOR UPDATE OF m`, id, r.run).
 		Scan(&s.orgID, &s.snap.ID, &s.rcpt.ContactID, &s.rcpt.Email, &s.rcpt.MessageUUID, &userID, &identityID, &templateID,
-			&subject, &s.snap.TrackOpens, &s.snap.TrackClicks, &reserved, &automationStatus)
+			&subject, &s.snap.TrackOpens, &s.snap.TrackClicks, &reserved, &automationStatus, &enrollmentStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -289,8 +290,16 @@ func (r *automationMailRunner) start(ctx context.Context, id int64) (*automation
 		}
 		return nil, tx.Commit()
 	}
-	if automationStatus == "archived" {
+	// Archive and manual cancel both cancel the enrollment; paused waits.
+	if automationStatus == "archived" || enrollmentStatus == "cancelled" {
 		return end("cancelled", "", "")
+	}
+	if automationStatus != "active" {
+		if _, err := tx.ExecContext(ctx, `UPDATE automation_messages SET status='pending', lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
+				WHERE id=$1`, id); err != nil {
+			return nil, err
+		}
+		return nil, tx.Commit()
 	}
 
 	// The recipient: same rules (and skip reasons) as a campaign recipient.
@@ -381,7 +390,7 @@ func (r *automationMailRunner) start(ctx context.Context, id int64) (*automation
 func (r *automationMailRunner) finish(ctx context.Context, s *automationSend, outcome, messageID string, sendErr error) error {
 	errText := ""
 	if sendErr != nil {
-		errText = truncateRunes(sendErr.Error(), 500)
+		errText = sendErrorText(sendErr, s.rcpt.Email)
 	}
 	var err error
 	switch outcome {

@@ -268,3 +268,55 @@ func TestAutomationEmailPermanentFailures(t *testing.T) {
 	count(t, db, 1, `SELECT count(*) FROM automation_enrollments WHERE contact_id=101 AND status='failed' AND error_message LIKE '%Amazon SES%'`)
 	count(t, db, 0, `SELECT count(*) FROM automation_messages`)
 }
+
+// TestAutomationMailerPauseAndCancel: a paused automation's queue waits
+// (also a row claimed before the pause) and is sent after resume; a message
+// whose enrollment was cancelled while it was queued is never sent.
+func TestAutomationMailerPauseAndCancel(t *testing.T) {
+	db, s, x, r, fake := automationMailFixture(t)
+	ctx := context.Background()
+	w := buildGraph(t, []graphNode{
+		{"t", "trigger", map[string]any{"event": "contact.subscribed", "listUuid": autoListA}},
+		{"e", "email", map[string]any{"templateUuid": autoTemplate, "identityUuid": autoIdentity}},
+	}, [][3]string{{"t", "e", ""}})
+	a := publishGraph(t, s, w, "never")
+	for _, id := range []int{100, 101, 102} {
+		addAutoContact(t, db, id, "active", `{}`)
+		autoSubscribe(t, db, 1, id, "api")
+	}
+	mustRun(t, x.EnrollPending)
+	mustRun(t, x.StepDue)
+	count(t, db, 3, `SELECT count(*) FROM automation_messages WHERE status='pending'`)
+
+	// 101 was claimed by this runner just before the pause.
+	mustExec(t, db, `UPDATE automation_messages SET status='claimed', lease_owner=$1::uuid, lease_expires_at=now()+interval '1 minute' WHERE contact_id=101`, r.run)
+	if _, err := s.PauseAutomation(ctx, 1, a.UUID); err != nil {
+		t.Fatal(err)
+	}
+	var id101 int64
+	if err := db.QueryRow(`SELECT id FROM automation_messages WHERE contact_id=101`).Scan(&id101); err != nil {
+		t.Fatal(err)
+	}
+	if snd, err := r.start(ctx, id101); err != nil || snd != nil {
+		t.Fatalf("start while paused: %v %v", snd, err)
+	}
+	count(t, db, 1, `SELECT count(*) FROM automation_messages WHERE contact_id=101 AND status='pending' AND lease_owner IS NULL`)
+	if n := mailOnce(t, r); n != 0 {
+		t.Fatalf("claimed %d while paused", n)
+	}
+	if fake.callCount("") != 0 {
+		t.Fatalf("sent while paused: %v", fake.calls)
+	}
+	count(t, db, 3, `SELECT count(*) FROM automation_messages WHERE status='pending' AND lease_owner IS NULL AND NOT quota_reserved`)
+
+	// 102's enrollment is cancelled after its message was queued (the claim race).
+	mustExec(t, db, `UPDATE automation_enrollments SET status='cancelled', exit_reason='manual', completed_at=now() WHERE contact_id=102`)
+	if _, err := s.ActivateAutomation(ctx, 1, 1, a.UUID, false); err != nil {
+		t.Fatal(err)
+	}
+	mailOnce(t, r)
+	if fake.callCount("c100@example.net") != 1 || fake.callCount("c101@example.net") != 1 || fake.callCount("c102@example.net") != 0 {
+		t.Fatalf("calls: %v", fake.calls)
+	}
+	count(t, db, 1, `SELECT count(*) FROM automation_messages WHERE contact_id=102 AND status='cancelled' AND NOT quota_reserved`)
+}

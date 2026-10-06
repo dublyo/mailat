@@ -1,6 +1,7 @@
 package service
 
 import (
+	"regexp"
 	"strings"
 	"time"
 
@@ -54,4 +55,14 @@ func campaignThrottleDelay(err error) time.Duration {
 		}
 	}
 	return time.Minute
+}
+
+// sendErrorText is a provider error as stored on a message row: the recipient
+// address (SES sandbox rejections quote it) is replaced, and it fits 500 runes.
+func sendErrorText(err error, email string) string {
+	text := err.Error()
+	if email != "" {
+		text = regexp.MustCompile(`(?i)`+regexp.QuoteMeta(email)).ReplaceAllLiteralString(text, "[recipient]")
+	}
+	return truncateRunes(text, 500)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,5 +72,16 @@ func TestCampaignThrottleDelay(t *testing.T) {
 		if got := campaignThrottleDelay(tc.err); got != tc.want {
 			t.Errorf("%v: got %v want %v", tc.err, got, tc.want)
 		}
+	}
+}
+
+func TestSendErrorTextRedactsRecipient(t *testing.T) {
+	err := errors.New("MessageRejected: Email address is not verified. The following identities failed the check in region EU-WEST-1: Ann.B+x@Example.net")
+	got := sendErrorText(err, "ann.b+x@example.net")
+	if strings.Contains(strings.ToLower(got), "example.net") || !strings.HasSuffix(got, "EU-WEST-1: [recipient]") {
+		t.Fatalf("got %q", got)
+	}
+	if got := sendErrorText(errors.New(strings.Repeat("x", 600)), ""); len([]rune(got)) != 500 {
+		t.Fatalf("not truncated: %d", len(got))
 	}
 }

@@ -50,6 +50,7 @@ organization. Choose only the scopes a workflow needs:
 | Identity reads / changes | `identities:read` / `identities:manage` |
 | Template reads / changes | `templates:read` / `templates:manage` |
 | Webhook subscriptions, deliveries, rotation and replay | `webhooks:manage` |
+| Contacts, lists and signup forms: read, import, export, change, delete and GDPR erasure | `contacts:manage` |
 | Automation lists, stats and enrollments (includes contact emails) | `automations:read` |
 | Enroll contacts, cancel and retry enrollments | `automations:enroll` |
 
@@ -218,7 +219,7 @@ affects only new enrollments.
 | --- | --- |
 | `draft` | Never published; nothing runs |
 | `active` | Records trigger events, enrolls contacts and runs steps |
-| `paused` | No new enrollments; contacts in progress stop where they are. On resume, waits that came due run right away |
+| `paused` | No new enrollments; contacts in progress stop where they are and queued emails are held. On resume, waits that came due run right away |
 | `archived` | Terminal and read-only; contacts in progress are cancelled with `exit_reason=archived` |
 
 Only `draft` and `archived` automations can be deleted. You cannot delete a
@@ -278,7 +279,8 @@ Creating, editing, validating, activating, pausing, archiving and deleting
 automations need a signed-in user.
 
 GDPR erasure of a contact removes its enrollments, step runs, trigger events
-and `automation.webhook` events. The contact export includes its enrollments.
+and `automation.webhook` events. The contact export includes its enrollments
+and its automation emails (`automationEmails`).
 
 ## Webhook protocol and recovery
 
