@@ -423,6 +423,112 @@
         },
         "type": "object"
       },
+      "model.AutomationEnrollmentListResult": {
+        "properties": {
+          "enrollments": {
+            "items": {
+              "$ref": "#/components/schemas/model.AutomationEnrollmentView"
+            },
+            "type": "array"
+          },
+          "page": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "pageSize": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "model.AutomationEnrollmentView": {
+        "properties": {
+          "completedAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "contactEmail": {
+            "type": "string"
+          },
+          "contactUuid": {
+            "type": "string"
+          },
+          "currentNodeId": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "enrolledAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "exitReason": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "nextRunAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "retryCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "description": "active, completed, exited, failed, cancelled",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/model.AutomationStepRunView"
+            },
+            "type": "array"
+          },
+          "uuid": {
+            "type": "string"
+          },
+          "version": {
+            "allOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "type": "object"
+      },
       "model.AutomationListResult": {
         "properties": {
           "automations": {
@@ -518,6 +624,67 @@
           "version": {
             "format": "int64",
             "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "model.AutomationStepRunView": {
+        "properties": {
+          "error": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "finishedAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "messageUuid": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "nodeType": {
+            "type": "string"
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "resumeAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "startedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "description": "waiting, succeeded, skipped, failed",
+            "type": "string"
           }
         },
         "type": "object"
@@ -1478,6 +1645,8 @@
           "permissions": {
             "items": {
               "enum": [
+                "automations:enroll",
+                "automations:read",
                 "campaigns:manage",
                 "campaigns:read",
                 "contacts:manage",
@@ -2155,6 +2324,30 @@
               "type": "string"
             },
             "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "model.EnrollRequest": {
+        "properties": {
+          "contactUuid": {
+            "type": "string"
+          },
+          "listUuid": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "model.EnrollResult": {
+        "properties": {
+          "enrolled": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "skipped": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "type": "object"
@@ -12667,7 +12860,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -12872,9 +13074,9 @@
         "tags": [
           "automations"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "automations:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
       },
       "post": {
         "description": "Create saves a new draft; only structural problems are rejected.\nPOST /api/v1/automations",
@@ -13125,8 +13327,8 @@
           "automations"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
       }
     },
     "/api/v1/automations/{uuid}": {
@@ -13371,8 +13573,8 @@
           "automations"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
       },
       "get": {
         "description": "Get returns the draft, the published version number, whether the draft has\nunpublished changes, and live enrollment counts.\nGET /api/v1/automations/:uuid",
@@ -13417,7 +13619,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -13622,9 +13833,9 @@
         "tags": [
           "automations"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "automations:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
       },
       "put": {
         "description": "Update changes the draft only; running enrollments keep their published\nversion. Archived automations cannot be edited.\nPUT /api/v1/automations/:uuid",
@@ -13885,8 +14096,8 @@
           "automations"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
       }
     },
     "/api/v1/automations/{uuid}/activate": {
@@ -14149,8 +14360,8 @@
           "automations"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
       }
     },
     "/api/v1/automations/{uuid}/archive": {
@@ -14412,13 +14623,13 @@
           "automations"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
       }
     },
     "/api/v1/automations/{uuid}/enroll": {
       "post": {
-        "description": "EnrollContact enrolls a contact in an automation\nPOST /api/v1/automations/:uuid/enroll",
+        "description": "EnrollContact manually enrolls one contact ({\"contactUuid\"}) or every member\nof a list ({\"listUuid\"}) into the published version of an active\nautomation. Inactive, suppressed and already-enrolled contacts are skipped.\nPOST /api/v1/automations/:uuid/enroll",
         "operationId": "post_api_v1_automations_uuid_enroll",
         "parameters": [
           {
@@ -14434,15 +14645,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "properties": {
-                  "contactUuid": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "contactUuid"
-                ],
-                "type": "object"
+                "$ref": "#/components/schemas/model.EnrollRequest"
               }
             }
           },
@@ -14458,6 +14661,14 @@
                       "example": 0,
                       "type": "integer"
                     },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.EnrollResult"
+                        }
+                      ],
+                      "nullable": true
+                    },
                     "message": {
                       "type": "string"
                     }
@@ -14470,7 +14681,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -14675,9 +14895,1109 @@
         "tags": [
           "automations"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "automations:enroll",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+      }
+    },
+    "/api/v1/automations/{uuid}/enrollments": {
+      "get": {
+        "description": "ListEnrollments pages enrollments with the contact's email; status also\naccepts the derived \"waiting\" (active with a future step).\nGET /api/v1/automations/:uuid/enrollments",
+        "operationId": "get_api_v1_automations_uuid_enrollments",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pageSize",
+            "schema": {
+              "default": 20,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "default": "",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.AutomationEnrollmentListResult"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "ListEnrollments",
+        "tags": [
+          "automations"
+        ],
+        "x-api-key-scope": "automations:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+      }
+    },
+    "/api/v1/automations/{uuid}/enrollments/{enrollmentUuid}": {
+      "get": {
+        "description": "GetEnrollment returns one enrollment with its step timeline.\nGET /api/v1/automations/:uuid/enrollments/:enrollmentUuid",
+        "operationId": "get_api_v1_automations_uuid_enrollments_enrollmentUuid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "enrollmentUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.AutomationEnrollmentView"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GetEnrollment",
+        "tags": [
+          "automations"
+        ],
+        "x-api-key-scope": "automations:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+      }
+    },
+    "/api/v1/automations/{uuid}/enrollments/{enrollmentUuid}/cancel": {
+      "post": {
+        "description": "CancelEnrollment stops an active enrollment; queued emails not yet claimed\nby the sender are not sent.\nPOST /api/v1/automations/:uuid/enrollments/:enrollmentUuid/cancel",
+        "operationId": "post_api_v1_automations_uuid_enrollments_enrollmentUuid_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "enrollmentUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.AutomationEnrollmentView"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "CancelEnrollment",
+        "tags": [
+          "automations"
+        ],
+        "x-api-key-scope": "automations:enroll",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+      }
+    },
+    "/api/v1/automations/{uuid}/enrollments/{enrollmentUuid}/retry": {
+      "post": {
+        "description": "RetryEnrollment resumes a failed enrollment at its failed step on the same\nversion. The automation must be active; 409 if the contact already has\nanother active enrollment.\nPOST /api/v1/automations/:uuid/enrollments/:enrollmentUuid/retry",
+        "operationId": "post_api_v1_automations_uuid_enrollments_enrollmentUuid_retry",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "enrollmentUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/model.AutomationEnrollmentView"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "RetryEnrollment",
+        "tags": [
+          "automations"
+        ],
+        "x-api-key-scope": "automations:enroll",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
       }
     },
     "/api/v1/automations/{uuid}/pause": {
@@ -14930,8 +16250,8 @@
           "automations"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
       }
     },
     "/api/v1/automations/{uuid}/stats": {
@@ -14985,7 +16305,16 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -15190,9 +16519,9 @@
         "tags": [
           "automations"
         ],
-        "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-api-key-scope": "automations:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
       }
     },
     "/api/v1/automations/{uuid}/validate": {
@@ -15440,8 +16769,8 @@
           "automations"
         ],
         "x-human-session-required": true,
-        "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
       }
     },
     "/api/v1/branding": {

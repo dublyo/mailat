@@ -297,8 +297,8 @@ func TestAutomationListPagingStatusAndCounts(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM automation_versions WHERE automation_id=$1`, a.ID).Scan(&versionID); err != nil {
 		t.Fatal(err)
 	}
-	addEnrollment(t, db, a.ID, 1, "active", versionID, "1 day")       // waiting
-	addEnrollment(t, db, a.ID, 2, "active", versionID, "-1 minute")   // due
+	addEnrollment(t, db, a.ID, 1, "active", versionID, "1 day")        // waiting
+	addEnrollment(t, db, a.ID, 2, "active", versionID, "-1 minute")    // due
 	addEnrollment(t, db, a.ID, 1, "completed", versionID, "0 seconds") // history
 	addEnrollment(t, db, a.ID, 2, "failed", versionID, "0 seconds")
 	if _, err := s.CreateAutomation(ctx, 2, 9, &model.CreateAutomationRequest{Name: "Foreign"}); err != nil {

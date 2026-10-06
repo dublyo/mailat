@@ -406,6 +406,10 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.POST("/automations/:uuid/archive", automationCtrl.Archive)
 			protectedGroup.GET("/automations/:uuid/stats", automationCtrl.GetStats)
 			protectedGroup.POST("/automations/:uuid/enroll", automationCtrl.EnrollContact)
+			protectedGroup.GET("/automations/:uuid/enrollments", automationCtrl.ListEnrollments)
+			protectedGroup.GET("/automations/:uuid/enrollments/:enrollmentUuid", automationCtrl.GetEnrollment)
+			protectedGroup.POST("/automations/:uuid/enrollments/:enrollmentUuid/cancel", automationCtrl.CancelEnrollment)
+			protectedGroup.POST("/automations/:uuid/enrollments/:enrollmentUuid/retry", automationCtrl.RetryEnrollment)
 
 			// Phase 4: Health & Operations
 			protectedGroup.POST("/health/blacklist-check", healthOpsCtrl.CheckBlacklists)

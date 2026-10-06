@@ -43,6 +43,11 @@ func TestAutomationHTTPErrorsCarryValidationData(t *testing.T) {
 		g.POST("/automations/:uuid/activate", ctrl.Activate)
 		g.POST("/automations/:uuid/archive", ctrl.Archive)
 		g.DELETE("/automations/:uuid", ctrl.Delete)
+		g.POST("/automations/:uuid/enroll", ctrl.EnrollContact)
+		g.GET("/automations/:uuid/enrollments", ctrl.ListEnrollments)
+		g.GET("/automations/:uuid/enrollments/:enrollmentUuid", ctrl.GetEnrollment)
+		g.POST("/automations/:uuid/enrollments/:enrollmentUuid/cancel", ctrl.CancelEnrollment)
+		g.POST("/automations/:uuid/enrollments/:enrollmentUuid/retry", ctrl.RetryEnrollment)
 	})
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
@@ -109,6 +114,23 @@ func TestAutomationHTTPErrorsCarryValidationData(t *testing.T) {
 	if errs := errorsOf(call("POST", "/automations/"+a.UUID+"/activate", `{"publishDraft":false}`, 400)); errs[0].NodeID == "" && errs[0].Field == "" {
 		t.Fatalf("activate errors: %+v", errs)
 	}
+	// Enrollment routes: body and state errors are 400, unknown ids 404.
+	call("POST", "/automations/"+a.UUID+"/enroll", `{}`, 400)
+	call("POST", "/automations/"+a.UUID+"/enroll", `{"contactUuid":"e0000000-0000-4000-8000-000000000000","listUuid":"e0000000-0000-4000-8000-000000000000"}`, 400)
+	if e := call("POST", "/automations/"+a.UUID+"/enroll", `{"contactUuid":"e0000000-0000-4000-8000-000000000000"}`, 400); e.Message != "Only active automations can enroll contacts" {
+		t.Fatalf("enroll draft: %+v", e)
+	}
+	call("POST", "/automations/e0000000-0000-4000-8000-000000000000/enroll", `{"contactUuid":"e0000000-0000-4000-8000-000000000000"}`, 404)
+	if l := call("GET", "/automations/"+a.UUID+"/enrollments?page=0&pageSize=1000", "", 200); !strings.Contains(string(l.Data), `"enrollments":[]`) {
+		t.Fatalf("enrollments: %s", l.Data)
+	}
+	call("GET", "/automations/"+a.UUID+"/enrollments?status=running", "", 400)
+	if e := call("GET", "/automations/"+a.UUID+"/enrollments/e0000000-0000-4000-8000-000000000000", "", 404); e.Message != "Enrollment not found" {
+		t.Fatalf("enrollment 404: %+v", e)
+	}
+	call("POST", "/automations/"+a.UUID+"/enrollments/e0000000-0000-4000-8000-000000000000/cancel", "", 404)
+	call("POST", "/automations/e0000000-0000-4000-8000-000000000000/enrollments/e0000000-0000-4000-8000-000000000000/retry", "", 404)
+
 	archived := call("POST", "/automations/"+a.UUID+"/archive", "", 200)
 	if !strings.Contains(string(archived.Data), `"cancelledEnrollments":0`) {
 		t.Fatalf("archive: %s", archived.Data)

@@ -221,3 +221,32 @@ func TestCampaignContract(t *testing.T) {
 		t.Fatal("campaign backend note must state the SES sender requirements")
 	}
 }
+
+func TestAutomationContract(t *testing.T) {
+	paths, _ := publishedContract(t)
+	for _, tc := range []struct{ method, path, scope, ref string }{
+		{"get", "/api/v1/automations/{uuid}/enrollments", "automations:read", "model.AutomationEnrollmentListResult"},
+		{"get", "/api/v1/automations/{uuid}/enrollments/{enrollmentUuid}", "automations:read", "model.AutomationEnrollmentView"},
+		{"post", "/api/v1/automations/{uuid}/enroll", "automations:enroll", "model.EnrollResult"},
+		{"post", "/api/v1/automations/{uuid}/enrollments/{enrollmentUuid}/cancel", "automations:enroll", "model.AutomationEnrollmentView"},
+		{"post", "/api/v1/automations/{uuid}/enrollments/{enrollmentUuid}/retry", "automations:enroll", "model.AutomationEnrollmentView"},
+		{"post", "/api/v1/automations/{uuid}/activate", "", ""},
+		{"post", "/api/v1/automations/{uuid}/archive", "", ""},
+	} {
+		o := paths[tc.path].(map[string]interface{})[tc.method].(map[string]interface{})
+		if tc.scope == "" {
+			if o["x-api-key-scope"] != nil || o["x-human-session-required"] != true {
+				t.Errorf("%s %s must be session-only", tc.method, tc.path)
+			}
+			continue
+		}
+		if o["x-api-key-scope"] != tc.scope || o["x-mailat-backend"] != "ses" {
+			t.Errorf("%s %s: scope %v backend %v", tc.method, tc.path, o["x-api-key-scope"], o["x-mailat-backend"])
+		}
+		schema := o["responses"].(map[string]interface{})["200"].(map[string]interface{})["content"].(map[string]interface{})["application/json"].(map[string]interface{})["schema"].(map[string]interface{})
+		data := schema["properties"].(map[string]interface{})["data"].(map[string]interface{})
+		if all, ok := data["allOf"].([]interface{}); !ok || all[0].(map[string]interface{})["$ref"] != "#/components/schemas/"+tc.ref {
+			t.Errorf("%s %s returns %v", tc.method, tc.path, data)
+		}
+	}
+}

@@ -31,6 +31,8 @@ func writeAutomationError(r *ghttp.Request, err error) {
 		response.ErrorWithData(r, http.StatusBadRequest, "Automation is not valid", map[string]interface{}{"errors": invalid.Errors})
 	case errors.Is(err, service.ErrAutomationNotFound):
 		response.NotFound(r, "Automation not found")
+	case errors.Is(err, service.ErrAutomationEnrollmentNotFound):
+		response.NotFound(r, "Enrollment not found")
 	case errors.Is(err, service.ErrAutomationConflict):
 		r.Response.Status = http.StatusConflict
 		response.Error(r, http.StatusConflict, "Contact already has an active enrollment")
@@ -242,23 +244,105 @@ func (c *AutomationController) GetStats(r *ghttp.Request) {
 	response.Success(r, stats)
 }
 
-// EnrollContact enrolls a contact in an automation
+// EnrollContact manually enrolls one contact ({"contactUuid"}) or every member
+// of a list ({"listUuid"}) into the published version of an active
+// automation. Inactive, suppressed and already-enrolled contacts are skipped.
 // POST /api/v1/automations/:uuid/enroll
 func (c *AutomationController) EnrollContact(r *ghttp.Request) {
 	claims, automationUUID, ok := automationRequest(r)
 	if !ok {
 		return
 	}
-	var req struct {
-		ContactUUID string `json:"contactUuid" v:"required"`
-	}
+	var req model.EnrollRequest
 	if err := r.Parse(&req); err != nil {
 		response.BadRequest(r, err.Error())
 		return
 	}
-	if err := c.automationService.EnrollContact(r.Context(), claims.OrgID, automationUUID, req.ContactUUID); err != nil {
-		response.BadRequest(r, err.Error())
+	result, err := c.automationService.Enroll(r.Context(), claims.OrgID, automationUUID, &req)
+	if err != nil {
+		writeAutomationError(r, err)
 		return
 	}
-	response.SuccessWithMessage(r, "Contact enrolled in automation", nil)
+	response.SuccessWithMessage(r, "Contacts enrolled", result)
+}
+
+// ListEnrollments pages enrollments with the contact's email; status also
+// accepts the derived "waiting" (active with a future step).
+// GET /api/v1/automations/:uuid/enrollments
+func (c *AutomationController) ListEnrollments(r *ghttp.Request) {
+	claims, automationUUID, ok := automationRequest(r)
+	if !ok {
+		return
+	}
+	page := r.GetQuery("page", 1).Int()
+	pageSize := r.GetQuery("pageSize", 20).Int()
+	status := r.GetQuery("status", "").String()
+	result, err := c.automationService.ListEnrollments(r.Context(), claims.OrgID, automationUUID, status, page, pageSize)
+	if err != nil {
+		writeAutomationError(r, err)
+		return
+	}
+	response.Success(r, result)
+}
+
+// enrollmentRequest returns the claims and both path UUIDs, or writes the error.
+func enrollmentRequest(r *ghttp.Request) (*model.JWTClaims, string, string, bool) {
+	claims, automationUUID, ok := automationRequest(r)
+	if !ok {
+		return nil, "", "", false
+	}
+	enrollmentUUID := r.Get("enrollmentUuid").String()
+	if enrollmentUUID == "" {
+		response.BadRequest(r, "Enrollment UUID required")
+		return nil, "", "", false
+	}
+	return claims, automationUUID, enrollmentUUID, true
+}
+
+// GetEnrollment returns one enrollment with its step timeline.
+// GET /api/v1/automations/:uuid/enrollments/:enrollmentUuid
+func (c *AutomationController) GetEnrollment(r *ghttp.Request) {
+	claims, automationUUID, enrollmentUUID, ok := enrollmentRequest(r)
+	if !ok {
+		return
+	}
+	enrollment, err := c.automationService.GetEnrollment(r.Context(), claims.OrgID, automationUUID, enrollmentUUID)
+	if err != nil {
+		writeAutomationError(r, err)
+		return
+	}
+	response.Success(r, enrollment)
+}
+
+// CancelEnrollment stops an active enrollment; queued emails not yet claimed
+// by the sender are not sent.
+// POST /api/v1/automations/:uuid/enrollments/:enrollmentUuid/cancel
+func (c *AutomationController) CancelEnrollment(r *ghttp.Request) {
+	claims, automationUUID, enrollmentUUID, ok := enrollmentRequest(r)
+	if !ok {
+		return
+	}
+	enrollment, err := c.automationService.CancelEnrollment(r.Context(), claims.OrgID, automationUUID, enrollmentUUID)
+	if err != nil {
+		writeAutomationError(r, err)
+		return
+	}
+	response.SuccessWithMessage(r, "Enrollment cancelled", enrollment)
+}
+
+// RetryEnrollment resumes a failed enrollment at its failed step on the same
+// version. The automation must be active; 409 if the contact already has
+// another active enrollment.
+// POST /api/v1/automations/:uuid/enrollments/:enrollmentUuid/retry
+func (c *AutomationController) RetryEnrollment(r *ghttp.Request) {
+	claims, automationUUID, enrollmentUUID, ok := enrollmentRequest(r)
+	if !ok {
+		return
+	}
+	enrollment, err := c.automationService.RetryEnrollment(r.Context(), claims.OrgID, automationUUID, enrollmentUUID)
+	if err != nil {
+		writeAutomationError(r, err)
+		return
+	}
+	response.SuccessWithMessage(r, "Enrollment retried", enrollment)
 }

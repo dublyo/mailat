@@ -59,6 +59,14 @@ func automationRetryDelay(retryCount int) (delay time.Duration, fail bool) {
 // email step: an active contact on neither suppression table (M3's predicate).
 var automationEligibleSQL = "c.status='active' AND NOT " + campaignSuppressedSQL("c.org_id", "c.email")
 
+// automationReentrySQL admits contact c to automation param a under policy
+// param p: never re-enroll for 'never'; for 'after_exit' only with no active
+// enrollment and none started within the cooldown.
+func automationReentrySQL(a, p string) string {
+	return "NOT EXISTS (SELECT 1 FROM automation_enrollments x WHERE x.automation_id=" + a + " AND x.contact_id=c.id AND (" + p +
+		"='never' OR x.status='active' OR x.enrolled_at > now() - interval '" + automationReentryWindow + "'))"
+}
+
 // AutomationMailSender queues an automation email inside the step transaction.
 // It must only write rows in tx and never call the provider before commit; a
 // separate leased runner sends afterwards. It must be idempotent per
@@ -143,6 +151,18 @@ func (x *AutomationExecutor) graph(ctx context.Context, q interface {
 	if g, ok := x.graphs.Load(versionID); ok {
 		return g.(*CompiledGraph), nil
 	}
+	g, err := compileVersion(ctx, q, versionID)
+	if err != nil {
+		return nil, err
+	}
+	x.graphs.Store(versionID, g)
+	return g, nil
+}
+
+// compileVersion loads and compiles a stored (immutable) version.
+func compileVersion(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, versionID int64) (*CompiledGraph, error) {
 	var raw []byte
 	if err := q.QueryRowContext(ctx, `SELECT workflow FROM automation_versions WHERE id=$1`, versionID).Scan(&raw); err != nil {
 		return nil, err
@@ -155,7 +175,6 @@ func (x *AutomationExecutor) graph(ctx context.Context, q interface {
 	if len(errs) > 0 {
 		return nil, permanentStep("The published version is not valid")
 	}
-	x.graphs.Store(versionID, g)
 	return g, nil
 }
 
@@ -268,9 +287,7 @@ func (x *AutomationExecutor) EnrollPending(ctx context.Context) (int, error) {
 				INSERT INTO automation_enrollments (automation_id, contact_id, org_id, status, version_id, current_node_id,
 					trigger_event_id, next_run_at, enrolled_at, updated_at)
 				SELECT $1, c.id, c.org_id, 'active', $2, $3, $4, now(), now(), now() FROM contacts c
-				WHERE c.id=$5 AND c.org_id=$6 AND `+automationEligibleSQL+`
-				  AND NOT EXISTS (SELECT 1 FROM automation_enrollments x WHERE x.automation_id=$1 AND x.contact_id=c.id
-				      AND ($7='never' OR x.status='active' OR x.enrolled_at > now() - interval '`+automationReentryWindow+`'))
+				WHERE c.id=$5 AND c.org_id=$6 AND `+automationEligibleSQL+` AND `+automationReentrySQL("$1", "$7")+`
 				ON CONFLICT DO NOTHING`,
 				c.id, c.versionID, first, e.id, e.contactID, c.orgID, c.reentry); err != nil {
 				return 0, fmt.Errorf("enroll contact %d in automation %d: %w", e.contactID, c.id, err)

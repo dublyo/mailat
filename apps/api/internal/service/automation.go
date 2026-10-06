@@ -84,7 +84,6 @@ const automationSelect = `
 		FROM automation_enrollments e WHERE e.automation_id = a.id
 	) n ON true`
 
-
 func scanAutomation(row rowScanner) (*model.Automation, error) {
 	var a model.Automation
 	var triggerCfg, workflow []byte
@@ -657,8 +656,8 @@ func (s *AutomationService) ArchiveAutomation(ctx context.Context, orgID int64, 
 		return nil, 0, fmt.Errorf("failed to cancel enrollments: %w", err)
 	}
 	cancelled, _ := result.RowsAffected()
-	if _, err = tx.ExecContext(ctx, `UPDATE automation_messages SET status = 'cancelled', updated_at = now() WHERE automation_id = $1 AND status = 'pending'`, id); err != nil {
-		return nil, 0, fmt.Errorf("failed to cancel queued emails: %w", err)
+	if err = cancelPendingAutomationMessages(ctx, tx, orgID, "automation_id", id); err != nil {
+		return nil, 0, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, 0, fmt.Errorf("failed to archive automation: %w", err)
@@ -736,19 +735,4 @@ func (s *AutomationService) GetAutomationStats(ctx context.Context, orgID int64,
 		stats.Nodes[nodeID] = ns
 	}
 	return stats, rows.Err()
-}
-
-// EnrollContact enrolls a contact in an automation
-func (s *AutomationService) EnrollContact(ctx context.Context, orgID int64, automationUUID string, contactUUID string) error {
-	enrollmentUUID := uuid.New().String()
-	query := `
-		INSERT INTO automation_enrollments (uuid, automation_id, contact_id, org_id, status, step_index, enrolled_at, updated_at)
-		SELECT $1, a.id, c.id, $2, 'active', 0, now(), now()
-		FROM automations a, contacts c
-		WHERE a.uuid = $3 AND a.org_id = $2 AND c.uuid = $4 AND c.org_id = $2
-	`
-	if _, err := s.db.ExecContext(ctx, query, enrollmentUUID, orgID, automationUUID, contactUUID); err != nil {
-		return fmt.Errorf("failed to enroll contact: %w", err)
-	}
-	return nil
 }

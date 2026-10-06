@@ -10,7 +10,7 @@ var APIKeyPermissions = map[string]bool{
 	"email:send": true, "email:read": true, "email:manage": true,
 	"domains:read": true, "domains:manage": true, "identities:read": true, "identities:manage": true,
 	"templates:read": true, "templates:manage": true, "webhooks:manage": true, "contacts:manage": true,
-	"campaigns:read": true, "campaigns:manage": true,
+	"campaigns:read": true, "campaigns:manage": true, "automations:read": true, "automations:enroll": true,
 }
 
 func init() {
@@ -50,6 +50,10 @@ func init() {
 	add("campaigns:manage", "POST", "/campaigns /campaigns/:uuid/schedule /campaigns/:uuid/send /campaigns/:uuid/pause /campaigns/:uuid/resume /campaigns/:uuid/cancel /campaigns/:uuid/test")
 	add("campaigns:manage", "PUT", "/campaigns/:uuid /campaign-settings")
 	add("campaigns:manage", "DELETE", "/campaigns/:uuid")
+	// Automation management (create, update, delete, validate, activate, pause,
+	// archive) stays session-only. automations:read exposes contact emails.
+	add("automations:read", "GET", "/automations /automations/:uuid /automations/:uuid/stats /automations/:uuid/enrollments /automations/:uuid/enrollments/:enrollmentUuid")
+	add("automations:enroll", "POST", "/automations/:uuid/enroll /automations/:uuid/enrollments/:enrollmentUuid/cancel /automations/:uuid/enrollments/:enrollmentUuid/retry")
 	add("contacts:manage", "DELETE", "/signup-forms/:uuid /contacts/:uuid /contacts/:uuid/gdpr /lists/:uuid /lists/:uuid/contacts")
 }
 
