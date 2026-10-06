@@ -1,6 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { campaignApi, type Campaign, type CampaignStats } from '@/lib/api'
+import {
+  campaignApi,
+  type Campaign,
+  type CampaignCreateRequest,
+  type CampaignProgress,
+  type CampaignStatsResponse,
+  type CampaignTestResponse,
+  type CampaignUpdateRequest
+} from '@/lib/api'
 
 export const useCampaignsStore = defineStore('campaigns', () => {
   const campaigns = ref<Campaign[]>([])
@@ -8,141 +16,82 @@ export const useCampaignsStore = defineStore('campaigns', () => {
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 
+  const message = (e: unknown, fallback: string) => e instanceof Error ? e.message : fallback
+
+  // Every transition returns the stored campaign, so the list never guesses a status.
+  function replace(updated: Campaign) {
+    const index = campaigns.value.findIndex(c => c.uuid === updated.uuid)
+    if (index !== -1) campaigns.value[index] = updated
+    if (activeCampaign.value?.uuid === updated.uuid) activeCampaign.value = updated
+    return updated
+  }
+
+  async function run<T>(fallback: string, action: () => Promise<T>): Promise<T> {
+    try {
+      return await action()
+    } catch (e) {
+      error.value = message(e, fallback)
+      throw e
+    }
+  }
+
   async function fetchCampaigns() {
     isLoading.value = true
     error.value = null
     try {
       const result = await campaignApi.list()
-      // API returns { campaigns: [...], total, page, ... }
       campaigns.value = (result?.campaigns ?? []).filter((c): c is Campaign => c != null)
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch campaigns'
+      error.value = message(e, 'Failed to fetch campaigns')
       campaigns.value = []
     } finally {
       isLoading.value = false
     }
   }
 
-  async function getCampaign(uuid: string) {
-    try {
-      activeCampaign.value = await campaignApi.get(uuid)
-      return activeCampaign.value
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch campaign'
-      throw e
-    }
-  }
+  const getCampaign = (uuid: string) => run('Failed to fetch campaign', async () => {
+    activeCampaign.value = await campaignApi.get(uuid)
+    return activeCampaign.value
+  })
 
-  async function createCampaign(data: {
-    name: string
-    subject: string
-    htmlContent: string
-    textContent?: string
-    fromName: string
-    fromEmail: string
-    listId: number
-    replyTo?: string
-  }) {
-    try {
-      const newCampaign = await campaignApi.create(data)
-      campaigns.value.unshift(newCampaign)
-      return newCampaign
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to create campaign'
-      throw e
-    }
-  }
+  const createCampaign = (data: CampaignCreateRequest) => run('Failed to create campaign', async () => {
+    const created = await campaignApi.create(data)
+    campaigns.value.unshift(created)
+    return created
+  })
 
-  async function updateCampaign(uuid: string, data: Partial<Campaign>) {
-    try {
-      const updated = await campaignApi.update(uuid, data)
-      const index = campaigns.value.findIndex(c => c.uuid === uuid)
-      if (index !== -1) {
-        campaigns.value[index] = updated
-      }
-      if (activeCampaign.value?.uuid === uuid) {
-        activeCampaign.value = updated
-      }
-      return updated
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to update campaign'
-      throw e
-    }
-  }
+  const updateCampaign = (uuid: string, data: CampaignUpdateRequest) =>
+    run('Failed to update campaign', async () => replace(await campaignApi.update(uuid, data)))
 
-  async function deleteCampaign(uuid: string) {
-    try {
-      await campaignApi.delete(uuid)
-      campaigns.value = campaigns.value.filter(c => c.uuid !== uuid)
-      if (activeCampaign.value?.uuid === uuid) {
-        activeCampaign.value = null
-      }
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to delete campaign'
-      throw e
-    }
-  }
+  const deleteCampaign = (uuid: string) => run('Failed to delete campaign', async () => {
+    await campaignApi.delete(uuid)
+    campaigns.value = campaigns.value.filter(c => c.uuid !== uuid)
+    if (activeCampaign.value?.uuid === uuid) activeCampaign.value = null
+  })
 
-  async function scheduleCampaign(uuid: string, scheduledAt: string) {
-    try {
-      await campaignApi.schedule(uuid, scheduledAt)
-      const index = campaigns.value.findIndex(c => c.uuid === uuid)
-      if (index !== -1) {
-        campaigns.value[index] = { ...campaigns.value[index], status: 'scheduled', scheduledAt }
-      }
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to schedule campaign'
-      throw e
-    }
-  }
+  const scheduleCampaign = (uuid: string, scheduledAt: string) =>
+    run('Failed to schedule campaign', async () => replace(await campaignApi.schedule(uuid, scheduledAt)))
 
-  async function sendCampaign(uuid: string) {
-    try {
-      await campaignApi.send(uuid)
-      const index = campaigns.value.findIndex(c => c.uuid === uuid)
-      if (index !== -1) {
-        campaigns.value[index] = { ...campaigns.value[index], status: 'sending' }
-      }
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to send campaign'
-      throw e
-    }
-  }
+  const sendCampaign = (uuid: string) =>
+    run('Failed to send campaign', async () => replace(await campaignApi.send(uuid)))
 
-  async function pauseCampaign(uuid: string) {
-    try {
-      await campaignApi.pause(uuid)
-      const index = campaigns.value.findIndex(c => c.uuid === uuid)
-      if (index !== -1) {
-        campaigns.value[index] = { ...campaigns.value[index], status: 'paused' }
-      }
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to pause campaign'
-      throw e
-    }
-  }
+  const pauseCampaign = (uuid: string) =>
+    run('Failed to pause campaign', async () => replace(await campaignApi.pause(uuid)))
 
-  async function resumeCampaign(uuid: string) {
-    try {
-      await campaignApi.resume(uuid)
-      const index = campaigns.value.findIndex(c => c.uuid === uuid)
-      if (index !== -1) {
-        campaigns.value[index] = { ...campaigns.value[index], status: 'sending' }
-      }
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to resume campaign'
-      throw e
-    }
-  }
+  const resumeCampaign = (uuid: string) =>
+    run('Failed to resume campaign', async () => replace(await campaignApi.resume(uuid)))
 
-  async function getCampaignStats(uuid: string): Promise<CampaignStats> {
-    try {
-      return await campaignApi.getStats(uuid)
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch campaign stats'
-      throw e
-    }
-  }
+  const cancelCampaign = (uuid: string) =>
+    run('Failed to cancel campaign', async () => replace(await campaignApi.cancel(uuid)))
+
+  const sendTestCampaign = (uuid: string, emails: string[], idempotencyKey: string): Promise<CampaignTestResponse> =>
+    run('Failed to send test email', () => campaignApi.sendTest(uuid, emails, idempotencyKey))
+
+  const fetchProgress = (uuid: string): Promise<CampaignProgress> =>
+    run('Failed to fetch campaign progress', () => campaignApi.progress(uuid))
+
+  const getCampaignStats = (uuid: string): Promise<CampaignStatsResponse> =>
+    run('Failed to fetch campaign stats', () => campaignApi.getStats(uuid))
 
   return {
     campaigns,
@@ -158,6 +107,9 @@ export const useCampaignsStore = defineStore('campaigns', () => {
     sendCampaign,
     pauseCampaign,
     resumeCampaign,
+    cancelCampaign,
+    sendTestCampaign,
+    fetchProgress,
     getCampaignStats
   }
 })

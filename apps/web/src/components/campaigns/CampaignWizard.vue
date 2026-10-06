@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { X, Check, ChevronLeft, ChevronRight, Send, Calendar, Save } from 'lucide-vue-next'
 import Button from '@/components/common/Button.vue'
 import WizardStepInfo from './WizardStepInfo.vue'
@@ -8,10 +8,10 @@ import WizardStepContent from './WizardStepContent.vue'
 import WizardStepReview from './WizardStepReview.vue'
 import WizardStepSchedule from './WizardStepSchedule.vue'
 import { useCampaignsStore } from '@/stores/campaigns'
-import { useContactsStore } from '@/stores/contacts'
 import { useDomainsStore } from '@/stores/domains'
-import { listApi, composeApi } from '@/lib/api'
-import type { Campaign, ContactList } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth'
+import { listApi } from '@/lib/api'
+import type { Campaign, ContactList, Identity } from '@/lib/api'
 
 const props = defineProps<{
   campaign?: Campaign | null
@@ -24,13 +24,21 @@ const emit = defineEmits<{
 }>()
 
 const campaignsStore = useCampaignsStore()
-const contactsStore = useContactsStore()
 const domainsStore = useDomainsStore()
+const authStore = useAuthStore()
 
 const currentStep = ref(1)
 const isSubmitting = ref(false)
 const error = ref<string | null>(null)
 const lists = ref<ContactList[]>([])
+const saveWarnings = ref<string[]>([])
+
+// Every save, send, schedule and test goes through persist(): the first create
+// stores the UUID and later calls update it, so a retry after a failed send never
+// creates (and sends) a second campaign. A duplicate arrives with an empty UUID.
+const savedUuid = ref(props.campaign?.uuid || '')
+let pendingSave: Promise<Campaign> | null = null
+let testAttempt: { uuid: string; email: string; key: string } | null = null
 
 const steps = [
   { number: 1, title: 'Campaign Info', short: 'Info' },
@@ -50,6 +58,8 @@ const formData = ref({
   selectedListUuid: '' as string,  // Track selected list UUID for UI
   htmlContent: '',
   textContent: '',
+  trackOpens: true,
+  trackClicks: true,
   scheduledAt: null as Date | null,
   sendOption: 'now' as 'now' | 'schedule'
 })
@@ -64,7 +74,8 @@ const stepValidation = ref({
 })
 
 // Computed
-const isEditing = computed(() => !!props.campaign)
+const isEditing = computed(() => !!props.campaign?.uuid)
+const canManageSettings = computed(() => ['owner', 'admin'].includes(authStore.user?.role || ''))
 const canGoNext = computed(() => {
   switch (currentStep.value) {
     case 1: return stepValidation.value.step1
@@ -79,18 +90,20 @@ const canGoNext = computed(() => {
 const canGoBack = computed(() => currentStep.value > 1)
 const isLastStep = computed(() => currentStep.value === 5)
 
-const estimatedRecipients = computed(() => {
-  const selectedList = lists.value.find(list => list.uuid === formData.value.selectedListUuid)
-  return selectedList?.contactCount || 0
+// Campaigns send only from can_send identities on active, SES-verified domains.
+// The server enforces this too; without a domain list we fall back to canSend.
+const sendableIdentities = computed<Identity[]>(() => {
+  const domains = domainsStore.domains
+  return domainsStore.identities.filter(identity => {
+    if (identity.canSend === false) return false
+    if (!domains.length) return true
+    const domain = domains.find(d => String(d.id) === String(identity.domainId))
+    return !!domain && domain.sesVerified && domain.status === 'active'
+  })
 })
 
 const selectedIdentity = computed(() => {
   return domainsStore.identities.find(i => Number(i.id) === formData.value.fromIdentityId)
-})
-
-const selectedLists = computed(() => {
-  const selectedList = lists.value.find(list => list.uuid === formData.value.selectedListUuid)
-  return selectedList ? [selectedList] : []
 })
 
 // Methods
@@ -117,166 +130,104 @@ const updateValidation = (step: number, isValid: boolean) => {
   stepValidation.value[key] = isValid
 }
 
-const saveDraft = async () => {
-  isSubmitting.value = true
-  error.value = null
-  try {
-    const identity = selectedIdentity.value
-    if (!identity) {
-      error.value = 'Please select a sender identity'
-      isSubmitting.value = false
-      return
-    }
-
-    if (!formData.value.listId) {
-      error.value = 'Please select a recipient list'
-      isSubmitting.value = false
-      return
-    }
-
-    const data = {
-      name: formData.value.name,
-      subject: formData.value.subject,
-      fromName: identity.displayName,
-      fromEmail: identity.email,
-      replyTo: formData.value.replyTo || undefined,
-      listId: formData.value.listId,
-      htmlContent: formData.value.htmlContent,
-      textContent: formData.value.textContent || undefined
-    }
-
-    if (isEditing.value && props.campaign) {
-      const updated = await campaignsStore.updateCampaign(props.campaign.uuid, data)
-      emit('updated', updated)
-    } else {
-      const created = await campaignsStore.createCampaign(data)
-      emit('created', created)
-    }
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to save campaign'
-  } finally {
-    isSubmitting.value = false
-  }
+const senderName = (identity: Identity) => {
+  // An edited campaign keeps its display name while the sender is unchanged.
+  const original = props.campaign
+  if (original?.fromName && original.fromEmail?.toLowerCase() === identity.email.toLowerCase()) return original.fromName
+  return identity.displayName?.trim() || identity.email.split('@')[0]
 }
 
-const scheduleCampaign = async () => {
-  if (!formData.value.scheduledAt) return
-  isSubmitting.value = true
-  error.value = null
-  try {
-    const identity = selectedIdentity.value
-    if (!identity) {
-      error.value = 'Please select a sender identity'
-      isSubmitting.value = false
-      return
-    }
-
-    if (!formData.value.listId) {
-      error.value = 'Please select a recipient list'
-      isSubmitting.value = false
-      return
-    }
-
-    let campaign: Campaign
-    const data = {
-      name: formData.value.name,
-      subject: formData.value.subject,
-      fromName: identity.displayName,
-      fromEmail: identity.email,
-      replyTo: formData.value.replyTo || undefined,
-      listId: formData.value.listId,
-      htmlContent: formData.value.htmlContent,
-      textContent: formData.value.textContent || undefined
-    }
-
-    if (isEditing.value && props.campaign) {
-      campaign = await campaignsStore.updateCampaign(props.campaign.uuid, data)
-    } else {
-      campaign = await campaignsStore.createCampaign(data)
-    }
-
-    const scheduledAtISO = formData.value.scheduledAt.toISOString()
-    await campaignsStore.scheduleCampaign(campaign.uuid, scheduledAtISO)
-    const updatedCampaign = { ...campaign, status: 'scheduled' as const, scheduledAt: scheduledAtISO }
-    if (isEditing.value) {
-      emit('updated', updatedCampaign)
-    } else {
-      emit('created', updatedCampaign)
-    }
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to schedule campaign'
-  } finally {
-    isSubmitting.value = false
-  }
-}
-
-const sendNow = async () => {
-  isSubmitting.value = true
-  error.value = null
-  try {
-    const identity = selectedIdentity.value
-    if (!identity) {
-      error.value = 'Please select a sender identity'
-      isSubmitting.value = false
-      return
-    }
-
-    if (!formData.value.listId) {
-      error.value = 'Please select a recipient list'
-      isSubmitting.value = false
-      return
-    }
-
-    let campaign: Campaign
-    const data = {
-      name: formData.value.name,
-      subject: formData.value.subject,
-      fromName: identity.displayName,
-      fromEmail: identity.email,
-      replyTo: formData.value.replyTo || undefined,
-      listId: formData.value.listId,
-      htmlContent: formData.value.htmlContent,
-      textContent: formData.value.textContent || undefined
-    }
-
-    if (isEditing.value && props.campaign) {
-      campaign = await campaignsStore.updateCampaign(props.campaign.uuid, data)
-    } else {
-      campaign = await campaignsStore.createCampaign(data)
-    }
-
-    await campaignsStore.sendCampaign(campaign.uuid)
-    const updatedCampaign = { ...campaign, status: 'sending' as const }
-    if (isEditing.value) {
-      emit('updated', updatedCampaign)
-    } else {
-      emit('created', updatedCampaign)
-    }
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to send campaign'
-  } finally {
-    isSubmitting.value = false
-  }
-}
-
-const sendTestEmail = async (email: string) => {
+async function saveOnce(): Promise<Campaign> {
   const identity = selectedIdentity.value
-  if (!identity) {
-    error.value = 'Please select a sender identity'
-    return
+  if (!identity) throw new Error('Please select a sender identity')
+  if (!formData.value.listId) throw new Error('Please select a recipient list')
+  const f = formData.value
+  const base = {
+    name: f.name,
+    subject: f.subject,
+    fromName: senderName(identity),
+    fromEmail: identity.email,
+    listId: f.listId!,
+    htmlContent: f.htmlContent,
+    trackOpens: f.trackOpens,
+    trackClicks: f.trackClicks
   }
+  let saved: Campaign
+  if (savedUuid.value) {
+    saved = await campaignsStore.updateCampaign(savedUuid.value, { ...base, replyTo: f.replyTo || null, textContent: f.textContent || null })
+  } else {
+    saved = await campaignsStore.createCampaign({ ...base, replyTo: f.replyTo || undefined, textContent: f.textContent || undefined })
+    savedUuid.value = saved.uuid
+  }
+  saveWarnings.value = saved.warnings ?? []
+  return saved
+}
 
+// Concurrent callers share one in-flight save, so a double click cannot create twice.
+function persist(): Promise<Campaign> {
+  if (!pendingSave) pendingSave = saveOnce().finally(() => { pendingSave = null })
+  return pendingSave
+}
+
+// Returns the saved UUID; the review step uses it for the audience estimate.
+const ensureSaved = async () => (await persist()).uuid
+
+const finish = (campaign: Campaign) => {
+  if (isEditing.value) emit('updated', campaign)
+  else emit('created', campaign)
+}
+
+const submit = async (fallback: string, action: () => Promise<Campaign>) => {
+  isSubmitting.value = true
+  error.value = null
   try {
-    const result = await composeApi.send({
-      identityId: Number(identity.id),
-      to: [{ email }],
-      subject: `[TEST] ${formData.value.subject}`,
-      textBody: formData.value.textContent || '',
-      htmlBody: formData.value.htmlContent || undefined
-    }, crypto.randomUUID())
-    if (result.status !== 'sent') throw new Error(result.sendError || 'Test send was not confirmed. Check Outbox before retrying.')
+    finish(await action())
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to send test email'
+    // Server 400s are validation messages (sender, feedback, postal address, audience); show them as-is.
+    error.value = e instanceof Error ? e.message : fallback
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
+const saveDraft = () => submit('Failed to save campaign', persist)
+
+const scheduleCampaign = () => {
+  const when = formData.value.scheduledAt
+  if (!when) return
+  return submit('Failed to schedule campaign', async () => {
+    await persist()
+    return campaignsStore.scheduleCampaign(savedUuid.value, when.toISOString())
+  })
+}
+
+const sendNow = () => submit('Failed to send campaign', async () => {
+  await persist()
+  return campaignsStore.sendCampaign(savedUuid.value)
+})
+
+// Test sends go through the campaign endpoint (same renderer, footer and headers).
+// The idempotency key is reused only when retrying the same address after a
+// request that got no answer, so a lost response never sends twice.
+const sendTestEmail = async (email: string) => {
+  error.value = null
+  try {
+    const uuid = (await persist()).uuid
+    if (!testAttempt || testAttempt.uuid !== uuid || testAttempt.email !== email) {
+      testAttempt = { uuid, email, key: crypto.randomUUID() }
+    }
+    const result = await campaignsStore.sendTestCampaign(uuid, [email], testAttempt.key)
+    testAttempt = null
+    const failed = result.results?.find(r => r.status !== 'sent')
+    if (failed) {
+      throw new Error(failed.error || (failed.status === 'unknown'
+        ? 'The test send outcome is uncertain. Check your inbox before retrying.'
+        : 'Test send failed'))
+    }
+    if (result.status === 'sending') throw new Error('The test send is still in progress. Check your inbox before retrying.')
+  } catch (e) {
+    const status = (e as { status?: number }).status
+    if (status && status < 500) testAttempt = null
     throw e
   }
 }
@@ -286,41 +237,39 @@ onMounted(async () => {
   try {
     const [listsResponse] = await Promise.all([
       listApi.list(),
-      domainsStore.fetchIdentities()
+      domainsStore.fetchIdentities(),
+      domainsStore.fetchDomains()
     ])
     lists.value = listsResponse || []
   } catch (e) {
     console.error('Failed to load data:', e)
   }
 
-  // If editing, populate form
-  if (props.campaign) {
-    formData.value.name = props.campaign.name
-    formData.value.subject = props.campaign.subject
-    formData.value.fromIdentityId = props.campaign.fromIdentityId || null
-    formData.value.replyTo = props.campaign.replyTo || ''
-    // Handle listId from campaign (could be single or first from array)
-    if (props.campaign.listIds && props.campaign.listIds.length > 0) {
-      const firstListUuid = props.campaign.listIds[0]
-      formData.value.selectedListUuid = firstListUuid
-      // Try to find the list to get its numeric ID
-      const matchedList = lists.value.find(l => l.uuid === firstListUuid)
-      if (matchedList) {
-        formData.value.listId = typeof matchedList.id === 'string' ? parseInt(matchedList.id, 10) : matchedList.id
-      }
+  // Edit and duplicate: map the flat API campaign onto the form.
+  const c = props.campaign
+  if (c) {
+    formData.value.name = c.name
+    formData.value.subject = c.subject
+    formData.value.replyTo = c.replyTo || ''
+    formData.value.htmlContent = c.htmlContent || ''
+    formData.value.textContent = c.textContent || ''
+    formData.value.trackOpens = c.trackOpens !== false
+    formData.value.trackClicks = c.trackClicks !== false
+    if (c.listId) {
+      formData.value.listId = Number(c.listId)
+      formData.value.selectedListUuid = lists.value.find(l => Number(l.id) === Number(c.listId))?.uuid || ''
     }
-    formData.value.htmlContent = props.campaign.htmlBody || ''
-    formData.value.textContent = props.campaign.textBody || ''
+    const fromEmail = (c.fromEmail || '').toLowerCase()
+    const identity = sendableIdentities.value.find(i => i.email.toLowerCase() === fromEmail)
+    formData.value.fromIdentityId = identity ? Number(identity.id) : null
   }
 
-  // Set default identity
-  if (!formData.value.fromIdentityId && domainsStore.identities.length > 0) {
-    const defaultIdentity = domainsStore.identities.find(i => i.isDefault) || domainsStore.identities[0]
+  // New campaigns default to the default sendable identity; an edit never switches sender silently.
+  if (!c && !formData.value.fromIdentityId && sendableIdentities.value.length > 0) {
+    const defaultIdentity = sendableIdentities.value.find(i => i.isDefault) || sendableIdentities.value[0]
     formData.value.fromIdentityId = Number(defaultIdentity.id)
   }
 })
-
-// Validation is now handled by child components emitting update:valid events
 </script>
 
 <template>
@@ -402,7 +351,9 @@ onMounted(async () => {
           v-model:subject="formData.subject"
           v-model:fromIdentityId="formData.fromIdentityId"
           v-model:replyTo="formData.replyTo"
-          :identities="domainsStore.identities"
+          v-model:trackOpens="formData.trackOpens"
+          v-model:trackClicks="formData.trackClicks"
+          :identities="sendableIdentities"
           @update:valid="(v) => updateValidation(1, v)"
         />
 
@@ -431,6 +382,12 @@ onMounted(async () => {
           :textContent="formData.textContent"
           :identities="domainsStore.identities"
           :lists="lists"
+          :trackOpens="formData.trackOpens"
+          :trackClicks="formData.trackClicks"
+          :campaignUuid="savedUuid"
+          :warnings="saveWarnings"
+          :canManageSettings="canManageSettings"
+          :ensureSaved="ensureSaved"
           :onSendTest="sendTestEmail"
         />
 

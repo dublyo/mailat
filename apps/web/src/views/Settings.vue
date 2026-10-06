@@ -101,6 +101,10 @@ const availableEvents = [
   { value: 'email.complained', label: 'Spam Complaint' },
   { value: 'email.failed', label: 'Send Failed' },
   { value: 'email.unknown', label: 'Send Outcome Unknown' },
+  { value: 'campaign.started', label: 'Campaign Started' },
+  { value: 'campaign.paused', label: 'Campaign Paused' },
+  { value: 'campaign.cancelled', label: 'Campaign Cancelled' },
+  { value: 'campaign.sent', label: 'Campaign Sent' },
 ]
 const webhookSecret = ref('')
 const webhookNotice = ref('')

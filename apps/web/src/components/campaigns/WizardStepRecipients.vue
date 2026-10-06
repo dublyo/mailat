@@ -55,8 +55,11 @@ const totalRecipients = computed(() => {
   return selectedList.value?.contactCount || 0
 })
 
+// A segment's size is only known when the API evaluates it, so it may show 0 here.
+const isDynamic = (list?: ContactList) => list?.type === 'dynamic'
+
 const isValid = computed(() => {
-  return props.selectedListId !== null && totalRecipients.value > 0
+  return props.selectedListId !== null && (totalRecipients.value > 0 || isDynamic(selectedList.value))
 })
 
 watch(isValid, (valid) => {
@@ -173,7 +176,10 @@ const clearSelection = () => {
 
           <!-- List Info -->
           <div class="flex-1 min-w-0">
-            <h4 class="font-medium text-gray-900 truncate">{{ list.name }}</h4>
+            <h4 class="font-medium text-gray-900 truncate">
+              {{ list.name }}
+              <span v-if="isDynamic(list)" class="ml-1 px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 text-xs font-medium">Segment</span>
+            </h4>
             <p v-if="list.description" class="text-sm text-gray-500 truncate">
               {{ list.description }}
             </p>
@@ -215,6 +221,10 @@ const clearSelection = () => {
         </div>
       </div>
     </div>
+
+    <p v-if="isDynamic(selectedList)" class="text-sm text-gray-500">
+      Segment rules are evaluated when sending starts. Segments are edited through the API.
+    </p>
 
     <!-- Warning for no selection -->
     <div

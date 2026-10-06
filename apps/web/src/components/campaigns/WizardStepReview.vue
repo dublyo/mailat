@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import DOMPurify from 'dompurify'
 import {
   Eye,
@@ -12,9 +12,12 @@ import {
   AlertCircle,
   Monitor,
   Smartphone,
-  Loader2
+  Loader2,
+  ShieldCheck,
+  MapPin
 } from 'lucide-vue-next'
-import type { Identity, ContactList } from '@/lib/api'
+import { campaignApi, type Identity, type ContactList, type CampaignAudience } from '@/lib/api'
+import { audienceWarningLabel } from '@/lib/campaignStatus'
 
 const props = defineProps<{
   name: string
@@ -26,6 +29,12 @@ const props = defineProps<{
   textContent: string
   identities: Identity[]
   lists: ContactList[]
+  trackOpens: boolean
+  trackClicks: boolean
+  campaignUuid: string
+  warnings: string[]
+  canManageSettings: boolean
+  ensureSaved: () => Promise<string>
   onSendTest?: (email: string) => Promise<void>
 }>()
 
@@ -51,6 +60,65 @@ const totalRecipients = computed(() => {
   return selectedList.value?.contactCount || 0
 })
 
+// Audience estimate: needs a saved draft; the real audience is snapshotted at send.
+const audience = ref<CampaignAudience | null>(null)
+const audienceLoading = ref(false)
+const audienceError = ref<string | null>(null)
+
+const loadAudience = async (uuid: string) => {
+  if (!uuid) return
+  audienceLoading.value = true
+  audienceError.value = null
+  try {
+    audience.value = await campaignApi.audience(uuid)
+  } catch (e) {
+    audienceError.value = e instanceof Error ? e.message : 'Failed to estimate audience'
+  } finally {
+    audienceLoading.value = false
+  }
+}
+
+const checkAudience = async () => {
+  audienceError.value = null
+  try {
+    await loadAudience(await props.ensureSaved())
+  } catch (e) {
+    audienceError.value = e instanceof Error ? e.message : 'Failed to save draft'
+  }
+}
+
+const audienceWarnings = computed(() => (audience.value?.warnings ?? []).filter(w => w !== 'no_postal_address' || postalAddress.value === ''))
+
+// CAN-SPAM: sending is blocked until the organization has a postal address.
+const postalAddress = ref<string | null>(null)
+const postalDraft = ref('')
+const savingPostal = ref(false)
+const postalError = ref<string | null>(null)
+
+const savePostalAddress = async () => {
+  const value = postalDraft.value.trim()
+  if (!value) return
+  savingPostal.value = true
+  postalError.value = null
+  try {
+    const saved = await campaignApi.updateSettings({ postalAddress: value })
+    postalAddress.value = saved?.postalAddress ?? value
+  } catch (e) {
+    postalError.value = e instanceof Error ? e.message : 'Failed to save postal address'
+  } finally {
+    savingPostal.value = false
+  }
+}
+
+onMounted(async () => {
+  if (props.campaignUuid) loadAudience(props.campaignUuid)
+  try {
+    postalAddress.value = (await campaignApi.getSettings())?.postalAddress || ''
+  } catch {
+    postalAddress.value = null
+  }
+})
+
 const validationIssues = computed(() => {
   const issues: string[] = []
   if (!props.name || props.name.length < 3) {
@@ -65,8 +133,8 @@ const validationIssues = computed(() => {
   if (!props.selectedListUuid) {
     issues.push('No recipient list selected')
   }
-  if (!props.textContent || props.textContent.trim().length < 10) {
-    issues.push('Email content is too short')
+  if (!props.htmlContent.trim() && !props.textContent.trim()) {
+    issues.push('Email content is empty')
   }
   return issues
 })
@@ -101,6 +169,7 @@ const sendTestEmail = async () => {
     } else {
       emit('send-test', testEmail.value)
     }
+    if (props.campaignUuid) loadAudience(props.campaignUuid)
     testSent.value = true
     setTimeout(() => {
       testSent.value = false
@@ -157,6 +226,86 @@ const sendTestEmail = async () => {
           </ul>
         </div>
       </div>
+    </div>
+
+    <!-- Always-on compliance -->
+    <div class="p-4 rounded-xl border border-gray-200 bg-white flex items-start gap-3" data-test="compliance-notice">
+      <ShieldCheck class="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+      <div class="text-sm text-gray-700">
+        <p>An unsubscribe link, your postal address and one-click unsubscribe headers are always added.</p>
+        <p class="text-gray-500 mt-1">
+          Open tracking {{ trackOpens ? 'on' : 'off' }} · Click tracking {{ trackClicks ? 'on' : 'off' }}
+        </p>
+      </div>
+    </div>
+
+    <!-- Postal address -->
+    <div v-if="postalAddress === ''" class="p-4 rounded-xl border-2 border-amber-200 bg-amber-50" data-test="postal-address">
+      <div class="flex items-center gap-2 mb-2">
+        <MapPin class="w-5 h-5 text-amber-700" />
+        <h4 class="font-semibold text-amber-900">Postal address required</h4>
+      </div>
+      <template v-if="canManageSettings">
+        <p class="text-sm text-amber-900 mb-3">Campaign emails must include your organization's physical postal address.</p>
+        <textarea
+          v-model="postalDraft"
+          rows="3"
+          maxlength="500"
+          aria-label="Organization postal address"
+          placeholder="Company name, street, city, postal code, country"
+          class="w-full px-3 py-2 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+        />
+        <div class="flex items-center gap-3 mt-2">
+          <button
+            @click="savePostalAddress"
+            :disabled="!postalDraft.trim() || savingPostal"
+            class="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50"
+            aria-label="Save postal address"
+          >
+            {{ savingPostal ? 'Saving...' : 'Save postal address' }}
+          </button>
+          <span v-if="postalError" class="text-sm text-red-600">{{ postalError }}</span>
+        </div>
+      </template>
+      <p v-else class="text-sm text-amber-900">Ask an admin to set the postal address before this campaign can be sent.</p>
+    </div>
+
+    <!-- Audience estimate -->
+    <div class="bg-white rounded-xl border border-gray-200 p-5" data-test="audience">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div class="flex items-center gap-2">
+          <Users class="w-5 h-5 text-green-600" />
+          <h4 class="font-semibold text-gray-900">Audience estimate</h4>
+        </div>
+        <button
+          @click="checkAudience"
+          :disabled="audienceLoading || !isValid"
+          class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 flex items-center gap-2"
+          aria-label="Save draft and estimate audience"
+        >
+          <Loader2 v-if="audienceLoading" class="w-4 h-4 animate-spin" />
+          {{ campaignUuid ? 'Refresh estimate' : 'Save draft & estimate' }}
+        </button>
+      </div>
+      <p v-if="audienceError" class="text-sm text-red-600">{{ audienceError }}</p>
+      <template v-else-if="audience">
+        <div class="flex flex-wrap gap-6 text-sm">
+          <div><span class="text-2xl font-bold text-gray-900" data-test="eligible">{{ audience.eligible.toLocaleString() }}</span> <span class="text-gray-500">eligible</span></div>
+          <div class="text-gray-600">{{ audience.excludedInactive.toLocaleString() }} inactive excluded</div>
+          <div class="text-gray-600">{{ audience.excludedSuppressed.toLocaleString() }} suppressed excluded</div>
+        </div>
+        <ul v-if="audienceWarnings.length" class="mt-3 space-y-1">
+          <li v-for="warning in audienceWarnings" :key="warning" class="text-sm text-amber-800 flex items-start gap-2">
+            <AlertCircle class="w-4 h-4 flex-shrink-0 mt-0.5" />
+            {{ audienceWarningLabel(warning) }}
+          </li>
+        </ul>
+        <p class="text-xs text-gray-500 mt-2">The audience is snapshotted when sending starts; contacts added later are not included.</p>
+      </template>
+      <p v-else class="text-sm text-gray-500">Save a draft to see how many contacts are eligible and any sending warnings.</p>
+      <ul v-if="warnings.length" class="mt-3 space-y-1">
+        <li v-for="warning in warnings" :key="warning" class="text-sm text-amber-800">{{ warning }}</li>
+      </ul>
     </div>
 
     <!-- Campaign Summary Cards -->
@@ -314,7 +463,7 @@ const sendTestEmail = async () => {
         <h4 class="font-semibold text-gray-900">Send Test Email</h4>
       </div>
       <p class="text-sm text-gray-600 mb-4">
-        Send a test email to yourself to see how it looks in your inbox.
+        Saves the draft, then sends it through SES with a "[Test]" subject. Its unsubscribe link changes nothing.
       </p>
       <div class="flex gap-3">
         <input

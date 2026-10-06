@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
-import { Mail, User, Reply, Sparkles } from 'lucide-vue-next'
+import { Mail, User, Reply, Sparkles, Eye, MousePointer } from 'lucide-vue-next'
 import type { Identity } from '@/lib/api'
 
 const props = defineProps<{
@@ -8,6 +8,8 @@ const props = defineProps<{
   subject: string
   fromIdentityId: number | null
   replyTo: string
+  trackOpens: boolean
+  trackClicks: boolean
   identities: Identity[]
 }>()
 
@@ -16,8 +18,14 @@ const emit = defineEmits<{
   'update:subject': [value: string]
   'update:fromIdentityId': [value: number | null]
   'update:replyTo': [value: string]
+  'update:trackOpens': [value: boolean]
+  'update:trackClicks': [value: boolean]
   'update:valid': [value: boolean]
 }>()
+
+// Without a display name the sender shows as the address's local part.
+const senderLabel = (identity: Identity) =>
+  `${identity.displayName?.trim() || identity.email.split('@')[0]} <${identity.email}>`
 
 const subjectLength = computed(() => props.subject.length)
 const subjectLengthColor = computed(() => {
@@ -134,11 +142,14 @@ const subjectSuggestions = [
       >
         <option :value="null" disabled>Select sender identity</option>
         <option v-for="identity in identities" :key="identity.id" :value="Number(identity.id)">
-          {{ identity.displayName }} &lt;{{ identity.email }}&gt;
+          {{ senderLabel(identity) }}
         </option>
       </select>
-      <p class="text-sm text-gray-500 mt-1.5">
-        Recipients will see this as the sender
+      <p v-if="identities.length === 0" class="text-sm text-amber-700 mt-1.5">
+        No sending identities yet. Campaigns send through Amazon SES from an identity on a verified domain with sending setup finished.
+      </p>
+      <p v-else class="text-sm text-gray-500 mt-1.5">
+        Recipients will see this as the sender. Only identities on SES-verified domains are listed.
       </p>
     </div>
 
@@ -161,5 +172,36 @@ const subjectSuggestions = [
         Where replies will be sent (leave empty to use the From address)
       </p>
     </div>
+
+    <!-- Tracking -->
+    <fieldset class="space-y-3">
+      <legend class="block text-sm font-medium text-gray-700 mb-2">Tracking</legend>
+      <label class="flex items-start gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          :checked="trackOpens"
+          @change="emit('update:trackOpens', ($event.target as HTMLInputElement).checked)"
+          class="mt-1 rounded border-gray-300 text-gmail-blue focus:ring-gmail-blue"
+          aria-label="Track opens"
+        />
+        <span>
+          <span class="flex items-center gap-1.5 text-sm font-medium text-gray-900"><Eye class="w-4 h-4" />Track opens</span>
+          <span class="block text-sm text-gray-500">Adds an invisible image. Privacy proxies load it automatically, so opens are approximate.</span>
+        </span>
+      </label>
+      <label class="flex items-start gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          :checked="trackClicks"
+          @change="emit('update:trackClicks', ($event.target as HTMLInputElement).checked)"
+          class="mt-1 rounded border-gray-300 text-gmail-blue focus:ring-gmail-blue"
+          aria-label="Track clicks"
+        />
+        <span>
+          <span class="flex items-center gap-1.5 text-sm font-medium text-gray-900"><MousePointer class="w-4 h-4" />Track clicks</span>
+          <span class="block text-sm text-gray-500">Routes links through a redirect so clicks are counted.</span>
+        </span>
+      </label>
+    </fieldset>
   </div>
 </template>

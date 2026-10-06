@@ -242,34 +242,142 @@ export interface Identity {
   updatedAt?: string
 }
 
+export type CampaignStatus = 'draft' | 'scheduled' | 'sending' | 'paused' | 'sent' | 'cancelled'
+
+// Campaign mirrors the API's flat model.Campaign; opens and clicks are unique counts.
 export interface Campaign {
-  id: string
+  id: number
   uuid: string
   name: string
   subject: string
-  status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'paused' | 'cancelled'
-  scheduledAt?: string
-  sentAt?: string
-  completedAt?: string
-  fromIdentityId?: number | null
+  htmlContent?: string
+  textContent?: string
+  fromName: string
+  fromEmail: string
   replyTo?: string
-  listIds?: string[]
-  htmlBody?: string
-  textBody?: string
-  recipientCount?: number
-  stats: CampaignStats
+  listId: number
+  listName?: string
+  listType: 'static' | 'dynamic' | string
+  status: CampaignStatus
+  statusReason: string | null
+  scheduledAt?: string
+  startedAt?: string
+  completedAt?: string
+  preparedAt: string | null
+  throttledUntil: string | null
+  totalRecipients: number
+  sentCount: number
+  deliveredCount: number
+  openCount: number
+  clickCount: number
+  bounceCount: number
+  unsubscribeCount: number
+  complaintCount: number
+  failedCount: number
+  skippedCount: number
+  unknownCount: number
+  trackOpens: boolean
+  trackClicks: boolean
+  createdByUserId?: number
   createdAt: string
+  updatedAt?: string
+  warnings?: string[]
 }
 
-export interface CampaignStats {
+export interface CampaignCreateRequest {
+  name: string
+  subject: string
+  htmlContent: string
+  textContent?: string
+  fromName: string
+  fromEmail: string
+  replyTo?: string
+  listId: number
+  trackOpens?: boolean
+  trackClicks?: boolean
+}
+
+// Absent fields are unchanged; null clears replyTo or textContent.
+export interface CampaignUpdateRequest {
+  name?: string
+  subject?: string
+  htmlContent?: string
+  textContent?: string | null
+  fromName?: string
+  fromEmail?: string
+  replyTo?: string | null
+  listId?: number
+  trackOpens?: boolean
+  trackClicks?: boolean
+}
+
+// Rates are percentages of sentCount.
+export interface CampaignStatsResponse {
+  campaign: Campaign
+  openRate: number
+  clickRate: number
+  clickToOpenRate: number
+  bounceRate: number
+  unsubscribeRate: number
+  complaintRate: number
+  deliveredRate: number
+  clicksByLink: { url: string; clicks: number; uniqueClicks: number }[] | null
+  opensByHour: { hour: string; opens: number }[] | null
+}
+
+export interface CampaignProgress {
+  status: CampaignStatus
+  statusReason: string | null
+  preparing: boolean
   total: number
+  pending: number
+  inFlight: number
   sent: number
-  delivered: number
-  opened: number
-  clicked: number
-  bounced: number
-  unsubscribed: number
-  complained?: number
+  failed: number
+  unknown: number
+  skipped: number
+  cancelled: number
+  throttledUntil: string | null
+  percent: number
+}
+
+// An estimate: the audience is snapshotted when sending starts.
+export interface CampaignAudience {
+  listType: string
+  eligible: number
+  excludedInactive: number
+  excludedSuppressed: number
+  warnings: string[] | null
+}
+
+export type CampaignRecipientStatus = 'pending' | 'claimed' | 'sending' | 'sent' | 'failed' | 'unknown' | 'skipped' | 'cancelled'
+
+export interface CampaignRecipient {
+  email: string
+  status: CampaignRecipientStatus
+  skipReason: string | null
+  deliveryStatus: string | null
+  sentAt: string | null
+  openCount: number
+  clickCount: number
+  unsubscribedAt: string | null
+  error: string | null
+}
+
+export interface CampaignPreview {
+  subject: string
+  html: string
+  text: string
+  unknownVariables: string[] | null
+}
+
+export interface CampaignTestResponse {
+  status: string
+  results: { email: string; status: string; error?: string }[]
+}
+
+export interface CampaignSettings {
+  postalAddress: string
 }
 
 // ============ Auth API ============
@@ -646,37 +754,54 @@ export interface CampaignListResponse {
 }
 
 export const campaignApi = {
-  list: () => api.get<CampaignListResponse>('/api/v1/campaigns'),
+  list: (params: { page?: number; pageSize?: number; status?: string } = {}) => {
+    const query = new URLSearchParams({ page: String(params.page ?? 1), pageSize: String(params.pageSize ?? 100) })
+    if (params.status) query.set('status', params.status)
+    return api.get<CampaignListResponse>(`/api/v1/campaigns?${query}`)
+  },
 
-  create: (data: {
-    name: string
-    subject: string
-    htmlContent: string
-    textContent?: string
-    fromName: string
-    fromEmail: string
-    listId: number
-    replyTo?: string
-    templateId?: number
-  }) => api.post<Campaign>('/api/v1/campaigns', data),
+  create: (data: CampaignCreateRequest) => api.post<Campaign>('/api/v1/campaigns', data),
 
   get: (uuid: string) => api.get<Campaign>(`/api/v1/campaigns/${uuid}`),
 
-  update: (uuid: string, data: Partial<Campaign>) =>
+  update: (uuid: string, data: CampaignUpdateRequest) =>
     api.put<Campaign>(`/api/v1/campaigns/${uuid}`, data),
 
   delete: (uuid: string) => api.delete(`/api/v1/campaigns/${uuid}`),
 
   schedule: (uuid: string, scheduledAt: string) =>
-    api.post(`/api/v1/campaigns/${uuid}/schedule`, { scheduledAt }),
+    api.post<Campaign>(`/api/v1/campaigns/${uuid}/schedule`, { scheduledAt }),
 
-  send: (uuid: string) => api.post(`/api/v1/campaigns/${uuid}/send`),
+  send: (uuid: string) => api.post<Campaign>(`/api/v1/campaigns/${uuid}/send`),
 
-  pause: (uuid: string) => api.post(`/api/v1/campaigns/${uuid}/pause`),
+  pause: (uuid: string) => api.post<Campaign>(`/api/v1/campaigns/${uuid}/pause`),
 
-  resume: (uuid: string) => api.post(`/api/v1/campaigns/${uuid}/resume`),
+  resume: (uuid: string) => api.post<Campaign>(`/api/v1/campaigns/${uuid}/resume`),
 
-  getStats: (uuid: string) => api.get<CampaignStats>(`/api/v1/campaigns/${uuid}/stats`),
+  cancel: (uuid: string) => api.post<Campaign>(`/api/v1/campaigns/${uuid}/cancel`),
+
+  getStats: (uuid: string) => api.get<CampaignStatsResponse>(`/api/v1/campaigns/${uuid}/stats`),
+
+  progress: (uuid: string) => api.get<CampaignProgress>(`/api/v1/campaigns/${uuid}/progress`),
+
+  audience: (uuid: string) => api.get<CampaignAudience>(`/api/v1/campaigns/${uuid}/audience`),
+
+  recipients: (uuid: string, status = '', page = 1, pageSize = 50) => {
+    const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+    if (status) query.set('status', status)
+    return api.get<{ recipients: CampaignRecipient[]; total: number }>(`/api/v1/campaigns/${uuid}/recipients?${query}`)
+  },
+
+  preview: (uuid: string, contactUuid?: string) =>
+    api.post<CampaignPreview>(`/api/v1/campaigns/${uuid}/preview`, contactUuid ? { contactUuid } : {}),
+
+  // The key makes a retry of the same request return the stored outcome instead of sending again.
+  sendTest: (uuid: string, emails: string[], idempotencyKey: string) =>
+    api.post<CampaignTestResponse>(`/api/v1/campaigns/${uuid}/test`, { emails }, { 'Idempotency-Key': idempotencyKey }),
+
+  getSettings: () => api.get<CampaignSettings>('/api/v1/campaign-settings'),
+
+  updateSettings: (data: CampaignSettings) => api.put<CampaignSettings>('/api/v1/campaign-settings', data),
 }
 
 // ============ Health API ============
@@ -859,6 +984,8 @@ export const API_KEY_PERMISSIONS = [
   { value: 'templates:manage', label: 'Manage Templates', description: 'Create/update/delete templates' },
   { value: 'webhooks:manage', label: 'Manage Webhooks', description: 'Configure webhooks' },
   { value: 'contacts:manage', label: 'Manage Contacts', description: 'Manage contacts and lists' },
+  { value: 'campaigns:read', label: 'Read Campaigns', description: 'List campaigns, stats, progress and recipients' },
+  { value: 'campaigns:manage', label: 'Manage Campaigns', description: 'Create, send, schedule, pause and cancel campaigns' },
 ] as const
 
 export const apiKeyApi = {

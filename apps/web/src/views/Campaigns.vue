@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Plus,
@@ -20,7 +20,7 @@ import {
   Clock,
   FileText,
   AlertCircle,
-  X
+  XCircle
 } from 'lucide-vue-next'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
@@ -28,12 +28,11 @@ import Badge from '@/components/common/Badge.vue'
 import Spinner from '@/components/common/Spinner.vue'
 import CampaignWizard from '@/components/campaigns/CampaignWizard.vue'
 import { useCampaignsStore } from '@/stores/campaigns'
-import { useDomainsStore } from '@/stores/domains'
-import { listApi, type Campaign } from '@/lib/api'
+import type { Campaign } from '@/lib/api'
+import { openRate, clickRate, statusReasonLabel, campaignProgressPercent } from '@/lib/campaignStatus'
 
 const router = useRouter()
 const campaignsStore = useCampaignsStore()
-const domainsStore = useDomainsStore()
 
 // State
 const showWizard = ref(false)
@@ -44,6 +43,9 @@ const selectedCampaigns = ref<string[]>([])
 const showActionsMenu = ref<string | null>(null)
 const confirmDelete = ref<Campaign | null>(null)
 const isDeleting = ref(false)
+const confirmCancel = ref<Campaign | null>(null)
+const isCancelling = ref(false)
+const actionError = ref<string | null>(null)
 
 // Status tabs configuration
 const tabs = [
@@ -52,7 +54,8 @@ const tabs = [
   { id: 'scheduled', label: 'Scheduled', icon: Clock },
   { id: 'sending', label: 'Sending', icon: Send },
   { id: 'sent', label: 'Sent', icon: CheckCircle },
-  { id: 'paused', label: 'Paused', icon: Pause }
+  { id: 'paused', label: 'Paused', icon: Pause },
+  { id: 'cancelled', label: 'Cancelled', icon: XCircle }
 ]
 
 // Computed
@@ -84,9 +87,20 @@ const tabCounts = computed(() => {
   return counts
 })
 
-// Methods
+// While anything is sending, refresh the list so counters and progress move.
+const LIST_POLL_MS = 10000
+let listTimer: ReturnType<typeof setInterval> | null = null
+const hasActive = computed(() => campaignsStore.campaigns.some(c => c.status === 'sending'))
+
 onMounted(() => {
   campaignsStore.fetchCampaigns()
+  listTimer = setInterval(() => {
+    if (hasActive.value && !document.hidden) campaignsStore.fetchCampaigns()
+  }, LIST_POLL_MS)
+})
+
+onUnmounted(() => {
+  if (listTimer) clearInterval(listTimer)
 })
 
 const getStatusVariant = (status: string) => {
@@ -123,18 +137,10 @@ const openEditWizard = (campaign: Campaign) => {
   showActionsMenu.value = null
 }
 
+// The wizard may have saved a draft before closing, so always refresh.
 const closeWizard = () => {
   showWizard.value = false
   editingCampaign.value = null
-}
-
-const onCampaignCreated = (campaign: Campaign) => {
-  closeWizard()
-  campaignsStore.fetchCampaigns()
-}
-
-const onCampaignUpdated = (campaign: Campaign) => {
-  closeWizard()
   campaignsStore.fetchCampaigns()
 }
 
@@ -146,49 +152,75 @@ const toggleActionsMenu = (uuid: string) => {
   showActionsMenu.value = showActionsMenu.value === uuid ? null : uuid
 }
 
-const duplicateCampaign = async (campaign: Campaign) => {
+const duplicateCampaign = (campaign: Campaign) => {
   showActionsMenu.value = null
-  // Open the wizard with a copy of the campaign data
-  // Create a new campaign object with "Copy" suffix and reset status to draft
+  // A copy is a new draft: none of the original's sending state carries over.
   const duplicatedCampaign: Campaign = {
     ...campaign,
-    id: '',
+    id: 0,
     uuid: '',
     name: `${campaign.name} (Copy)`,
     status: 'draft',
+    statusReason: null,
     scheduledAt: undefined,
-    sentAt: undefined,
+    startedAt: undefined,
     completedAt: undefined,
-    stats: {
-      total: 0,
-      sent: 0,
-      delivered: 0,
-      opened: 0,
-      clicked: 0,
-      bounced: 0,
-      unsubscribed: 0
-    }
+    preparedAt: null,
+    throttledUntil: null,
+    totalRecipients: 0,
+    sentCount: 0,
+    deliveredCount: 0,
+    openCount: 0,
+    clickCount: 0,
+    bounceCount: 0,
+    unsubscribeCount: 0,
+    complaintCount: 0,
+    failedCount: 0,
+    skippedCount: 0,
+    unknownCount: 0,
+    warnings: undefined,
+    trackOpens: campaign.trackOpens,
+    trackClicks: campaign.trackClicks
   }
   editingCampaign.value = duplicatedCampaign
   showWizard.value = true
 }
 
-const pauseCampaign = async (campaign: Campaign) => {
+const runAction = async (fallback: string, action: () => Promise<unknown>) => {
   showActionsMenu.value = null
+  actionError.value = null
   try {
-    await campaignsStore.pauseCampaign(campaign.uuid)
+    await action()
   } catch (e) {
-    console.error('Failed to pause campaign:', e)
+    actionError.value = e instanceof Error ? e.message : fallback
   }
 }
 
-const resumeCampaign = async (campaign: Campaign) => {
+const pauseCampaign = (campaign: Campaign) =>
+  runAction('Failed to pause campaign', () => campaignsStore.pauseCampaign(campaign.uuid))
+
+const resumeCampaign = (campaign: Campaign) =>
+  runAction('Failed to resume campaign', () => campaignsStore.resumeCampaign(campaign.uuid))
+
+const canEdit = (campaign: Campaign) => campaign.status === 'draft' || campaign.status === 'scheduled'
+const canCancel = (campaign: Campaign) => ['draft', 'scheduled', 'sending', 'paused'].includes(campaign.status)
+const canDelete = (campaign: Campaign) =>
+  campaign.status === 'draft' || (campaign.status === 'cancelled' && !campaign.preparedAt)
+const showsPerformance = (campaign: Campaign) =>
+  campaign.sentCount > 0 || ['sending', 'sent', 'paused'].includes(campaign.status)
+
+const promptCancelCampaign = (campaign: Campaign) => {
   showActionsMenu.value = null
-  try {
-    await campaignsStore.resumeCampaign(campaign.uuid)
-  } catch (e) {
-    console.error('Failed to resume campaign:', e)
-  }
+  confirmCancel.value = campaign
+}
+
+const confirmCancelCampaign = async () => {
+  if (!confirmCancel.value) return
+  isCancelling.value = true
+  const target = confirmCancel.value
+  await runAction('Failed to cancel campaign', () => campaignsStore.cancelCampaign(target.uuid))
+  confirmCancel.value = null
+  isCancelling.value = false
 }
 
 const promptDeleteCampaign = (campaign: Campaign) => {
@@ -203,30 +235,14 @@ const cancelDelete = () => {
 const confirmDeleteCampaign = async () => {
   if (!confirmDelete.value) return
   isDeleting.value = true
-  try {
-    await campaignsStore.deleteCampaign(confirmDelete.value.uuid)
-    confirmDelete.value = null
-  } catch (e) {
-    console.error('Failed to delete campaign:', e)
-  } finally {
-    isDeleting.value = false
-  }
+  const target = confirmDelete.value
+  await runAction('Failed to delete campaign', () => campaignsStore.deleteCampaign(target.uuid))
+  confirmDelete.value = null
+  isDeleting.value = false
 }
 
 const refreshCampaigns = () => {
   campaignsStore.fetchCampaigns()
-}
-
-const getOpenRate = (campaign: Campaign) => {
-  const stats = campaign.stats
-  if (!stats || !stats.sent || stats.sent === 0) return 0
-  return ((stats.opened / stats.sent) * 100).toFixed(1)
-}
-
-const getClickRate = (campaign: Campaign) => {
-  const stats = campaign.stats
-  if (!stats || !stats.sent || stats.sent === 0) return 0
-  return ((stats.clicked / stats.sent) * 100).toFixed(1)
 }
 </script>
 
@@ -298,6 +314,11 @@ const getClickRate = (campaign: Campaign) => {
         </div>
       </div>
 
+      <div v-if="actionError" class="mx-6 mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center gap-2" role="alert">
+        <AlertCircle class="w-4 h-4 flex-shrink-0" />
+        {{ actionError }}
+      </div>
+
       <!-- Loading -->
       <div v-if="campaignsStore.isLoading && filteredCampaigns.length === 0" class="flex-1 flex items-center justify-center">
         <div class="text-center">
@@ -337,6 +358,7 @@ const getClickRate = (campaign: Campaign) => {
               <tr>
                 <th class="text-left px-5 py-4 text-xs font-semibold text-gray-600 uppercase tracking-wider">Campaign</th>
                 <th class="text-left px-5 py-4 text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                <th class="text-left px-5 py-4 text-xs font-semibold text-gray-600 uppercase tracking-wider">Sent</th>
                 <th class="text-left px-5 py-4 text-xs font-semibold text-gray-600 uppercase tracking-wider">Performance</th>
                 <th class="text-left px-5 py-4 text-xs font-semibold text-gray-600 uppercase tracking-wider">Date</th>
                 <th class="w-16"></th>
@@ -365,24 +387,40 @@ const getClickRate = (campaign: Campaign) => {
                   <Badge :variant="getStatusVariant(campaign.status)" class="capitalize">
                     {{ campaign.status }}
                   </Badge>
+                  <div
+                    v-if="campaign.statusReason"
+                    class="mt-1.5 inline-flex px-2 py-0.5 rounded bg-amber-50 text-amber-800 text-xs"
+                    data-test="status-reason"
+                  >
+                    {{ statusReasonLabel(campaign.statusReason) }}
+                  </div>
+                  <div v-if="campaign.status === 'sending'" class="mt-2 w-32" data-test="list-progress">
+                    <div v-if="!campaign.preparedAt" class="text-xs text-gray-500">Preparing audience...</div>
+                    <template v-else>
+                      <div class="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                        <div class="h-full bg-blue-500 transition-all" :style="{ width: `${campaignProgressPercent(campaign)}%` }" />
+                      </div>
+                      <div class="text-xs text-gray-500 mt-1">{{ campaignProgressPercent(campaign) }}%</div>
+                    </template>
+                  </div>
                 </td>
                 <td class="px-5 py-4">
-                  <div v-if="campaign.status === 'sent' || campaign.status === 'sending'" class="flex items-center gap-6">
+                  <div class="text-sm font-semibold text-gray-900" data-test="sent-count">
+                    {{ campaign.sentCount.toLocaleString() }}
+                    <span v-if="campaign.totalRecipients" class="font-normal text-gray-500">/ {{ campaign.totalRecipients.toLocaleString() }}</span>
+                  </div>
+                </td>
+                <td class="px-5 py-4">
+                  <div v-if="showsPerformance(campaign)" class="flex items-center gap-6">
                     <div class="text-center">
-                      <div class="text-lg font-semibold text-gray-900">
-                        {{ campaign.stats?.sent?.toLocaleString() || 0 }}
-                      </div>
-                      <div class="text-xs text-gray-500">Sent</div>
-                    </div>
-                    <div class="text-center">
-                      <div class="text-lg font-semibold text-green-600">
-                        {{ getOpenRate(campaign) }}%
+                      <div class="text-lg font-semibold text-green-600" data-test="open-rate">
+                        {{ campaign.trackOpens ? `${openRate(campaign).toFixed(1)}%` : '-' }}
                       </div>
                       <div class="text-xs text-gray-500">Opened</div>
                     </div>
                     <div class="text-center">
-                      <div class="text-lg font-semibold text-blue-600">
-                        {{ getClickRate(campaign) }}%
+                      <div class="text-lg font-semibold text-blue-600" data-test="click-rate">
+                        {{ campaign.trackClicks ? `${clickRate(campaign).toFixed(1)}%` : '-' }}
                       </div>
                       <div class="text-xs text-gray-500">Clicked</div>
                     </div>
@@ -394,7 +432,7 @@ const getClickRate = (campaign: Campaign) => {
                 <td class="px-5 py-4">
                   <div class="flex items-center gap-2 text-sm text-gray-600">
                     <Calendar class="w-4 h-4 text-gray-400" />
-                    {{ formatDate(campaign.sentAt || campaign.scheduledAt || campaign.createdAt) }}
+                    {{ formatDate(campaign.completedAt || campaign.startedAt || campaign.scheduledAt || campaign.createdAt) }}
                   </div>
                 </td>
                 <td class="px-5 py-4">
@@ -402,6 +440,7 @@ const getClickRate = (campaign: Campaign) => {
                     <button
                       @click="toggleActionsMenu(campaign.uuid)"
                       class="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                      :aria-label="`Actions for ${campaign.name}`"
                     >
                       <MoreVertical class="w-4 h-4 text-gray-500" />
                     </button>
@@ -419,7 +458,7 @@ const getClickRate = (campaign: Campaign) => {
                         View Details
                       </button>
                       <button
-                        v-if="campaign.status === 'draft'"
+                        v-if="canEdit(campaign)"
                         @click="openEditWizard(campaign)"
                         class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
                       >
@@ -449,8 +488,17 @@ const getClickRate = (campaign: Campaign) => {
                         <Play class="w-4 h-4" />
                         Resume Sending
                       </button>
-                      <hr class="my-1 border-gray-100" />
                       <button
+                        v-if="canCancel(campaign)"
+                        @click="promptCancelCampaign(campaign)"
+                        class="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                      >
+                        <XCircle class="w-4 h-4" />
+                        Cancel Campaign
+                      </button>
+                      <hr v-if="canDelete(campaign)" class="my-1 border-gray-100" />
+                      <button
+                        v-if="canDelete(campaign)"
                         @click="promptDeleteCampaign(campaign)"
                         class="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
                       >
@@ -472,9 +520,40 @@ const getClickRate = (campaign: Campaign) => {
       v-if="showWizard"
       :campaign="editingCampaign"
       @close="closeWizard"
-      @created="onCampaignCreated"
-      @updated="onCampaignUpdated"
+      @created="closeWizard"
+      @updated="closeWizard"
     />
+
+    <!-- Cancel Confirmation Modal -->
+    <div
+      v-if="confirmCancel"
+      class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+    >
+      <div class="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-6">
+        <div class="flex items-center gap-4 mb-4">
+          <div class="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+            <XCircle class="w-6 h-6 text-red-600" />
+          </div>
+          <div>
+            <h3 class="text-lg font-semibold text-gray-900">Cancel Campaign</h3>
+            <p class="text-gray-500 text-sm">A cancelled campaign cannot be resumed.</p>
+          </div>
+        </div>
+        <p class="text-gray-600 mb-6">
+          Stop <strong>{{ confirmCancel.name }}</strong>? Recipients who have not been sent to yet will be skipped.
+          Messages already handed to SES still finish.
+        </p>
+        <div class="flex items-center justify-end gap-3">
+          <Button variant="secondary" @click="confirmCancel = null" :disabled="isCancelling">
+            Keep Campaign
+          </Button>
+          <Button class="bg-red-600 hover:bg-red-700" @click="confirmCancelCampaign" :loading="isCancelling">
+            <XCircle class="w-4 h-4" />
+            Cancel Campaign
+          </Button>
+        </div>
+      </div>
+    </div>
 
     <!-- Delete Confirmation Modal -->
     <div
