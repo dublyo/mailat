@@ -5,9 +5,9 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import SignupCard from '@/components/forms/SignupCard.vue'
 import { identityApi, listApi, type ContactList, type Identity } from '@/lib/api'
-import { signupFormsApi, type SignupForm, type SignupFormDraft, type SignupEntries } from '@/lib/signupForms'
+import { deleteFormPrompt, signupFormsApi, type SignupForm, type SignupFormDraft, type SignupEntries } from '@/lib/signupForms'
 const forms = ref<SignupForm[]>([]), lists = ref<ContactList[]>([]), identities = ref<Identity[]>([])
-const loading = ref(true), saving = ref(false), error = ref(''), notice = ref(''), editing = ref(false), id = ref('')
+const loading = ref(true), saving = ref(false), deleting = ref(''), error = ref(''), notice = ref(''), editing = ref(false), id = ref('')
 const entries = ref<SignupEntries>(), viewing = ref<SignupForm>(), entriesLoading = ref(false)
 const empty = (): SignupFormDraft => ({ name: '', listId: '', identityId: '', title: 'Let’s stay in touch', description: 'A little inspiration, useful updates, and news worth opening.', consentText: 'I would like to receive email updates from this business. I can unsubscribe at any time.', buttonText: 'Count me in', privacyUrl: '', collectName: true, published: false })
 const draft = ref<SignupFormDraft>(empty())
@@ -28,6 +28,13 @@ async function save() {
   try { const result = id.value ? await signupFormsApi.update(id.value, draft.value) : await signupFormsApi.create(draft.value); id.value = result.uuid; notice.value = result.published ? 'Your form is live. Share the link or embed it below.' : 'Draft saved. Publish when you’re ready.'; await load() }
   catch (e) { error.value = e instanceof Error ? e.message : 'Could not save this form.' }
   finally { saving.value = false }
+}
+async function remove(f: SignupForm) {
+  if (!confirm(deleteFormPrompt(f))) return
+  deleting.value = f.uuid; error.value = ''; notice.value = ''
+  try { await signupFormsApi.remove(f.uuid); notice.value = `Deleted "${f.name}".`; await load() }
+  catch (e) { error.value = e instanceof Error ? e.message : 'Could not delete this form.' }
+  finally { deleting.value = '' }
 }
 async function copy(value: string) { try { await navigator.clipboard.writeText(value); notice.value = 'Copied—ready to share!' } catch { error.value = 'Copy is unavailable here. Select and copy the text below.' } }
 async function showSignups(f: SignupForm, page = 1) { viewing.value = f; entriesLoading.value = true; entries.value = undefined; error.value = ''; try { entries.value = await signupFormsApi.entries(f.uuid, page) } catch (e) { error.value = e instanceof Error ? e.message : 'Could not load signups.' } finally { entriesLoading.value = false } }
@@ -76,7 +83,7 @@ onMounted(load)
       <template v-else>
         <div v-if="!lists.length" class="rounded-xl border border-dashed border-gmail-border p-10 text-center"><h2 class="text-lg font-medium">First, give your subscribers a home</h2><p class="mt-2 text-gmail-gray">Create a contact list, then make its first signup form.</p><RouterLink to="/contacts" class="mt-4 inline-block text-gmail-blue underline">Go to contacts</RouterLink></div>
         <div v-else-if="!forms.length" class="rounded-xl border border-dashed border-gmail-border p-12 text-center"><FileText class="mx-auto mb-4 h-10 w-10 text-gmail-blue" /><h2 class="text-lg font-medium">Let’s grow your list</h2><p class="mt-2 text-gmail-gray">Create an invitation people can sign up to from anywhere.</p><Button class="mt-5" @click="edit()">Create your first form</Button></div>
-        <div v-else class="grid gap-5 md:grid-cols-2 2xl:grid-cols-3"><article v-for="form in forms" :key="form.uuid" class="rounded-xl border border-gmail-border p-5"><div class="flex items-center justify-between gap-3"><h2 class="break-words font-semibold">{{ form.name }}</h2><span class="rounded-full px-2 py-1 text-xs" :class="form.published ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-600'">{{ form.published ? 'Published' : 'Draft' }}</span></div><p class="mt-2 text-sm text-gmail-gray">{{ form.listName }} · {{ form.confirmationMode === 'double' ? 'Double opt-in' : 'Single opt-in' }}</p><p class="mt-5 text-sm">{{ form.subscribed }} completed · {{ form.pending }} awaiting confirmation</p><div class="mt-5 flex flex-wrap gap-3"><Button variant="secondary" size="sm" @click="edit(form)">Edit & share</Button><Button variant="ghost" size="sm" @click="showSignups(form)">View signups</Button><a v-if="form.published" :href="link(form.uuid)" target="_blank" rel="noopener noreferrer" class="flex items-center gap-1 text-sm text-gmail-blue">Open<ExternalLink class="h-4 w-4" /></a></div></article></div>
+        <div v-else class="grid gap-5 md:grid-cols-2 2xl:grid-cols-3"><article v-for="form in forms" :key="form.uuid" class="rounded-xl border border-gmail-border p-5"><div class="flex items-center justify-between gap-3"><h2 class="break-words font-semibold">{{ form.name }}</h2><span class="rounded-full px-2 py-1 text-xs" :class="form.published ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-600'">{{ form.published ? 'Published' : 'Draft' }}</span></div><p class="mt-2 text-sm text-gmail-gray">{{ form.listName }} · {{ form.confirmationMode === 'double' ? 'Double opt-in' : 'Single opt-in' }}</p><p class="mt-5 text-sm">{{ form.subscribed }} completed · {{ form.pending }} awaiting confirmation</p><div class="mt-5 flex flex-wrap gap-3"><Button variant="secondary" size="sm" @click="edit(form)">Edit & share</Button><Button variant="ghost" size="sm" @click="showSignups(form)">View signups</Button><Button variant="danger" size="sm" :loading="deleting === form.uuid" :disabled="!!deleting" @click="remove(form)">Delete</Button><a v-if="form.published" :href="link(form.uuid)" target="_blank" rel="noopener noreferrer" class="flex items-center gap-1 text-sm text-gmail-blue">Open<ExternalLink class="h-4 w-4" /></a></div></article></div>
       </template>
     </div>
   </AppLayout>

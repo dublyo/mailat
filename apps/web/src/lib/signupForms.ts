@@ -20,6 +20,13 @@ export const signupFormsApi = {
   create: (data: SignupFormDraft) => api.post<SignupForm>('/api/v1/signup-forms', data),
   update: (id: string, data: SignupFormDraft) => api.put<SignupForm>(`/api/v1/signup-forms/${id}`, data),
   entries: (id: string, page = 1) => api.get<SignupEntries>(`/api/v1/signup-forms/${id}/signups?page=${page}`),
+  remove: (id: string) => api.delete<null>(`/api/v1/signup-forms/${encodeURIComponent(id)}`),
+}
+// Deleting removes the form and its signup history (the server cascades
+// signup_requests); contacts and their consent audit records stay.
+export function deleteFormPrompt(form: Pick<SignupForm, 'name' | 'published'>): string {
+  const live = form.published ? ' Its hosted page, website embeds and outstanding confirmation links stop working.' : ''
+  return `Delete "${form.name}"?${live} Its signup history is removed. Contacts already on the list keep their subscription and consent records. This cannot be undone.`
 }
 // This client deliberately omits authentication and browser storage so iframe
 // submissions cannot expose a logged-in owner's credentials to embedding sites.
