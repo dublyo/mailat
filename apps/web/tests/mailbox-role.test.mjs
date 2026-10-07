@@ -109,7 +109,7 @@ test('settings tabs per role', () => {
   assert.deepEqual(visible(admin, false), tabs)
 })
 
-test('Settings shows the Signature tab and hides sign-in providers from mailbox users', async () => {
+test('Settings shows the Signature tab and hides sign-in providers and staff notifications from mailbox users', async () => {
   const { readFile } = await import('node:fs/promises')
   const source = await readFile(`${webRoot}/src/views/Settings.vue`, 'utf8')
   assert.match(source, /\{ id: 'signature', label: 'Signature'/)
@@ -117,6 +117,9 @@ test('Settings shows the Signature tab and hides sign-in providers from mailbox 
   // The OAuth block is gated on staff, and providers are never fetched for mailbox users.
   assert.match(source, /<section v-if="isStaff\(authStore\.user\) && \(oauthProviders\.length/)
   assert.match(source, /if \(!isStaff\(authStore\.user\)\) return\s+fetchWebhooks\(\)[\s\S]*fetchSignInProviders\(\)/)
+  // Campaign reports and org health alerts are staff-only notification choices.
+  assert.match(source, /<label v-if="isStaff\(authStore\.user\)"[^>]*>\s*<input\s+type="checkbox"\s+v-model="settingsStore\.settings\.campaignReports"/)
+  assert.match(source, /<section v-if="isStaff\(authStore\.user\)"[^>]*>\s*<h3[^>]*>Alert Notifications<\/h3>/)
 })
 
 test('inbox domain filter: mailbox users use identity domains, never the domain list', async () => {

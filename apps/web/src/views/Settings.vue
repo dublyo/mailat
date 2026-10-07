@@ -714,7 +714,8 @@ async function handleSignOutAll() {
                   />
                   <span class="text-sm">New email notifications</span>
                 </label>
-                <label class="flex items-center gap-3 cursor-pointer">
+                <!-- Campaigns are staff-only; mailbox users never get these reports. -->
+                <label v-if="isStaff(authStore.user)" class="flex items-center gap-3 cursor-pointer">
                   <input
                     type="checkbox"
                     v-model="settingsStore.settings.campaignReports"
@@ -733,7 +734,8 @@ async function handleSignOutAll() {
               </div>
             </section>
 
-            <section class="pt-6 border-t border-gmail-border">
+            <!-- Blacklist, bounce and quota alerts are org health, which mailbox users cannot see. -->
+            <section v-if="isStaff(authStore.user)" class="pt-6 border-t border-gmail-border">
               <h3 class="text-sm font-medium text-gmail-gray mb-4">Alert Notifications</h3>
               <div class="space-y-3">
                 <label class="flex items-center gap-3 cursor-pointer">
