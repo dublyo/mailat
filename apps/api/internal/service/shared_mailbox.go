@@ -121,6 +121,10 @@ func (s *SharedMailboxService) Create(ctx context.Context, a OrgActor, input *Cr
 	}
 	email := strings.ToLower(raw)
 	domainName := email[strings.LastIndexByte(email, '@')+1:]
+	// '+' stays reserved for local+tag routing to the base address.
+	if strings.Contains(email[:strings.LastIndexByte(email, '@')], "+") {
+		return nil, orgError(http.StatusBadRequest, "The address cannot contain '+'")
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -371,11 +375,12 @@ func lockMember(ctx context.Context, tx *sql.Tx, a OrgActor, mailboxID int, user
 	return
 }
 
-// otherReaders counts readers other than userID. The mailbox row lock held by
-// the caller keeps the count stable.
+// otherReaders counts readers other than userID who get copies
+// (sharedReaderSQL). The mailbox row lock held by the caller keeps the count stable.
 func otherReaders(ctx context.Context, tx *sql.Tx, mailboxID int, userID int64) (int, error) {
 	var n int
-	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM shared_mailbox_members WHERE shared_mailbox_id=$1 AND can_read AND user_id<>$2`, mailboxID, userID).Scan(&n)
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM shared_mailbox_members m JOIN users u ON u.id=m.user_id
+		WHERE m.shared_mailbox_id=$1 AND m.can_read AND m.user_id<>$2 AND `+sharedReaderSQL, mailboxID, userID).Scan(&n)
 	return n, err
 }
 

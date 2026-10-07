@@ -307,6 +307,11 @@ func identityAddressForDomain(value, domain string) (string, error) {
 	if len(parts) != 2 || !strings.EqualFold(parts[1], domain) {
 		return "", fmt.Errorf("email address must belong to the selected domain")
 	}
+	// '+' stays reserved for local+tag routing to the base address, so a new
+	// identity can never take another user's +tag mail.
+	if strings.Contains(parts[0], "+") {
+		return "", fmt.Errorf("the address cannot contain '+'")
+	}
 	return strings.ToLower(value), nil
 }
 

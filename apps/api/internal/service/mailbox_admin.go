@@ -269,6 +269,7 @@ func (s *MailboxService) UpdateMailbox(ctx context.Context, a OrgActor, userUUID
 			return nil, err
 		}
 		changed["recoveryEmail"] = recovery != ""
+		changed["notified"] = notice != nil
 	}
 	if len(changed) > 0 {
 		if err = auditTx(ctx, tx, a, "mailbox_update", "user", m.uuid, "Updated mailbox "+m.email, changed); err != nil {

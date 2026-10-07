@@ -17,7 +17,7 @@ func TestIdentityAddressDomainBoundary(t *testing.T) {
 		valid           bool
 	}{
 		{"Sales@Example.com", "example.com", true},
-		{"sales+offer@example.com", "example.com", true},
+		{"sales+offer@example.com", "example.com", false},
 		{"sales@elsewhere.com", "example.com", false},
 		{"Display <sales@example.com>", "example.com", false},
 		{"sales@example.com\r\nBcc: x@elsewhere.com", "example.com", false},

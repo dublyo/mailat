@@ -477,7 +477,7 @@ func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *Recei
 }
 
 // mailboxOwners returns who gets a copy of mail for ident. A shared identity
-// delivers to its active readers; FOR SHARE makes a concurrent member removal
+// delivers to its readers (sharedReaderSQL); FOR SHARE makes a concurrent member removal
 // wait until this ingest commits, so the removal also deletes the new copy.
 // Zero readers means the message is acknowledged without a copy.
 //
@@ -504,7 +504,7 @@ func mailboxOwners(ctx context.Context, tx *sql.Tx, ident *recipientIdentity) ([
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT m.user_id FROM shared_mailbox_members m JOIN shared_mailboxes sm ON sm.id=m.shared_mailbox_id
    JOIN users u ON u.id=m.user_id
-   WHERE sm.identity_id=$1 AND m.can_read AND u.status='active'
+   WHERE sm.identity_id=$1 AND m.can_read AND `+sharedReaderSQL+`
    ORDER BY m.user_id FOR SHARE OF m`, ident.ID)
 	if err != nil {
 		return nil, err
@@ -525,6 +525,11 @@ func mailboxOwners(ctx context.Context, tx *sql.Tx, ident *recipientIdentity) ([
 // users, plus mailbox users who are still pending setup or suspended, so their
 // mail accumulates instead of falling to the catch-all.
 const deliverableOwnerSQL = "(u.status='active' OR (u.role='mailbox' AND u.status IN ('pending','suspended')))"
+
+// sharedReaderSQL (alias u) is which shared-mailbox readers get copies: active
+// users, plus suspended mailbox users, whose mail keeps arriving like their
+// personal mail. The last-reader guards count the same readers.
+const sharedReaderSQL = "(u.status='active' OR (u.role='mailbox' AND u.status='suspended'))"
 
 // plusBaseAddress returns local@domain for local+tag@domain, else the address.
 func plusBaseAddress(address string) string {

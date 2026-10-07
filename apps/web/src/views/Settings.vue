@@ -15,6 +15,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useDomainsStore } from '@/stores/domains'
 import { settingsTabVisible } from '@/lib/roles'
+import { useRequestedTab } from '@/lib/settingsTab'
 import { webhookApi, oauthApi, isStaff, type OAuthConnection, type TwoFactorSetup, type Webhook as WebhookType, type WebhookDelivery, type WebhookAttempt } from '@/lib/api'
 
 const authStore = useAuthStore()
@@ -57,8 +58,8 @@ const allTabs: { id: SettingsTab; label: string; icon: typeof User }[] = [
 // The server enforces roles; hiding tabs only avoids showing a 403.
 const hasSharedMemberships = computed(() => domainsStore.identities.some(i => i.shared))
 const tabs = computed(() => allTabs.filter(tab => settingsTabVisible(tab.id, authStore.user, hasSharedMemberships.value)))
-const requestedTab = route.query.tab as SettingsTab
-const activeTab = ref<SettingsTab>(tabs.value.some(tab => tab.id === requestedTab) ? requestedTab : 'general')
+// A mailbox user's Shared tab appears once identities load, so the ?tab= deep link waits for it.
+const activeTab = useRequestedTab<SettingsTab>(route.query.tab, computed(() => tabs.value.map(tab => tab.id)), 'general')
 
 // Password change modal
 const showPasswordModal = ref(false)
@@ -275,6 +276,7 @@ async function confirmOAuthLink(ticket: string) {
 }
 
 onMounted(async () => {
+  if (!domainsStore.identities.length) domainsStore.fetchIdentities()
   settingsStore.fetchSettings()
   settingsStore.fetchSessions()
   settingsStore.fetch2FAStatus()

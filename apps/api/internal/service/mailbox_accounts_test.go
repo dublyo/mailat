@@ -338,6 +338,46 @@ func TestMailboxPasswordModeAndAdminReset(t *testing.T) {
 	wantStatus(t, err, http.StatusNotFound)
 }
 
+// An admin without a sending identity can still set a password, reset 2FA and
+// change the recovery email of a mailbox with a recovery email; the notice is
+// skipped and the audit row says so (spec: password mode works without one).
+func TestMailboxAdminChangesWithoutSendingIdentity(t *testing.T) {
+	f := newMailboxUserFixture(t)
+	ctx := context.Background()
+	res := f.create(t, "rae", password("initial-password"))
+	user := f.userID(t, res.Mailbox.UserUUID)
+	if _, err := f.mb.UpdateMailbox(ctx, f.admin, res.Mailbox.UserUUID, &UpdateMailboxRequest{RecoveryEmail: strp("rae@home.test")}); err != nil {
+		t.Fatal(err)
+	}
+	// The admin's only sending identity stops sending.
+	if _, err := f.db.Exec(`UPDATE identities SET can_send=false WHERE id=$1`, f.catchAll); err != nil {
+		t.Fatal(err)
+	}
+	sent := f.mailCount()
+	if _, err := f.mb.SetPassword(ctx, f.admin, res.Mailbox.UserUUID, "second-password"); err != nil {
+		t.Fatal("set password without a sending identity:", err)
+	}
+	if _, err := f.login("rae@acme.test", "second-password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE users SET totp_enabled=true WHERE id=$1`, user); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.mb.ResetTwoFactor(ctx, f.admin, res.Mailbox.UserUUID); err != nil {
+		t.Fatal("2FA reset without a sending identity:", err)
+	}
+	if _, err := f.mb.UpdateMailbox(ctx, f.admin, res.Mailbox.UserUUID, &UpdateMailboxRequest{RecoveryEmail: strp("rae@new.test")}); err != nil {
+		t.Fatal("recovery change without a sending identity:", err)
+	}
+	if f.mailCount() != sent {
+		t.Fatal("a notice was sent without a sending identity")
+	}
+	if n := f.count(t, `SELECT count(DISTINCT action) FROM audit_logs WHERE action IN ('mailbox_password_set','mailbox_2fa_reset','mailbox_update') AND new_values->>'notified'='false'`); n != 3 ||
+		f.count(t, `SELECT count(*) FROM audit_logs WHERE new_values->>'notified'='true'`) != 0 {
+		t.Fatalf("%d actions record the skipped notice", n)
+	}
+}
+
 // F6: suspend blocks sign-in but keeps mail arriving; forwards pause and stay
 // paused after reactivation; auto-replies stop. "May receive" off sends mail
 // to the catch-all.
@@ -457,6 +497,10 @@ func TestMailboxRemoveAndRecreate(t *testing.T) {
 	if err = f.db.QueryRow(`SELECT id FROM identities WHERE user_id=$1`, oldID).Scan(&identity); err != nil {
 		t.Fatal(err)
 	}
+	// Personal data on the identity must not pass to the next person.
+	if _, err = f.db.Exec(`UPDATE identities SET signature_html='<p>Kim, CFO, +1 555</p>',signature_text='Kim, CFO, +1 555',color='#FF0000' WHERE id=$1`, identity); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = f.mb.Remove(ctx, f.owner, old.UserUUID, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -467,6 +511,9 @@ func TestMailboxRemoveAndRecreate(t *testing.T) {
 	newID := f.userID(t, again.UserUUID)
 	if again.IdentityUUID != old.IdentityUUID || newID == oldID || again.Status != "invited" || !again.MayReceive {
 		t.Fatalf("re-created %+v (old %+v)", again, old)
+	}
+	if f.count(t, `SELECT count(*) FROM identities WHERE id=$1 AND signature_html IS NULL AND signature_text IS NULL AND color='#3B82F6'`, identity) != 1 {
+		t.Fatal("re-created mailbox kept the previous signature")
 	}
 	if f.count(t, `SELECT count(*) FROM users WHERE id=$1 AND email LIKE 'removed+%@invalid'`, oldID) != 1 {
 		t.Fatal("old login not renamed")

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -341,6 +342,35 @@ func TestSharedMailboxIngestFanOut(t *testing.T) {
 	}
 }
 
+// A suspended mailbox user keeps receiving shared copies like personal mail,
+// so it counts as a reader; a suspended staff member gets none and does not.
+func TestSharedMailboxSuspendedReaders(t *testing.T) {
+	f := newSharedFixture(t)
+	ctx := context.Background()
+	mb := f.create(t, "team@one.test")
+	team := identityIDByUUID(t, f.db, mb.IdentityUUID)
+	f.add(t, mb, 5, true, false)
+	f.add(t, mb, 6, true, false)
+	if _, err := f.db.Exec(`UPDATE users SET role='mailbox',status='suspended' WHERE id=5; UPDATE users SET status='suspended' WHERE id=6`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.RemoveMember(ctx, f.owner, mb.ID, f.uuids[1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ingest(t, "ses-suspended-1", "team@one.test", "a@one.test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.owners(t, team, "ses-suspended-1"); fmt.Sprint(got) != "[5]" {
+		t.Fatalf("shared copies owned by %v", got)
+	}
+	// User 6 gets no copies, so user 5 is the last reader.
+	err := f.svc.RemoveMember(ctx, f.owner, mb.ID, f.uuids[5])
+	var oe *OrgError
+	if !errors.As(err, &oe) || oe.Status != http.StatusConflict {
+		t.Fatal("removed the last reader that gets copies:", err)
+	}
+}
+
 func TestSharedMailboxRevokeReadDropsDeliveredCopies(t *testing.T) {
 	f := newSharedFixture(t)
 	ctx := context.Background()
@@ -467,6 +497,9 @@ func TestSharedMailboxSendingAndRules(t *testing.T) {
 	if _, err := compose.authorizeMailboxSender(ctx, 1, 1, "free@one.test"); err != nil {
 		t.Fatal("owner alias:", err)
 	}
+	if _, err := compose.authorizeMailboxSender(ctx, 1, 1, "team+x@one.test"); err != errForeignSender {
+		t.Fatal("owner sent as a shared identity's +tag:", err)
+	}
 	if _, err := compose.authorizeMailboxSender(ctx, 5, team, ""); err == nil {
 		t.Fatal("reader without can_send composed as the shared identity")
 	}
@@ -522,5 +555,28 @@ func TestSharedMailboxSendingAndRules(t *testing.T) {
 	}
 	if _, user, err = activeRuleForIdentity(ctx, f.db, 1); err != nil || user != 1 {
 		t.Fatalf("personal rule user=%d err=%v", user, err)
+	}
+}
+
+// '+' stays reserved for local+tag routing: neither a shared mailbox nor a new
+// identity may take a +tag of b@one.test, which routes to b's mailbox.
+func TestPlusAddressesStayReserved(t *testing.T) {
+	f := newSharedFixture(t)
+	ctx := context.Background()
+	_, err := f.svc.Create(ctx, f.owner, &CreateSharedMailboxInput{Name: "Bills", Email: "b+bills@one.test"})
+	var oe *OrgError
+	if !errors.As(err, &oe) || oe.Status != http.StatusBadRequest {
+		t.Fatal("shared +tag mailbox:", err)
+	}
+	var domain string
+	if err = f.db.QueryRow(`SELECT uuid FROM domains WHERE id=1`).Scan(&domain); err != nil {
+		t.Fatal(err)
+	}
+	ids := NewIdentityService(f.db, &config.Config{EmailProvider: "ses"})
+	if _, err = ids.CreateIdentity(ctx, 1, &model.CreateIdentityRequest{DomainId: domain, Email: "b+bills@one.test", DisplayName: "Bills"}); err == nil || !strings.Contains(err.Error(), "'+'") {
+		t.Fatal("+tag identity:", err)
+	}
+	if _, err = ids.CreateIdentity(ctx, 1, &model.CreateIdentityRequest{DomainId: domain, Email: "bills@one.test", DisplayName: "Bills"}); err != nil {
+		t.Fatal("plain identity:", err)
 	}
 }

@@ -403,7 +403,7 @@ func releaseSharedMemberships(ctx context.Context, tx *sql.Tx, userID, owner int
 		}
 		var others bool
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM shared_mailbox_members m JOIN users u ON u.id=m.user_id
-			WHERE m.shared_mailbox_id=$1 AND m.user_id<>$2 AND m.can_read AND u.status='active')`, mb.id, userID).Scan(&others); err != nil {
+			WHERE m.shared_mailbox_id=$1 AND m.user_id<>$2 AND m.can_read AND `+sharedReaderSQL+`)`, mb.id, userID).Scan(&others); err != nil {
 			return nil, err
 		}
 		if others {

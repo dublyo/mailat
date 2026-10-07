@@ -69,16 +69,19 @@ func TestSendAsRuleCompose(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(member, memberIdentity, "ceo@send.test", nil)
-	check(member, memberIdentity, "other+x@send.test", errMemberAlias)
+	check(member, memberIdentity, "other+x@send.test", errForeignSender)
 	check(member, memberIdentity, "sales+x@send.test", errMemberAlias)
-	check(member, memberIdentity, "owner+x@send.test", errMemberAlias)
+	check(member, memberIdentity, "owner+x@send.test", errForeignSender)
 	check(member, memberIdentity, "other@send.test", errForeignSender)
 	check(member, memberIdentity, "sales@send.test", errForeignSender)
 	checkErr(member, memberIdentity, "ceo@elsewhere.test")
 
 	// Admins: any free address, never another identity's address or alias.
 	check(owner, ownerIdentity, "ceo@send.test", nil)
-	check(owner, ownerIdentity, "other+x@send.test", nil)
+	check(owner, ownerIdentity, "other+x@send.test", errForeignSender)
+	check(owner, ownerIdentity, "member+x@send.test", errForeignSender)
+	check(owner, ownerIdentity, "owner+x@send.test", nil)
+	check(owner, ownerIdentity, "sales+x@send.test", nil)
 	check(owner, ownerIdentity, "sales@send.test", errForeignSender)
 	check(owner, ownerIdentity, "support@send.test", errForeignSender)
 	check(owner, ownerIdentity, "other@send.test", errForeignSender)
@@ -138,7 +141,7 @@ func TestSendAsRuleTransactional(t *testing.T) {
 	if identity, err := send(memberActor, "ceo@send.test"); err != nil || identity != memberIdentity {
 		t.Fatal("wildcard send", identity, err)
 	}
-	if _, err := send(memberActor, "other+x@send.test"); err != errMemberAlias {
+	if _, err := send(memberActor, "other+x@send.test"); err != errForeignSender {
 		t.Fatal("wildcard covered another identity's +tag:", err)
 	}
 	// Admins keep free addresses but never another user's alias.
@@ -148,6 +151,13 @@ func TestSendAsRuleTransactional(t *testing.T) {
 	}
 	if _, err := send(adminActor, "sales@send.test"); err != errForeignSender {
 		t.Fatal("admin sent as another user's alias:", err)
+	}
+	// local+tag mail routes to the base identity, so its +tags are its owner's.
+	if _, err := send(adminActor, "other+x@send.test"); err != errForeignSender {
+		t.Fatal("admin sent as another user's +tag:", err)
+	}
+	if identity, err := send(adminActor, "owner+x@send.test"); err != nil || identity != ownerIdentity {
+		t.Fatal("admin own +tag", identity, err)
 	}
 	// A disabled alias owner stops alias sends.
 	if _, err := db.Exec(`UPDATE identities SET can_send=false WHERE id=$1`, memberIdentity); err != nil {

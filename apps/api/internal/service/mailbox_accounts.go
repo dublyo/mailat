@@ -234,7 +234,8 @@ func (s *MailboxService) CreateMailbox(ctx context.Context, a OrgActor, domainUU
 	}
 	identityID := reuseID
 	if reuseID > 0 {
-		_, err = tx.ExecContext(ctx, `UPDATE identities SET user_id=$2,display_name=$3,is_default=true,is_catch_all=false,wildcard_sender=false,can_send=$4,can_receive=$5,updated_at=now() WHERE id=$1 AND kind='personal'`,
+		_, err = tx.ExecContext(ctx, `UPDATE identities SET user_id=$2,display_name=$3,is_default=true,is_catch_all=false,wildcard_sender=false,can_send=$4,can_receive=$5,
+			signature_html=NULL,signature_text=NULL,color='#3B82F6',updated_at=now() WHERE id=$1 AND kind='personal'`,
 			reuseID, userID, name, maySend, mayReceive)
 	} else {
 		err = tx.QueryRowContext(ctx, `INSERT INTO identities(user_id,domain_id,email,display_name,kind,is_default,can_send,can_receive,color,updated_at)
@@ -421,13 +422,18 @@ func revokeResetLinks(ctx context.Context, tx *sql.Tx, userID int64) error {
 }
 
 // notifyRecovery tells the mailbox's recovery address about an admin change
-// to its sign-in. It fails closed: without a way to notify, the change is not
-// made.
+// to its sign-in. When the acting admin has no sending identity the change is
+// still made without a notice (spec: password mode works without one); a nil
+// payload means nobody was notified, which callers record in the audit row.
 func (s *MailboxService) notifyRecovery(ctx context.Context, tx *sql.Tx, a OrgActor, m *mailboxUser, to, subject, what string) (*worker.EmailSendPayload, error) {
 	if to == "" {
 		return nil, nil
 	}
 	sender, err := inviteSender(ctx, tx, a, "")
+	var noSender *OrgError
+	if errors.As(err, &noSender) && noSender.Status == http.StatusConflict {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -477,7 +483,7 @@ func (s *MailboxService) SetPassword(ctx context.Context, a OrgActor, userUUID, 
 	if err != nil {
 		return nil, err
 	}
-	if err = auditTx(ctx, tx, a, "mailbox_password_set", "user", m.uuid, "Set the password of mailbox "+m.email, map[string]any{"sessionsRevoked": n}); err != nil {
+	if err = auditTx(ctx, tx, a, "mailbox_password_set", "user", m.uuid, "Set the password of mailbox "+m.email, map[string]any{"sessionsRevoked": n, "notified": notice != nil}); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -743,7 +749,7 @@ func (s *MailboxService) ResetTwoFactor(ctx context.Context, a OrgActor, userUUI
 	if err != nil {
 		return nil, err
 	}
-	if err = auditTx(ctx, tx, a, "mailbox_2fa_reset", "user", m.uuid, "Reset two-factor sign-in of mailbox "+m.email, nil); err != nil {
+	if err = auditTx(ctx, tx, a, "mailbox_2fa_reset", "user", m.uuid, "Reset two-factor sign-in of mailbox "+m.email, map[string]any{"notified": notice != nil}); err != nil {
 		return nil, err
 	}
 	mb, err := loadMailbox(ctx, tx, a.OrgID, m.id)

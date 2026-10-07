@@ -110,12 +110,16 @@ func senderAllowed(ctx context.Context, q queryer, identityID int64, identityEma
 	return !taken, err
 }
 
-// foreignSender reports whether addr is the address or a send-as alias of an
-// identity other than identityID that is not one of the user's own personal identities.
+// foreignSender reports whether addr is the address, a +tag of the address
+// (local+tag mail routes to the base identity, so replies would reach its
+// owner), or a send-as alias of an identity other than identityID that is not
+// one of the user's own personal identities. Alias +tags do not route to the
+// alias owner, so aliases match exactly.
 func foreignSender(ctx context.Context, q queryer, userID, identityID int64, addr string) (bool, error) {
 	var foreign bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE lower(email)=$1 AND id<>$3 AND NOT (kind='personal' AND user_id=$2))
-	 OR EXISTS(SELECT 1 FROM identity_send_aliases a JOIN identities i ON i.id=a.identity_id WHERE a.address=$1 AND i.id<>$3 AND NOT (i.kind='personal' AND i.user_id=$2))`, addr, userID, identityID).Scan(&foreign)
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE lower(email)=ANY($4) AND id<>$3 AND NOT (kind='personal' AND user_id=$2))
+	 OR EXISTS(SELECT 1 FROM identity_send_aliases a JOIN identities i ON i.id=a.identity_id WHERE a.address=$1 AND i.id<>$3 AND NOT (i.kind='personal' AND i.user_id=$2))`,
+		addr, userID, identityID, pq.Array([]string{addr, baseAddress(addr)})).Scan(&foreign)
 	return foreign, err
 }
 
