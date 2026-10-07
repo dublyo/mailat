@@ -134,7 +134,7 @@ func EnqueueArrivalJobs(ctx context.Context, tx *sql.Tx, in ArrivalInput) error 
 		}
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT id,user_id FROM email_forwards WHERE identity_id=$1 AND status='active' ORDER BY id`, in.IdentityID)
+	rows, err := tx.QueryContext(ctx, `SELECT f.id,f.user_id FROM email_forwards f WHERE f.identity_id=$1 AND f.status='active' AND `+ownerActiveSQL("f.user_id")+` ORDER BY f.id`, in.IdentityID)
 	if err != nil {
 		return err
 	}
@@ -441,19 +441,31 @@ func (r *ArrivalRunner) autoReplyDailyLimit() int {
 	return 200
 }
 
+// ownerActiveSQL is true while the rule's owner is active. Pending and
+// suspended mailbox users still receive mail, but their rules never run.
+func ownerActiveSQL(user string) string {
+	return `EXISTS(SELECT 1 FROM users ou WHERE ou.id=` + user + ` AND ou.status='active')`
+}
+
 // activeRuleForIdentity returns the oldest active auto-reply covering the
 // identity and its owner, or 0. Rules belong to the personal identity's owner
 // or to a can_manage member of a shared one; a rule with no identity_ids covers
 // all of its owner's personal identities, never a shared identity.
 func activeRuleForIdentity(ctx context.Context, q queryer, identityID int64) (id, userID int64, err error) {
 	err = q.QueryRowContext(ctx, `SELECT a.id,a.user_id FROM auto_replies a JOIN identities i ON i.id=$1 AND `+identityAccessSQL("i", "a.user_id", identityCanManage)+`
-		WHERE a.active AND a.start_date<=now() AND (a.end_date IS NULL OR a.end_date>=now())
+		WHERE a.active AND a.start_date<=now() AND (a.end_date IS NULL OR a.end_date>=now()) AND `+ownerActiveSQL("a.user_id")+`
 			AND ((cardinality(COALESCE(a.identity_ids,'{}'))=0 AND i.kind='personal') OR $1=ANY(a.identity_ids))
 		ORDER BY a.created_at, a.id LIMIT 1`, identityID).Scan(&id, &userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, nil
 	}
 	return id, userID, err
+}
+
+func ownerActive(ctx context.Context, q queryer, userID int64) (bool, error) {
+	var ok bool
+	err := q.QueryRowContext(ctx, `SELECT `+ownerActiveSQL("$1"), userID).Scan(&ok)
+	return ok, err
 }
 
 // runAutoReply re-checks the rule, claims the sender for the reply interval,
@@ -489,6 +501,11 @@ func (r *ArrivalRunner) runAutoReply(ctx context.Context, tx *sql.Tx, job *arriv
 	}
 	if len(identityIDs) > 0 && !containsInt64(identityIDs, job.IdentityID) {
 		return arrivalSkipped("rule-changed"), nil
+	}
+	if ok, err := ownerActive(ctx, tx, job.UserID); err != nil {
+		return arrivalResult{}, err
+	} else if !ok {
+		return arrivalSkipped("owner-inactive"), nil
 	}
 	var owned, canSend bool
 	err = tx.QueryRowContext(ctx, `SELECT `+identityAccessSQL("i", "$2", identityCanManage)+`, COALESCE(i.can_send,false) AND d.status='active'

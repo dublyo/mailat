@@ -625,6 +625,11 @@ func (r *ArrivalRunner) runForward(ctx context.Context, tx *sql.Tx, job *arrival
 	if status != "active" {
 		return arrivalSkipped("forward-" + status), nil
 	}
+	if ok, err := ownerActive(ctx, tx, ownerID); err != nil {
+		return arrivalResult{}, err
+	} else if !ok {
+		return arrivalSkipped("owner-inactive"), nil
+	}
 	if r.tx == nil || r.tx.emailProvider == nil {
 		return arrivalFailed("provider-not-configured"), nil
 	}

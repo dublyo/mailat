@@ -466,3 +466,40 @@ func TestForwardSuspensionAndSkips(t *testing.T) {
 		t.Fatalf("only the first forward should have been sent, got %d", before)
 	}
 }
+
+// Pending and suspended owners keep receiving mail, but their auto-replies
+// and forwards never run: queued jobs are skipped and no new rule matches.
+func TestArrivalJobsSkipInactiveOwner(t *testing.T) {
+	f := newForwardFixture(t)
+	ctx := context.Background()
+	f.createRule(t, CreateAutoReplyInput{ReplyIntervalDays: 7})
+	uuid, token := f.create(t, "dest@outside.test", true)
+	if err := f.replies.VerifyEmailForward(ctx, uuid, token); err != nil {
+		t.Fatal(err)
+	}
+	f.deliver(t, "inactive-1", "alice@sender.test")
+	if n := f.count(t, `SELECT COUNT(*) FROM mail_arrival_jobs WHERE ses_message_id='inactive-1' AND kind IN ('auto_reply','forward')`); n != 2 {
+		t.Fatalf("queued %d jobs", n)
+	}
+	if _, err := f.db.Exec(`UPDATE users SET status='suspended' WHERE id=$1`, f.user); err != nil {
+		t.Fatal(err)
+	}
+	f.runOnce(t)
+	for _, kind := range []string{"auto_reply", "forward"} {
+		if status, result := f.job(t, "inactive-1", kind); status != "skipped" || result != "skipped:owner-inactive" {
+			t.Fatalf("%s: %s %s", kind, status, result)
+		}
+	}
+	if len(f.dispatched) != 0 {
+		t.Fatalf("dispatched %d", len(f.dispatched))
+	}
+	if id, _, err := activeRuleForIdentity(ctx, f.db, f.identity); err != nil || id != 0 {
+		t.Fatalf("rule matched for a suspended owner: %d %v", id, err)
+	}
+	if _, err := f.db.Exec(`UPDATE users SET status='active' WHERE id=$1`, f.user); err != nil {
+		t.Fatal(err)
+	}
+	if id, _, err := activeRuleForIdentity(ctx, f.db, f.identity); err != nil || id == 0 {
+		t.Fatalf("rule missing once active again: %d %v", id, err)
+	}
+}

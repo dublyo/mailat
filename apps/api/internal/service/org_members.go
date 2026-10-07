@@ -632,9 +632,10 @@ func scanInvite(row interface{ Scan(...any) error }) (*OrgInvite, error) {
 	return &i, nil
 }
 
-// ListInvites returns the organization's invites, newest first. Tokens are never returned.
+// ListInvites returns the organization's join invites, newest first. Tokens are
+// never returned. Mailbox setup and reset links are managed per mailbox.
 func (s *OrgMemberService) ListInvites(ctx context.Context, orgID int64) ([]*OrgInvite, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+inviteColumns+` FROM org_invites i LEFT JOIN users u ON u.id=i.invited_by WHERE i.org_id=$1 ORDER BY i.created_at DESC, i.id DESC`, orgID)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+inviteColumns+` FROM org_invites i LEFT JOIN users u ON u.id=i.invited_by WHERE i.org_id=$1 AND i.purpose='join' ORDER BY i.created_at DESC, i.id DESC`, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -759,13 +760,14 @@ func (s *OrgMemberService) CreateInvite(ctx context.Context, a OrgActor, req *Cr
 	var userStatus string
 	err = tx.QueryRowContext(ctx, `SELECT org_id,status FROM users WHERE email=$1`, email).Scan(&userOrg, &userStatus)
 	switch {
-	case err == nil && (userOrg != a.OrgID || userStatus == "active"):
-		// Emails are globally unique; a removed user of this org may come back.
+	case err == nil && (userOrg != a.OrgID || userStatus != "disabled"):
+		// Emails are globally unique; only a removed user of this org may come
+		// back. A pending or suspended mailbox login is never replaced.
 		return nil, orgError(http.StatusConflict, "This email already has a Mailat account")
 	case err != nil && err != sql.ErrNoRows:
 		return nil, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE org_invites SET revoked_at=now() WHERE org_id=$1 AND email=$2 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at<=now()`, a.OrgID, email); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE org_invites SET revoked_at=now() WHERE org_id=$1 AND email=$2 AND purpose='join' AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at<=now()`, a.OrgID, email); err != nil {
 		return nil, err
 	}
 	var open bool
@@ -806,8 +808,8 @@ func (s *OrgMemberService) CreateInvite(ctx context.Context, a OrgActor, req *Cr
 	return invite, nil
 }
 
-// lockOpenInvite locks the org, then the invite (the same order as create and
-// accept), and returns the invite id.
+// lockOpenInvite locks the org, then the join invite (the same order as create
+// and accept), and returns the invite id. Other purposes are not found here.
 func lockOpenInvite(ctx context.Context, tx *sql.Tx, orgID int64, inviteUUID string) (id int64, open bool, sends int, err error) {
 	if !validUUID(inviteUUID) {
 		return 0, false, 0, orgError(http.StatusNotFound, "Invite not found")
@@ -815,7 +817,7 @@ func lockOpenInvite(ctx context.Context, tx *sql.Tx, orgID int64, inviteUUID str
 	if err = lockOrg(ctx, tx, orgID); err != nil {
 		return 0, false, 0, err
 	}
-	err = tx.QueryRowContext(ctx, `SELECT id,accepted_at IS NULL AND revoked_at IS NULL,send_count FROM org_invites WHERE uuid=$1 AND org_id=$2 FOR UPDATE`, inviteUUID, orgID).Scan(&id, &open, &sends)
+	err = tx.QueryRowContext(ctx, `SELECT id,accepted_at IS NULL AND revoked_at IS NULL,send_count FROM org_invites WHERE uuid=$1 AND org_id=$2 AND purpose='join' FOR UPDATE`, inviteUUID, orgID).Scan(&id, &open, &sends)
 	if err == sql.ErrNoRows {
 		return 0, false, 0, orgError(http.StatusNotFound, "Invite not found")
 	}
@@ -907,7 +909,7 @@ func (s *OrgMemberService) RevokeInvite(ctx context.Context, a OrgActor, inviteU
 type inviteRow struct {
 	id, orgID      int64
 	email, role    string
-	hash           string
+	hash, purpose  string
 	usable         bool
 	expires        time.Time
 	orgName, owner string
@@ -921,7 +923,7 @@ func findInvite(ctx context.Context, q interface {
 		return nil, ErrInviteInvalid
 	}
 	hash := hashToken(token)
-	query := `SELECT i.id,i.org_id,i.email,i.role,i.token_hash,
+	query := `SELECT i.id,i.org_id,i.email,i.role,i.token_hash,i.purpose,
 		i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at>now() AND i.failed_attempts<$2,
 		i.expires_at,o.name,COALESCE(NULLIF(u.name,''),u.email,'')
 		FROM org_invites i JOIN organizations o ON o.id=i.org_id LEFT JOIN users u ON u.id=i.invited_by WHERE i.token_hash=$1`
@@ -929,14 +931,15 @@ func findInvite(ctx context.Context, q interface {
 		query += ` FOR UPDATE OF i`
 	}
 	var r inviteRow
-	err := q.QueryRowContext(ctx, query, hash, inviteMaxFailures).Scan(&r.id, &r.orgID, &r.email, &r.role, &r.hash, &r.usable, &r.expires, &r.orgName, &r.owner)
+	err := q.QueryRowContext(ctx, query, hash, inviteMaxFailures).Scan(&r.id, &r.orgID, &r.email, &r.role, &r.hash, &r.purpose, &r.usable, &r.expires, &r.orgName, &r.owner)
 	if err == sql.ErrNoRows {
 		return nil, ErrInviteInvalid
 	}
 	if err != nil {
 		return nil, err
 	}
-	if subtle.ConstantTimeCompare([]byte(r.hash), []byte(hash)) != 1 || !r.usable {
+	// Only join invites are accepted until mailbox links have their own flow.
+	if subtle.ConstantTimeCompare([]byte(r.hash), []byte(hash)) != 1 || !r.usable || r.purpose != "join" {
 		return nil, ErrInviteInvalid
 	}
 	return &r, nil
@@ -993,7 +996,9 @@ func (s *OrgMemberService) AcceptInvite(ctx context.Context, req *AcceptInviteRe
 	case err == sql.ErrNoRows:
 	case err != nil:
 		return nil, err
-	case userOrg != inv.orgID || status == "active":
+	case userOrg != inv.orgID || status != "disabled":
+		// Only a removed login may be replaced; a pending or suspended
+		// mailbox login keeps its mailbox.
 		return nil, ErrInviteInvalid
 	default:
 		// A login address is often reassigned to someone new, so the removed
