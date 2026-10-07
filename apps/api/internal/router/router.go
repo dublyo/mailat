@@ -12,6 +12,8 @@ import (
 	"github.com/dublyo/mailat/api/internal/database"
 	"github.com/dublyo/mailat/api/internal/middleware"
 	"github.com/dublyo/mailat/api/internal/service"
+	// Replaces GoFrame's `email` rule, which rejected name+tag@ addresses.
+	_ "github.com/dublyo/mailat/api/internal/validation"
 )
 
 // Swagger UI assets are pinned to an exact version with SRI hashes, computed via
