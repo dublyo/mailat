@@ -100,12 +100,34 @@ test('role helpers fail closed', () => {
 })
 
 test('settings tabs per role', () => {
-  const tabs = ['general', 'security', 'notifications', 'appearance', 'filters', 'vacation', 'shared', 'team', 'integrations', 'future-tab']
+  const tabs = ['general', 'signature', 'security', 'notifications', 'appearance', 'filters', 'vacation', 'shared', 'team', 'integrations', 'future-tab']
   const visible = (user, shared) => tabs.filter(id => roles.settingsTabVisible(id, user, shared))
-  assert.deepEqual(visible(mailbox, false), ['general', 'security', 'notifications', 'appearance', 'filters', 'vacation'])
-  assert.deepEqual(visible(mailbox, true), ['general', 'security', 'notifications', 'appearance', 'filters', 'vacation', 'shared'])
-  assert.deepEqual(visible(member, false), ['general', 'security', 'notifications', 'appearance', 'filters', 'vacation', 'shared', 'integrations', 'future-tab'])
+  const mail = ['general', 'signature', 'security', 'notifications', 'appearance', 'filters', 'vacation']
+  assert.deepEqual(visible(mailbox, false), mail)
+  assert.deepEqual(visible(mailbox, true), [...mail, 'shared'])
+  assert.deepEqual(visible(member, false), [...mail, 'shared', 'integrations', 'future-tab'])
   assert.deepEqual(visible(admin, false), tabs)
+})
+
+test('Settings shows the Signature tab and hides sign-in providers from mailbox users', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const source = await readFile(`${webRoot}/src/views/Settings.vue`, 'utf8')
+  assert.match(source, /\{ id: 'signature', label: 'Signature'/)
+  assert.match(source, /activeTab === 'signature'[\s\S]{0,80}<SignatureSettings \/>/)
+  // The OAuth block is gated on staff, and providers are never fetched for mailbox users.
+  assert.match(source, /<section v-if="isStaff\(authStore\.user\) && \(oauthProviders\.length/)
+  assert.match(source, /if \(!isStaff\(authStore\.user\)\) return\s+fetchWebhooks\(\)[\s\S]*fetchSignInProviders\(\)/)
+})
+
+test('inbox domain filter: mailbox users use identity domains, never the domain list', async () => {
+  const domains = [{ id: 1, name: 'vayb.dev' }, { id: 2, name: 'other.test' }]
+  const identities = [{ domainId: 1, email: 'ibrahim@vayb.dev' }, { domainId: 1, email: 'sales@vayb.dev' }, { domainId: 3, email: 'team@shared.test' }]
+  assert.deepEqual(roles.inboxDomainOptions(mailbox, domains, identities), [{ id: '1', name: 'vayb.dev' }, { id: '3', name: 'shared.test' }])
+  assert.deepEqual(roles.inboxDomainOptions(member, domains, identities), [{ id: '1', name: 'vayb.dev' }, { id: '2', name: 'other.test' }])
+  const { readFile } = await import('node:fs/promises')
+  const source = await readFile(`${webRoot}/src/views/ReceivedInbox.vue`, 'utf8')
+  assert.match(source, /isMailboxUser\(authStore\.user\) \? null : domains\.fetchDomains\(\)/)
+  assert.ok(!/v-for="domain in domains\.domains"/.test(source), 'the filter reads domainOptions')
 })
 
 test('sidebar items per role', async () => {

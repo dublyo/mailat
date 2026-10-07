@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { User, Shield, Bell, Palette, Filter, Webhook, Check, X, Plus, Copy, Download, Plane, Users, Inbox } from 'lucide-vue-next'
+import { User, Shield, Bell, Palette, Filter, Webhook, Check, X, Plus, Copy, Download, Plane, Users, Inbox, PenLine } from 'lucide-vue-next'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import Modal from '@/components/common/Modal.vue'
@@ -10,6 +10,7 @@ import PushNotificationsSection from '@/components/settings/PushNotificationsSec
 import VacationForwardingSettings from '@/components/settings/VacationForwardingSettings.vue'
 import TeamSettings from '@/components/settings/TeamSettings.vue'
 import SharedMailboxesSettings from '@/components/settings/SharedMailboxesSettings.vue'
+import SignatureSettings from '@/components/settings/SignatureSettings.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useDomainsStore } from '@/stores/domains'
@@ -39,10 +40,11 @@ function formatDate(dateStr: string): string {
   return date.toLocaleDateString()
 }
 
-type SettingsTab = 'general' | 'security' | 'notifications' | 'appearance' | 'filters' | 'vacation' | 'shared' | 'team' | 'integrations'
+type SettingsTab = 'general' | 'signature' | 'security' | 'notifications' | 'appearance' | 'filters' | 'vacation' | 'shared' | 'team' | 'integrations'
 
 const allTabs: { id: SettingsTab; label: string; icon: typeof User }[] = [
   { id: 'general', label: 'General', icon: User },
+  { id: 'signature', label: 'Signature', icon: PenLine },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'appearance', label: 'Appearance', icon: Palette },
@@ -578,6 +580,10 @@ async function handleSignOutAll() {
           </div>
         </div>
 
+        <div v-else-if="activeTab === 'signature'" class="max-w-2xl">
+          <SignatureSettings />
+        </div>
+
         <!-- Security Settings -->
         <div v-else-if="activeTab === 'security'" class="max-w-2xl">
           <h2 class="text-lg font-medium mb-6">Security Settings</h2>
@@ -619,7 +625,8 @@ async function handleSignOutAll() {
               </div>
             </section>
 
-            <section v-if="oauthProviders.length || oauthNotice || oauthError" class="pt-6 border-t border-gmail-border">
+            <!-- Mailbox users sign in with their mailbox password only. -->
+            <section v-if="isStaff(authStore.user) && (oauthProviders.length || oauthNotice || oauthError)" class="pt-6 border-t border-gmail-border">
               <h3 class="text-sm font-medium text-gmail-gray mb-4">Sign-in providers</h3>
               <div v-if="oauthNotice" class="mb-3 p-3 bg-green-50 text-green-800 rounded-lg text-sm" role="status">{{ oauthNotice }}</div>
               <div v-if="oauthError" class="mb-3 p-3 bg-red-50 text-red-800 rounded-lg text-sm" role="alert">{{ oauthError }}</div>

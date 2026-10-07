@@ -9,12 +9,16 @@ import { useDomainsStore } from '@/stores/domains'
 import { useSettingsStore } from '@/stores/settings'
 import { api, trustedSendersApi, type ReceivedEmail, type Email, type InboxListOptions, type ReceivedEmailAttachment } from '@/lib/api'
 import { renderMessageDocument } from '@/lib/mailHtml'
+import { useAuthStore } from '@/stores/auth'
+import { isMailboxUser, inboxDomainOptions } from '@/lib/roles'
 
 const route = useRoute()
 const router = useRouter()
 const mailbox = useReceivedInboxStore()
 const composer = useInboxStore()
 const domains = useDomainsStore()
+const authStore = useAuthStore()
+const domainOptions = computed(() => inboxDomainOptions(authStore.user, domains.domains, domains.identities))
 const settingsStore = useSettingsStore()
 const showFilters = ref(false)
 const selectedUuid = ref('')
@@ -41,7 +45,7 @@ const queryOptions = computed<InboxListOptions>(() => ({
   dateFrom: String(route.query.after || ''), dateTo: String(route.query.before || ''),
   page: Number(route.query.page) || 1,
 }))
-const chips = computed(() => Object.entries(route.query).filter(([key, value]) => ['q', 'identity', 'domain', 'read', 'starred', 'attachments', 'sender', 'after', 'before'].includes(key) && value).map(([key, value]) => ({ key, label: key === 'identity' ? domains.identities.find(i => String(i.id) === value)?.email || String(value) : key === 'domain' ? domains.domains.find(d => String(d.id) === value)?.name || String(value) : key === 'q' ? `Search: ${value}` : key === 'starred' ? 'Starred' : key === 'attachments' ? (value === 'true' ? 'With attachments' : 'Without attachments') : `${key}: ${value}` })))
+const chips = computed(() => Object.entries(route.query).filter(([key, value]) => ['q', 'identity', 'domain', 'read', 'starred', 'attachments', 'sender', 'after', 'before'].includes(key) && value).map(([key, value]) => ({ key, label: key === 'identity' ? domains.identities.find(i => String(i.id) === value)?.email || String(value) : key === 'domain' ? domainOptions.value.find(d => d.id === value)?.name || String(value) : key === 'q' ? `Search: ${value}` : key === 'starred' ? 'Starred' : key === 'attachments' ? (value === 'true' ? 'With attachments' : 'Without attachments') : `${key}: ${value}` })))
 const range = computed(() => mailbox.total ? `${(mailbox.page - 1) * mailbox.pageSize + 1}–${Math.min(mailbox.page * mailbox.pageSize, mailbox.total)} of ${mailbox.total}` : '0 messages')
 const remoteAllowed = computed(() => !!current.value && (current.value.remoteImages === 'allowed' || revealed.value.has(current.value.uuid)))
 const rendered = computed(() => {
@@ -139,7 +143,8 @@ function showNewMail() {
   if (mailbox.page <= 1) void load(true)
 }
 onMounted(() => {
-  void Promise.all([domains.fetchIdentities(), domains.fetchDomains()])
+  // Mailbox users cannot list domains; their filter uses identity domains.
+  void Promise.all([domains.fetchIdentities(), isMailboxUser(authStore.user) ? null : domains.fetchDomains()])
   mailbox.connectSSE()
 })
 onUnmounted(() => { ++inlineSequence; Object.values(inlineUrls.value).forEach(URL.revokeObjectURL); mailbox.disconnectSSE(); mailbox.closeEmail() })
@@ -237,7 +242,7 @@ function formatDate(value: string, full = false) {
       </div>
       <form v-if="showFilters && !selectedUuid" id="mail-filters" @submit.prevent="applyFilters" class="p-4 border-b bg-gray-50 grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
         <label>Identity<select v-model="filterForm.identity" class="mail-filter"><option value="">All identities</option><option v-for="identity in domains.identities" :key="identity.id" :value="String(identity.id)">{{ identity.email }}</option></select></label>
-        <label>Domain<select v-model="filterForm.domain" class="mail-filter"><option value="">All domains</option><option v-for="domain in domains.domains" :key="domain.id" :value="String(domain.id)">{{ domain.name }}</option></select></label>
+        <label>Domain<select v-model="filterForm.domain" class="mail-filter"><option value="">All domains</option><option v-for="domain in domainOptions" :key="domain.id" :value="domain.id">{{ domain.name }}</option></select></label>
         <label>Read status<select v-model="filterForm.read" class="mail-filter"><option value="">Any</option><option value="unread">Unread</option><option value="read">Read</option></select></label>
         <label>Attachments<select v-model="filterForm.attachments" class="mail-filter"><option value="">Any</option><option value="true">Has attachments</option><option value="false">No attachments</option></select></label>
         <label>Sender<input v-model="filterForm.sender" placeholder="name@example.com" class="mail-filter" /></label>

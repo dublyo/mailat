@@ -35,11 +35,26 @@ export const visibleFor = <T extends { audience?: Audience }>(items: T[], user: 
 // Settings tabs: unknown tabs default to staff, so a new tab stays hidden from
 // mailbox users until it is given an audience here.
 export const settingsTabAudience: Record<string, Audience> = {
-  general: 'all', security: 'all', notifications: 'all', appearance: 'all', filters: 'all', vacation: 'all', shared: 'all',
+  general: 'all', signature: 'all', security: 'all', notifications: 'all', appearance: 'all', filters: 'all', vacation: 'all', shared: 'all',
   team: 'admin', integrations: 'staff',
 }
 
 export function settingsTabVisible(id: string, user: RoleHolder, hasSharedMemberships: boolean) {
   if (id === 'shared' && isMailboxUser(user) && !hasSharedMemberships) return false
   return canSee(user, settingsTabAudience[id] ?? 'staff')
+}
+
+/**
+ * Inbox domain-filter choices. Mailbox users cannot list domains (the API
+ * denies it), so theirs come from the domains of their own identities.
+ */
+export function inboxDomainOptions(
+  user: RoleHolder,
+  domains: { id: string | number; name: string }[],
+  identities: { domainId: string | number; email: string }[],
+) {
+  if (!isMailboxUser(user)) return domains.map(d => ({ id: String(d.id), name: d.name }))
+  const byId = new Map<string, string>()
+  for (const i of identities) if (!byId.has(String(i.domainId))) byId.set(String(i.domainId), i.email.slice(i.email.lastIndexOf('@') + 1))
+  return [...byId].map(([id, name]) => ({ id, name }))
 }
