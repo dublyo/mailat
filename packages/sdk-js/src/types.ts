@@ -1,7 +1,8 @@
 // Configuration
 export interface MailatConfig {
   apiKey: string;
-  baseUrl?: string;
+  /** Your Mailat instance origin, e.g. https://mail.example.com (required; `/api/v1` is appended). */
+  baseUrl: string;
   timeout?: number;
 }
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,7 +24,7 @@ func TestDMARCFolderContract(t *testing.T) {
 		fmt.Fprint(w, `{"code":0,"data":{"inbox":5,"inboxUnread":2,"dmarcReports":3,"dmarcReportsUnread":1,"unread":7,"starred":0,"sent":0,"drafts":0,"spam":4,"trash":0}}`)
 	}))
 	defer server.Close()
-	client := NewClient("ue_fixture", WithBaseURL(server.URL))
+	client := mustClient(t, server.URL)
 	ctx := context.Background()
 	counts, err := client.Inbox.FolderCounts(ctx, 42)
 	if err != nil || counts.InboxUnread != 2 || counts.DMARCReports != 3 || counts.DMARCReportsUnread != 1 || counts.Unread != 7 || query != "identityId=42" {
@@ -95,6 +96,10 @@ func TestHTTPContracts(t *testing.T) {
 	var lastPath, lastKey string
 	var lastBody Object
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/v1/") {
+			t.Errorf("request outside /api/v1: %s", r.URL.Path)
+		}
+		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/api/v1")
 		lastPath, lastKey = r.URL.Path, r.Header.Get("Idempotency-Key")
 		lastBody = Object{}
 		_ = json.NewDecoder(r.Body).Decode(&lastBody)
@@ -127,7 +132,7 @@ func TestHTTPContracts(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(Object{"code": 0, "data": data})
 	}))
 	defer server.Close()
-	client := NewClient("ue_fixture", WithBaseURL(server.URL))
+	client := mustClient(t, server.URL)
 	ctx := context.Background()
 	req := &SendEmailRequest{From: "a@fixture.invalid", To: []string{"b@fixture.invalid"}, Subject: "Hello", Text: "body", Attachments: []Attachment{{Name: "test.txt", Content: "YQ==", Type: "text/plain"}}}
 	if _, err := client.Emails.Send(ctx, req, nil); err == nil {
@@ -179,5 +184,45 @@ func TestHTTPContracts(t *testing.T) {
 	apiErr, ok := err.(*APIError)
 	if !ok || apiErr.RetryAfter != "11" || apiErr.StatusCode != 429 {
 		t.Fatalf("error: %#v", err)
+	}
+}
+
+func mustClient(t *testing.T, baseURL string) *Client {
+	t.Helper()
+	client, err := NewClient(baseURL, "ue_fixture")
+	if err != nil {
+		t.Fatalf("NewClient(%q): %v", baseURL, err)
+	}
+	return client
+}
+
+func TestNewClientRequiresAndNormalisesBaseURL(t *testing.T) {
+	for _, bad := range []string{"", "   ", "mail.example.com", "ftp://x", "https://x/?q=1", "https://x/#f", "https://user:pass@x", "https://x:notaport", "https://"} {
+		if client, err := NewClient(bad, "ue_fixture"); err == nil || client != nil {
+			t.Fatalf("NewClient(%q) = %v, %v; want error", bad, client, err)
+		}
+	}
+	if _, err := NewClient("", "ue_fixture"); err == nil || err.Error() != "mailat: baseURL is required (e.g. https://mail.example.com)" {
+		t.Fatalf("empty baseURL error: %v", err)
+	}
+	if _, err := NewClient("https://x", ""); err == nil {
+		t.Fatal("empty API key accepted")
+	}
+	for _, raw := range []string{"https://x", "https://x/", "https://x/api/v1", "https://x/api/v1/"} {
+		if got := mustClient(t, raw).baseURL; got != "https://x/api/v1" {
+			t.Fatalf("NewClient(%q).baseURL = %q", raw, got)
+		}
+	}
+	if got := mustClient(t, "https://x/mailat/").baseURL; got != "https://x/mailat/api/v1" {
+		t.Fatalf("prefixed baseURL = %q", got)
+	}
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		fmt.Fprint(w, `{"code":0,"data":[]}`)
+	}))
+	defer server.Close()
+	if _, err := mustClient(t, server.URL+"/").Templates.List(context.Background()); err != nil || path != "/api/v1/templates" {
+		t.Fatalf("request path %q, err %v", path, err)
 	}
 }

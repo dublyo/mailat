@@ -1,4 +1,4 @@
-"""Data models for mailat.co SDK."""
+"""Data models for the Mailat Python SDK."""
 
 from datetime import datetime
 from enum import Enum

@@ -2,10 +2,14 @@
 
 Install this package with `pip install .`. Run `PYTHONPATH=. python -m unittest discover -s tests -v` for HTTP and signature tests.
 
+Version 0.2.0 targets API contract `2026-10-07` (the `info.version` of your instance's `/api/v1/openapi.json`).
+
+`base_url` is required: Mailat is self-hosted, so there is no default host. Pass your instance origin or its API root; `https://mail.example.com`, `https://mail.example.com/`, `https://mail.example.com/api/v1` and `https://mail.example.com/api/v1/` all resolve to `https://mail.example.com/api/v1`. A missing or invalid `base_url` raises `ValueError` at construction (breaking change from 0.1.x, which fell back to a hosted URL).
+
 ```python
 from mailat import Mailat, SendEmailRequest
 from mailat.models import Attachment
-with Mailat(api_key=api_key, base_url="https://mail.dublyo.com/api/v1") as client:
+with Mailat(api_key=api_key, base_url="https://mail.example.com") as client:
     sent = client.emails.send(
         from_address="hello@yourdomain.com", to=["recipient@example.com"],
         subject="Hello", text="Hello", idempotency_key="order-123-confirmation",

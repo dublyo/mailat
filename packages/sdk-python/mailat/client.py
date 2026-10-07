@@ -1,11 +1,11 @@
-"""Main client for mailat.co SDK."""
+"""Main client for the self-hosted Mailat API."""
 
 import hashlib
 import hmac
 import time
 import re
 import math
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from mailat.core import Inbox, Compose, Domains, Identities, Triggers, Deliveries, send_headers
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -30,8 +30,39 @@ from mailat.models import (
 )
 
 
-DEFAULT_BASE_URL = "https://api.mailat.co/api/v1"
 DEFAULT_TIMEOUT = 30.0
+
+
+def normalize_base_url(base_url: Optional[str]) -> str:
+    """Normalise an instance origin or API root to exactly one ``/api/v1`` suffix.
+
+    ``https://x``, ``https://x/``, ``https://x/api/v1`` and ``https://x/api/v1/``
+    all become ``https://x/api/v1``. There is no default host; Mailat is self-hosted.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        raise ValueError("base_url is required (e.g. https://mail.example.com)")
+    try:
+        parts = urlsplit(raw)
+        _ = parts.port  # raises ValueError on an invalid port
+    except ValueError as exc:
+        raise ValueError("base_url is not a valid URL: " + raw) from exc
+    if (
+        parts.scheme not in ("http", "https")
+        or not parts.hostname
+        or parts.query
+        or parts.fragment
+        or parts.username
+        or parts.password
+    ):
+        raise ValueError(
+            "base_url must be an http(s) origin or API root without query, "
+            "fragment or credentials: " + raw
+        )
+    path = parts.path.rstrip("/")
+    if path.endswith("/api/v1"):
+        path = path[: -len("/api/v1")]
+    return parts.scheme + "://" + parts.netloc + path + "/api/v1"
 
 
 class Emails:
@@ -304,10 +335,10 @@ class Webhooks:
 
 class Mailat:
     """
-    mailat.co API client.
+    Mailat API client for a self-hosted instance.
 
     Example:
-        >>> client = Mailat(api_key="ue_your_api_key")
+        >>> client = Mailat(api_key="ue_your_api_key", base_url="https://mail.example.com")
         >>> result = client.emails.send(
         ...     from_address="sender@yourdomain.com",
         ...     to=["recipient@example.com"],
@@ -319,7 +350,7 @@ class Mailat:
     def __init__(
         self,
         api_key: str,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: Optional[str] = None,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         """
@@ -327,21 +358,22 @@ class Mailat:
 
         Args:
             api_key: Your API key (starts with 'ue_')
-            base_url: API base URL (defaults to production)
+            base_url: Your instance origin or API root, e.g. https://mail.example.com
+                (required; normalised to exactly one /api/v1 suffix)
             timeout: Request timeout in seconds
         """
         if not api_key:
             raise ValueError("API key is required")
 
         self._api_key = api_key
-        self._base_url = base_url.rstrip("/")
+        self._base_url = normalize_base_url(base_url)
         self._timeout = timeout
         self._client = httpx.Client(
             timeout=timeout,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "mailat-python/0.1.0",
+                "User-Agent": "mailat-python/0.2.0",
             },
         )
 

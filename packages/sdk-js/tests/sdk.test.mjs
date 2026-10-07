@@ -61,3 +61,20 @@ test('HTTP resources preserve keys, camelCase, binary attachments and failure de
  await assert.rejects(api.inbox.get('limited'),e=>e instanceof MailatError&&e.retryAfter==='17'&&e.code===429);
  }finally{globalThis.fetch=original;}
 });
+
+test('baseUrl is required and normalised to exactly one /api/v1 suffix', async () => {
+ assert.throws(()=>new Mailat({apiKey:'ue_test'}),/baseUrl is required \(e\.g\. https:\/\/mail\.example\.com\)/);
+ assert.throws(()=>new Mailat({apiKey:'ue_test',baseUrl:'  '}),/baseUrl is required/);
+ assert.throws(()=>new Mailat({apiKey:'ue_test',baseUrl:'mail.example.com'}),/not a valid URL/);
+ assert.throws(()=>new Mailat({apiKey:'ue_test',baseUrl:'ftp://x'}),/http\(s\)/);
+ const calls=[]; const original=globalThis.fetch;
+ globalThis.fetch=async url=>{calls.push(url);return new Response(JSON.stringify({code:0,data:[]}));};
+ try {
+  for (const baseUrl of ['https://x','https://x/','https://x/api/v1','https://x/api/v1/']) {
+   await new Mailat({apiKey:'ue_test',baseUrl}).templates.list();
+   assert.equal(calls.at(-1),'https://x/api/v1/templates');
+  }
+  await new Mailat({apiKey:'ue_test',baseUrl:'https://x/mailat/'}).templates.list();
+  assert.equal(calls.at(-1),'https://x/mailat/api/v1/templates');
+ } finally {globalThis.fetch=original;}
+});

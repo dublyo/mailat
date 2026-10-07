@@ -2,9 +2,13 @@
 
 Requires Node 20+ or a browser with Web Crypto and Fetch. Build from this package with `npm install && npm run build`; run `npm test` for signature and HTTP contract tests.
 
+Version 0.2.0 targets API contract `2026-10-07` (the `info.version` of your instance's `/api/v1/openapi.json`).
+
+`baseUrl` is required: Mailat is self-hosted, so there is no default host. Pass your instance origin or its API root; `https://mail.example.com`, `https://mail.example.com/`, `https://mail.example.com/api/v1` and `https://mail.example.com/api/v1/` all resolve to `https://mail.example.com/api/v1`. A missing or invalid `baseUrl` throws at construction (breaking change from 0.1.x, which fell back to a hosted URL).
+
 ```ts
 import { Mailat } from '@mailat/sdk';
-const client = new Mailat({apiKey: process.env.MAILAT_API_KEY!, baseUrl: 'https://mail.dublyo.com/api/v1'});
+const client = new Mailat({apiKey: process.env.MAILAT_API_KEY!, baseUrl: 'https://mail.example.com'});
 const sent = await client.emails.send({
   from: 'hello@yourdomain.com', to: ['recipient@example.com'], subject: 'Hello', text: 'Hello',
   attachments: [{name: 'hello.txt', content: 'SGVsbG8=', type: 'text/plain'}]

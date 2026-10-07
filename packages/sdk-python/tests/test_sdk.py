@@ -84,4 +84,19 @@ class SDKTests(unittest.TestCase):
         self.assertEqual(status.events,[])
         with self.assertRaises(ValueError):client.emails.send_batch([email])
 
+    def test_base_url_required_and_normalised(self):
+        with self.assertRaisesRegex(ValueError, r"base_url is required \(e\.g\. https://mail\.example\.com\)"):
+            Mailat("ue_test")
+        for bad in ("", "   ", None):
+            with self.assertRaisesRegex(ValueError, "base_url is required"):
+                Mailat("ue_test", base_url=bad)  # type: ignore[arg-type]
+        for bad in ("mail.example.com", "ftp://x", "https://x/?q=1", "https://x:notaport"):
+            with self.assertRaises(ValueError):
+                Mailat("ue_test", base_url=bad)
+        for raw in ("https://x", "https://x/", "https://x/api/v1", "https://x/api/v1/"):
+            with Mailat("ue_test", base_url=raw) as client:
+                self.assertEqual(client._base_url, "https://x/api/v1")
+        with Mailat("ue_test", base_url="https://x/mailat/") as client:
+            self.assertEqual(client._base_url, "https://x/mailat/api/v1")
+
 if __name__ == "__main__":unittest.main()

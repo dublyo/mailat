@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mailat"
-version = "0.1.0"
-description = "Official Python SDK for mailat.co API"
+version = "0.2.0"
+description = "Official Python SDK for the self-hosted Mailat API"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.8"
@@ -49,8 +49,8 @@ dev = [
 
 [project.urls]
 Homepage = "https://mailat.co"
-Documentation = "https://docs.mailat.co/sdks/python"
-Repository = "https://github.com/mailat/sdk-python"
+Documentation = "https://github.com/dublyo/mailat/tree/main/packages/sdk-python"
+Repository = "https://github.com/dublyo/mailat"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mailat"]

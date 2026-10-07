@@ -2,9 +2,14 @@
 
 Requires Go 1.21+. Run `go test -race ./...` in this package for HTTP and signature tests.
 
+Version 0.2.0 targets API contract `2026-10-07` (the `info.version` of your instance's `/api/v1/openapi.json`).
+
+The base URL is required: Mailat is self-hosted, so there is no default host. `NewClient(baseURL, apiKey string, opts ...ClientOption) (*Client, error)` takes your instance origin or its API root; `https://mail.example.com`, `https://mail.example.com/`, `https://mail.example.com/api/v1` and `https://mail.example.com/api/v1/` all resolve to `https://mail.example.com/api/v1`. It returns an error for an empty or invalid base URL or an empty API key. This is a breaking change from 0.1.x: `DefaultBaseURL` and `WithBaseURL` are removed, and `NewClient` now returns an error.
+
 ```go
 import "github.com/dublyo/mailat-go/mailat"
-client := mailat.NewClient(apiKey, mailat.WithBaseURL("https://mail.dublyo.com/api/v1"))
+client, err := mailat.NewClient("https://mail.example.com", apiKey)
+// Handle err before using client.
 sent, err := client.Emails.Send(ctx, &mailat.SendEmailRequest{
     From: "hello@yourdomain.com", To: []string{"recipient@example.com"},
     Subject: "Hello", Text: "Hello",

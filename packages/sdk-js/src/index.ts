@@ -7,6 +7,23 @@ import type { MailatConfig, WebhookPayload } from './types';
 export * from './types';
 export * from './resources/core';
 
+/**
+ * Normalise an instance origin or API root to exactly one `/api/v1` suffix:
+ * `https://x`, `https://x/`, `https://x/api/v1` and `https://x/api/v1/` all
+ * become `https://x/api/v1`. There is no default host; Mailat is self-hosted.
+ */
+export function normalizeBaseUrl(baseUrl: string | undefined): string {
+  const raw = (baseUrl ?? '').trim();
+  if (!raw) throw new Error('baseUrl is required (e.g. https://mail.example.com)');
+  let url: URL;
+  try { url = new URL(raw); } catch { throw new Error(`baseUrl is not a valid URL: ${raw}`); }
+  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || !url.hostname || url.search || url.hash || url.username || url.password) {
+    throw new Error(`baseUrl must be an http(s) origin or API root without query, fragment or credentials: ${raw}`);
+  }
+  const path = url.pathname.replace(/\/+$/, '').replace(/\/api\/v1$/, '');
+  return `${url.origin}${path}/api/v1`;
+}
+
 export class Mailat {
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -23,7 +40,7 @@ export class Mailat {
   constructor(config: MailatConfig) {
     if (!config.apiKey) throw new Error('API key is required');
     this.apiKey = config.apiKey;
-    this.baseUrl = (config.baseUrl ?? 'https://api.mailat.co/api/v1').replace(/\/$/, '');
+    this.baseUrl = normalizeBaseUrl(config.baseUrl);
     this.timeout = config.timeout ?? 30000;
     const request = this.request.bind(this);
     this.emails = new Emails(request); this.templates = new Templates(request); this.webhooks = new Webhooks(request);

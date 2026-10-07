@@ -1,4 +1,4 @@
-// Package mailat provides a Go client for the mailat.co API.
+// Package mailat provides a Go client for the self-hosted Mailat API.
 package mailat
 
 import (
@@ -8,9 +8,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,12 +20,11 @@ import (
 )
 
 const (
-	DefaultBaseURL = "https://api.mailat.co/api/v1"
 	DefaultTimeout = 30 * time.Second
-	Version        = "0.1.0"
+	Version        = "0.2.0"
 )
 
-// Client is the mailat.co API client.
+// Client is the Mailat API client.
 type Client struct {
 	apiKey     string
 	baseURL    string
@@ -44,13 +45,6 @@ type Client struct {
 // ClientOption configures the client.
 type ClientOption func(*Client)
 
-// WithBaseURL sets a custom base URL.
-func WithBaseURL(url string) ClientOption {
-	return func(c *Client) {
-		c.baseURL = strings.TrimSuffix(url, "/")
-	}
-}
-
 // WithHTTPClient sets a custom HTTP client.
 func WithHTTPClient(client *http.Client) ClientOption {
 	return func(c *Client) {
@@ -65,11 +59,40 @@ func WithTimeout(timeout time.Duration) ClientOption {
 	}
 }
 
-// NewClient creates a new mailat.co API client.
-func NewClient(apiKey string, opts ...ClientOption) *Client {
+// NormalizeBaseURL turns an instance origin or API root into exactly one
+// "/api/v1" suffix: "https://x", "https://x/", "https://x/api/v1" and
+// "https://x/api/v1/" all become "https://x/api/v1". There is no default host;
+// Mailat is self-hosted.
+func NormalizeBaseURL(baseURL string) (string, error) {
+	raw := strings.TrimSpace(baseURL)
+	if raw == "" {
+		return "", errors.New("mailat: baseURL is required (e.g. https://mail.example.com)")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("mailat: baseURL is not a valid URL: %w", err)
+	}
+	if (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
+		return "", fmt.Errorf("mailat: baseURL must be an http(s) origin or API root without query, fragment or credentials: %q", raw)
+	}
+	path := strings.TrimSuffix(strings.TrimRight(u.EscapedPath(), "/"), "/api/v1")
+	return u.Scheme + "://" + u.Host + path + "/api/v1", nil
+}
+
+// NewClient creates a Mailat API client for the instance at baseURL, for
+// example "https://mail.example.com". It returns an error when baseURL is
+// empty or invalid.
+func NewClient(baseURL, apiKey string, opts ...ClientOption) (*Client, error) {
+	normalized, err := NormalizeBaseURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	if apiKey == "" {
+		return nil, errors.New("mailat: API key is required")
+	}
 	c := &Client{
 		apiKey:  apiKey,
-		baseURL: DefaultBaseURL,
+		baseURL: normalized,
 		httpClient: &http.Client{
 			Timeout: DefaultTimeout,
 		},
@@ -90,7 +113,7 @@ func NewClient(apiKey string, opts ...ClientOption) *Client {
 	c.Triggers = &TriggersService{CRUDResource{ReadResource{c, "/webhook-triggers"}}}
 	c.Deliveries = &DeliveriesService{ReadResource{c, "/webhook-deliveries"}}
 
-	return c
+	return c, nil
 }
 
 // APIError represents an API error response.
