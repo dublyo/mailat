@@ -367,6 +367,8 @@ func forwardError(r *ghttp.Request, err error) {
 		response.WithStatus(r, http.StatusConflict, http.StatusConflict, strings.TrimPrefix(err.Error(), service.ErrForwardConflict.Error()+": "), nil)
 	case errors.Is(err, service.ErrForwardResendLimited):
 		response.TooManyRequests(r, time.Minute, "Wait a minute between verification emails; at most 3 are sent per day")
+	case errors.Is(err, service.ErrForwardVerifySendLimited):
+		response.TooManyRequests(r, time.Hour, "Too many verification emails were sent recently; try again later")
 	case errors.Is(err, service.ErrMonthlySendQuota):
 		response.TooManyRequests(r, time.Hour, "The monthly send quota is used up")
 	case errors.Is(err, service.ErrProviderNotConfigured):

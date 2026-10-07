@@ -242,6 +242,53 @@ func TestForwardCreateAndVerify(t *testing.T) {
 	}
 }
 
+func TestForwardVerificationSendLimits(t *testing.T) {
+	f := newForwardFixture(t)
+	ctx := context.Background()
+
+	// Deleting and recreating a forward does not reset the destination limit.
+	for i := 0; i < forwardVerifyDestHour; i++ {
+		uuid, _ := f.create(t, "victim@outside.test", true)
+		if err := f.replies.DeleteEmailForward(ctx, f.user, uuid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sent := len(f.verifyMail)
+	if _, err := f.replies.CreateEmailForward(ctx, f.user, f.org, &CreateEmailForwardInput{IdentityUUID: f.identityUUID, ForwardTo: "VICTIM@outside.test", KeepCopy: true}); !errors.Is(err, ErrForwardVerifySendLimited) {
+		t.Fatal("destination hourly limit ignored", err)
+	}
+	if len(f.verifyMail) != sent || f.count(t, `SELECT COUNT(*) FROM email_forwards`) != 0 {
+		t.Fatal("a limited request sent mail or kept a forward")
+	}
+	// Older sends count toward the daily limit only.
+	mustExec(t, f.db, `UPDATE transactional_emails SET created_at=now()-interval '2 hours'`)
+	for i := forwardVerifyDestHour; i < forwardVerifyDestDay; i++ {
+		uuid, _ := f.create(t, "victim@outside.test", true)
+		mustExec(t, f.db, `DELETE FROM email_forwards WHERE uuid=$1`, uuid)
+	}
+	mustExec(t, f.db, `UPDATE transactional_emails SET created_at=now()-interval '2 hours'`)
+	if _, err := f.replies.CreateEmailForward(ctx, f.user, f.org, &CreateEmailForwardInput{IdentityUUID: f.identityUUID, ForwardTo: "victim@outside.test", KeepCopy: true}); !errors.Is(err, ErrForwardVerifySendLimited) {
+		t.Fatal("destination daily limit ignored", err)
+	}
+
+	// The per-user limit spans destinations, and a resend counts too.
+	mustExec(t, f.db, `UPDATE transactional_emails SET created_at=now()-interval '2 days'`)
+	var last string
+	for i := 0; i < forwardVerifyUserHour; i++ {
+		uuid, _ := f.create(t, "dest"+string(rune('a'+i))+"@outside.test", true)
+		mustExec(t, f.db, `DELETE FROM email_forwards WHERE uuid=$1`, uuid)
+	}
+	mustExec(t, f.db, `UPDATE transactional_emails SET created_at=now()-interval '2 days' WHERE id IN (SELECT id FROM transactional_emails ORDER BY id DESC LIMIT 1)`)
+	last, _ = f.create(t, "fresh@outside.test", true)
+	mustExec(t, f.db, `UPDATE email_forwards SET verify_last_sent_at=now()-interval '2 minutes' WHERE uuid=$1`, last)
+	if _, err := f.replies.ResendForwardVerification(ctx, f.user, f.org, last); !errors.Is(err, ErrForwardVerifySendLimited) {
+		t.Fatal("user hourly limit ignored on resend", err)
+	}
+	if _, err := f.replies.CreateEmailForward(ctx, f.user, f.org, &CreateEmailForwardInput{IdentityUUID: f.identityUUID, ForwardTo: "another@outside.test", KeepCopy: true}); !errors.Is(err, ErrForwardVerifySendLimited) {
+		t.Fatal("user hourly limit ignored", err)
+	}
+}
+
 func TestForwardExecution(t *testing.T) {
 	f := newForwardFixture(t)
 	ctx := context.Background()

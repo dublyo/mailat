@@ -28,11 +28,17 @@ import (
 // address. The destination must confirm through a link (hashed token, 48 h,
 // 10 wrong tries); a complaint or permanent bounce suspends the forward.
 const (
-	forwardMaxPerIdentity  = 5
-	forwardVerifyTTL       = 48 * time.Hour
-	forwardVerifyMaxFails  = 10
-	forwardResendCooldown  = 60 * time.Second
-	forwardResendPerDay    = 3
+	forwardMaxPerIdentity = 5
+	forwardVerifyTTL      = 48 * time.Hour
+	forwardVerifyMaxFails = 10
+	forwardResendCooldown = 60 * time.Second
+	forwardResendPerDay   = 3
+	// Verification mails per user and per destination, counted from the sends
+	// themselves so deleting and recreating a forward does not reset them.
+	forwardVerifyUserHour  = 10
+	forwardVerifyUserDay   = 20
+	forwardVerifyDestHour  = 3
+	forwardVerifyDestDay   = 5
 	forwardDisplayNameMax  = 64
 	forwardDefaultMaxBytes = 10 << 20
 	forwardDefaultDaily    = 200
@@ -82,6 +88,9 @@ var (
 	ErrForwardConflict = errors.New("forward conflict")
 	// ErrForwardResendLimited is the resend cooldown or the daily resend limit.
 	ErrForwardResendLimited = errors.New("verification email resend limit reached")
+	// ErrForwardVerifySendLimited is the per-user or per-destination limit on
+	// verification mails, independent of any one forward.
+	ErrForwardVerifySendLimited = errors.New("too many forward verification emails")
 	// ErrForwardVerifyFailed is every verification failure, so callers learn nothing.
 	ErrForwardVerifyFailed = errors.New("invalid or expired verification link")
 	// Shared mailbox members never lose their copies to a forward.
@@ -246,6 +255,9 @@ func (s *AutoReplyService) sendForwardVerification(ctx context.Context, tx *sql.
 	if s.sender == nil {
 		return nil, ErrProviderNotConfigured
 	}
+	if err := forwardVerifySendAllowed(ctx, tx, orgID, userID, dest); err != nil {
+		return nil, err
+	}
 	var identityEmail, sendDay string
 	var sendCount int
 	if err := tx.QueryRowContext(ctx, `SELECT lower(i.email),to_char(f.verify_send_day,'YYYYMMDD'),f.verify_send_count
@@ -267,6 +279,32 @@ func (s *AutoReplyService) sendForwardVerification(ctx context.Context, tx *sql.
 		Kind:    "forward_verify", Ref: forwardUUID, DedupeKey: fmt.Sprintf("mailat:fv:%s:%s:%d", forwardUUID, sendDay, sendCount),
 	})
 	return payload, err
+}
+
+// forwardVerifySendAllowed applies the hourly and daily verification limits
+// per user and per destination in the org. The advisory locks serialize
+// concurrent requests on either key until tx ends.
+func forwardVerifySendAllowed(ctx context.Context, tx *sql.Tx, orgID, userID int64, dest string) error {
+	for _, key := range []string{fmt.Sprintf("mailat:fv-user:%d", userID), fmt.Sprintf("mailat:fv-dest:%d:%s", orgID, dest)} {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
+			return err
+		}
+	}
+	var userHour, userDay, destHour, destDay int
+	err := tx.QueryRowContext(ctx, `SELECT
+			COUNT(*) FILTER (WHERE system_user_id=$2 AND created_at>now()-interval '1 hour'),
+			COUNT(*) FILTER (WHERE system_user_id=$2),
+			COUNT(*) FILTER (WHERE lower(to_addresses) IN ($3,'<'||$3||'>') AND created_at>now()-interval '1 hour'),
+			COUNT(*) FILTER (WHERE lower(to_addresses) IN ($3,'<'||$3||'>'))
+		FROM transactional_emails WHERE org_id=$1 AND system_kind='forward_verify' AND created_at>now()-interval '1 day'`,
+		orgID, userID, dest).Scan(&userHour, &userDay, &destHour, &destDay)
+	if err != nil {
+		return err
+	}
+	if userHour >= forwardVerifyUserHour || userDay >= forwardVerifyUserDay || destHour >= forwardVerifyDestHour || destDay >= forwardVerifyDestDay {
+		return ErrForwardVerifySendLimited
+	}
+	return nil
 }
 
 // VerifyEmailForward activates a pending forward when token matches. Every
