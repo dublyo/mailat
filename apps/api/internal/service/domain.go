@@ -565,7 +565,7 @@ func (s *DomainService) verifyTXTRecord(hostname, expectedValue string) (bool, s
 }
 
 func (s *DomainService) verifyMXRecord(hostname, expectedValue string) (bool, string) {
-	records, err := net.LookupMX(hostname)
+	records, err := net.LookupMX(strings.TrimSuffix(hostname, ".") + ".")
 	if err != nil {
 		return false, ""
 	}
@@ -936,7 +936,7 @@ func (s *DomainService) AddDNSToCloudflareScoped(ctx context.Context, domainID i
 				var conflict *provider.CloudflareDNSConflictError
 				if errors.As(err, &conflict) {
 					result["skipped"] = true
-					result["reason"] = "The domain root already has another MX record; it was preserved and nothing was changed. Remove it yourself to receive mail here."
+					result["reason"] = "The domain root already has a conflicting record (another MX, a null MX or a CNAME); nothing was changed. Review it in Cloudflare to receive mail here."
 				} else {
 					result["status"] = "failed"
 					result["error"] = err.Error()

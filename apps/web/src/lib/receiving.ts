@@ -41,9 +41,22 @@ export function receivingProblem(status: DomainReceivingStatus | null | undefine
     case 'published': return ''
     case 'not_enabled': return `Receiving is off for ${name}, so its mailboxes get no mail.`
     case 'missing': return `Receiving is on, but ${name} has no MX record, so other servers (such as Gmail) bounce mail to its mailboxes. Publish MX @ ${status.mxRecord.value}.`
-    case 'conflict': return `The MX record for ${name} points to ${status.existingMx.join(', ') || 'another server'}, so mail goes there instead of these mailboxes.`
+    case 'conflict': return conflictProblem(status, name)
     default: return `The MX record for ${name} could not be checked, so mail may not arrive. Re-check it on the domain card.`
   }
+}
+
+function conflictProblem(status: DomainReceivingStatus, name: string): string {
+  const existing = status.existingMx || []
+  const target = status.mxRecord.target.toLowerCase()
+  if (existing.length && existing.every(host => host === '.')) {
+    return `${name} publishes a null MX, which says it accepts no mail, so other servers bounce mail to these mailboxes. Replace it with MX @ ${status.mxRecord.value}.`
+  }
+  const others = existing.filter(host => host.toLowerCase() !== target && host !== '.')
+  if (others.length < existing.length && existing.some(host => host.toLowerCase() === target)) {
+    return `${name} publishes the Mailat MX, but ${others.join(', ') || 'another MX'} has the same or a better priority, so some mail goes there. Give the Mailat MX the lowest priority number or remove the other record.`
+  }
+  return `The MX record for ${name} points to ${others.join(', ') || 'another server'}, so mail goes there instead of these mailboxes.`
 }
 
 // Overview value for one mailbox, e.g. "No — domain has no MX".

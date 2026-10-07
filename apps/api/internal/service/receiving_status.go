@@ -27,6 +27,10 @@ const (
 	mxCacheTTL      = 60 * time.Second
 )
 
+// mxRefreshMinAge is how old a cached answer must be before a forced refresh
+// queries DNS again, so a Re-check loop cannot hammer the resolver.
+var mxRefreshMinAge = 10 * time.Second
+
 // Receiving MX states. Published is only reported after a lookup found the
 // SES inbound host as the preferred exchanger; a failed lookup is unknown.
 const (
@@ -67,18 +71,16 @@ type mxLookupResult struct {
 }
 
 type mxLookupCache struct {
-	mu      sync.Mutex
-	entries map[string]mxLookupResult
+	mu       sync.Mutex
+	entries  map[string]mxLookupResult
+	inflight map[string]*mxLookupCall
 }
 
-func (c *mxLookupCache) get(name string, now time.Time) (mxLookupResult, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	r, ok := c.entries[name]
-	if !ok || now.Sub(r.at) > mxCacheTTL {
-		return mxLookupResult{}, false
-	}
-	return r, true
+// mxLookupCall lets concurrent lookups for one name share a single query.
+type mxLookupCall struct {
+	done    chan struct{}
+	records []*net.MX
+	err     error
 }
 
 func (c *mxLookupCache) put(name string, r mxLookupResult) {
@@ -153,27 +155,50 @@ func (s *DomainService) receivingMXRecord(ctx context.Context, orgID, domainID i
 
 func (s *DomainService) lookupMX(ctx context.Context, name string, refresh bool) ([]*net.MX, error) {
 	now := time.Now()
-	if !refresh {
-		if cached, ok := s.mxCache.get(name, now); ok {
-			return cached.records, cached.err
+	c := &s.mxCache
+	c.mu.Lock()
+	if r, ok := c.entries[name]; ok && now.Sub(r.at) <= mxCacheTTL && (!refresh || now.Sub(r.at) < mxRefreshMinAge) {
+		c.mu.Unlock()
+		return r.records, r.err
+	}
+	if call, ok := c.inflight[name]; ok {
+		c.mu.Unlock()
+		select {
+		case <-call.done:
+			return call.records, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
+	call := &mxLookupCall{done: make(chan struct{})}
+	if c.inflight == nil {
+		c.inflight = map[string]*mxLookupCall{}
+	}
+	c.inflight[name] = call
+	c.mu.Unlock()
+
 	var resolver MXResolver = net.DefaultResolver
 	if s.mxResolver != nil {
 		resolver = s.mxResolver
 	}
-	lookupCtx, cancel := context.WithTimeout(ctx, mxLookupTimeout)
+	// The shared query outlives one caller's cancellation, bounded by the timeout.
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mxLookupTimeout)
 	defer cancel()
-	records, err := resolver.LookupMX(lookupCtx, name)
+	// Fully qualified, so resolv.conf search domains never apply.
+	call.records, call.err = resolver.LookupMX(lookupCtx, strings.TrimSuffix(name, ".")+".")
 	// A definite answer (records or "no such record") is cached; transient
 	// failures are not, so a Re-check retries them.
 	var dnsErr *net.DNSError
-	if err == nil || (errors.As(err, &dnsErr) && dnsErr.IsNotFound) {
-		s.mxCache.put(name, mxLookupResult{records: records, err: err, at: now})
+	if call.err == nil || (errors.As(call.err, &dnsErr) && dnsErr.IsNotFound) {
+		c.put(name, mxLookupResult{records: call.records, err: call.err, at: time.Now()})
 	} else {
-		s.mxCache.forget(name)
+		c.forget(name)
 	}
-	return records, err
+	c.mu.Lock()
+	delete(c.inflight, name)
+	c.mu.Unlock()
+	close(call.done)
+	return call.records, call.err
 }
 
 // classifyReceivingMX compares the public root MX set with the SES inbound host.
@@ -188,13 +213,14 @@ func classifyReceivingMX(records []*net.MX, lookupErr error, target string) (str
 	}
 	sorted := append([]*net.MX(nil), records...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Pref < sorted[j].Pref })
-	sesPref, otherPref := -1, -1
+	sesPref, otherPref, nullMX := -1, -1, true
 	for _, mx := range sorted {
 		host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(mx.Host)), ".")
 		if host == "" {
 			host = "." // RFC 7505 null MX: the domain accepts no mail.
 		}
 		existing = append(existing, host)
+		nullMX = nullMX && host == "."
 		if strings.EqualFold(host, target) {
 			if sesPref < 0 || int(mx.Pref) < sesPref {
 				sesPref = int(mx.Pref)
@@ -206,6 +232,8 @@ func classifyReceivingMX(records []*net.MX, lookupErr error, target string) (str
 	switch {
 	case len(existing) == 0:
 		return MXStatusMissing, existing, "No MX record is published at the domain root."
+	case nullMX:
+		return MXStatusConflict, existing, "The domain publishes a null MX (it accepts no mail). Replace it with the Mailat MX to receive here."
 	case sesPref >= 0 && (otherPref < 0 || sesPref < otherPref):
 		return MXStatusPublished, existing, ""
 	case sesPref >= 0:

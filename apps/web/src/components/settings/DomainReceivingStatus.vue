@@ -36,6 +36,8 @@ const badgeClass = computed(() => ({
 })[badge.value.variant])
 const fields = computed(() => status.value ? mxCopyFields(status.value) : [])
 const problem = computed(() => status.value && status.value.mxStatus !== 'not_enabled' ? receivingProblem(status.value, props.domainName) : '')
+// RFC 7505 null MX is shown in words, not as a bare ".".
+const existingMxText = computed(() => (status.value?.existingMx || []).map(host => host === '.' ? 'null MX (accepts no mail)' : host).join(', '))
 const checkedAt = computed(() => { const date = new Date(status.value?.checkedAt || ''); return Number.isNaN(date.getTime()) ? '' : date.toLocaleString() })
 
 // keepMessages: a re-check right after an action keeps that action's outcome visible.
@@ -123,7 +125,7 @@ onBeforeUnmount(() => { requestVersion++; controller?.abort() })
         <Inbox class="h-4 w-4 text-blue-600" aria-hidden="true" />Receiving (MX)
         <span role="status" class="rounded-full border px-2 py-0.5 text-xs font-medium" :class="badgeClass">{{ badge.label }}</span>
       </h4>
-      <button type="button" @click="load(true)" :disabled="!!busy" :aria-label="`Re-check MX for ${domainName}`" class="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-60"><RefreshCw :class="['h-3.5 w-3.5', { 'animate-spin': busy === 'checking' }]" aria-hidden="true" />Re-check</button>
+      <button type="button" @click="load(true)" :disabled="!!busy" :aria-label="`Re-check MX for ${domainName}`" class="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-60"><RefreshCw :class="['h-3.5 w-3.5', { 'animate-spin': busy === 'checking' }]" aria-hidden="true" />Re-check</button>
     </div>
     <p class="mt-2 text-gray-600">{{ RECEIVING_EXPLAINER }}</p>
     <p v-if="problem" class="mt-2 text-amber-800">{{ problem }}</p>
@@ -133,10 +135,11 @@ onBeforeUnmount(() => { requestVersion++; controller?.abort() })
     <dl v-if="status" class="mt-3 grid gap-2 sm:grid-cols-4">
       <div v-for="field in fields" :key="field.label" class="flex min-w-0 items-start justify-between gap-2 rounded-lg bg-gray-50 p-2">
         <div class="min-w-0"><dt class="text-xs text-gray-500">{{ field.label }}</dt><dd class="mt-0.5 break-all font-mono text-gray-900">{{ field.value }}</dd></div>
-        <button type="button" @click="copy(field.label, field.value)" :aria-label="`Copy ${field.label}`" class="shrink-0 rounded p-1 hover:bg-gray-200"><Check v-if="copied === field.label" class="h-4 w-4 text-green-600" aria-hidden="true" /><Copy v-else class="h-4 w-4 text-gray-400" aria-hidden="true" /></button>
+        <button type="button" @click="copy(field.label, field.value)" :aria-label="copied === field.label ? `Copied ${field.label}` : `Copy ${field.label}`" class="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg hover:bg-gray-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"><Check v-if="copied === field.label" class="h-4 w-4 text-green-600" aria-hidden="true" /><Copy v-else class="h-4 w-4 text-gray-400" aria-hidden="true" /></button>
       </div>
     </dl>
-    <p v-if="status && status.existingMx.length && status.mxStatus !== 'published'" class="mt-2 text-xs text-gray-600">Current public MX: <span class="font-mono">{{ status.existingMx.join(', ') }}</span></p>
+    <span class="sr-only" aria-live="polite">{{ copied ? `Copied ${copied}` : '' }}</span>
+    <p v-if="status && status.existingMx.length && status.mxStatus !== 'published'" class="mt-2 text-xs text-gray-600">Current public MX: <span class="font-mono">{{ existingMxText }}</span></p>
     <p v-if="status?.mxStatus === 'conflict'" class="mt-2 text-xs text-gray-600">Mailat never replaces another provider's MX. If this domain's mail should come to Mailat, change the record in your DNS yourself.</p>
 
     <div v-if="canManage" class="mt-3 flex flex-wrap gap-2">
@@ -150,7 +153,7 @@ onBeforeUnmount(() => { requestVersion++; controller?.abort() })
       <p class="mt-2 text-gray-700">Pointing the root MX for {{ domainName }} to SES routes incoming mail to Mailat. It does not send a copy to your existing inbox provider.</p>
       <p class="mt-2 text-gray-700">To keep that provider, retain its root MX records and use its forwarding feature to a separately configured Mailat receiving address, or add a receiving subdomain to Mailat.</p>
       <p class="mt-2 text-gray-600">Enabling creates the SES receiving setup only. Mailat does not change your DNS: publish the MX record above yourself, or use Add MX to Cloudflare afterwards.</p>
-      <p v-if="status?.existingMx.length" class="mt-2 text-amber-800">Mail for {{ domainName }} currently goes to {{ status.existingMx.join(', ') }}.</p>
+      <p v-if="status?.existingMx.length" class="mt-2 text-amber-800">Mail for {{ domainName }} currently goes to {{ existingMxText }}.</p>
       <div class="mt-3 flex gap-2">
         <button type="button" @click="enable" :disabled="!!busy" aria-label="Confirm enable receiving" class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">{{ busy === 'enabling' ? 'Enabling…' : 'Enable receiving' }}</button>
         <button type="button" @click="confirmOpen = false" :disabled="busy === 'enabling'" class="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm">Cancel</button>

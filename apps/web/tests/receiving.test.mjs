@@ -55,6 +55,16 @@ test('mailbox reasons say off, missing and elsewhere precisely', () => {
   assert.match(lib.receivingProblem(status({ enabled: true, mxStatus: 'missing' }), 'vaybcode.com'), /no MX record.*10 inbound-smtp\.us-east-2\.amazonaws\.com/)
   assert.match(lib.receivingProblem(status({ enabled: true, mxStatus: 'conflict', existingMx: ['aspmx.l.google.com'] }), 'vaybcode.com'), /points to aspmx\.l\.google\.com/)
   assert.match(lib.receivingProblem(status({ enabled: true, mxStatus: 'unknown' }), 'vaybcode.com'), /could not be checked/)
+  // Equal priority: the Mailat MX is published but another one ties or wins.
+  const tie = lib.receivingProblem(status({ enabled: true, mxStatus: 'conflict', existingMx: ['inbound-smtp.us-east-2.amazonaws.com', 'mx.other.test'] }), 'vaybcode.com')
+  assert.match(tie, /publishes the Mailat MX, but mx\.other\.test has the same or a better priority/)
+  assert.match(tie, /lowest priority number/)
+  assert.doesNotMatch(tie, /points to inbound-smtp/)
+  const tieUpper = lib.receivingProblem(status({ enabled: true, mxStatus: 'conflict', existingMx: ['INBOUND-SMTP.US-EAST-2.AMAZONAWS.COM', 'mx.other.test'] }), 'vaybcode.com')
+  assert.match(tieUpper, /publishes the Mailat MX/)
+  // Null MX: explained in words, never as "points to .".
+  const nullMx = lib.receivingProblem(status({ enabled: true, mxStatus: 'conflict', existingMx: ['.'] }), 'vaybcode.com')
+  assert.match(nullMx, /null MX, which says it accepts no mail/); assert.doesNotMatch(nullMx, /points to \./)
   assert.equal(lib.receivingProblem(status({ enabled: true, mxStatus: 'published' }), 'vaybcode.com'), '')
   // Before the lookup answers, fall back to the domain switch only.
   assert.match(lib.receivingProblem(null, 'vaybcode.com', false), /off/)
@@ -146,6 +156,21 @@ test('missing MX offers Cloudflare for just that record and reports conflicts', 
   assert.equal(f.find('Add MX to Cloudflare'), undefined)
 })
 
+test('null MX is shown in words and copy success is announced', async t => {
+  const f = fixture(t, { receivingEnabled: true })
+  f.last('status').resolve(status({ enabled: true, mxStatus: 'conflict', existingMx: ['.'] })); await flush()
+  assert.match(text(f.root), /null MX \(accepts no mail\)/); assert.doesNotMatch(text(f.root), /Current public MX:\s+\.\s/)
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: async () => {} } }, configurable: true })
+  t.after(() => { if (previous) Object.defineProperty(globalThis, 'navigator', previous); else delete globalThis.navigator })
+  const button = f.find('Copy Mail server')
+  assert.match(button.props.class, /min-h-11/); assert.match(button.props.class, /focus-visible:outline/)
+  await button.props.onClick(); await flush()
+  assert.ok(f.find('Copied Mail server'), 'button label says Copied')
+  const live = all(f.root).find(n => n.props['aria-live'] === 'polite')
+  assert.match(text(live), /Copied Mail server/)
+})
+
 test('members see the status and record but no actions; failures are unknown', async t => {
   const f = fixture(t, { canManage: false })
   f.last('status').reject(new Error('lookup unavailable')); await flush()
@@ -175,4 +200,6 @@ test('mailbox screens link to the domain card and warn in the New mailbox form',
   assert.match(detail, /Receives mail/)
   const domains = await readFile(`${webRoot}/src/views/Domains.vue`, 'utf8')
   assert.match(domains, /<DomainReceivingStatus/); assert.match(domains, /route\.query\.receiving/)
+  // Manual SMTP domains have their own MX row; the SES receiving row is only for SES domains.
+  assert.match(domains, /<DomainReceivingStatus\s+v-if="domain\.emailProvider === 'ses'"/)
 })

@@ -659,6 +659,7 @@ async function handleSetupReceiving(domain: any) {
                 </div>
                 <p v-if="domain.emailProvider === 'ses'" class="text-xs text-gray-500 mt-3">Sending setup preserves your existing inbox provider. The MX record at bounce.{{ domain.name || domain.domain }} is for SES MAIL FROM, not inbox routing.</p>
                 <DomainReceivingStatus
+                  v-if="domain.emailProvider === 'ses'"
                   :domain-uuid="domain.uuid"
                   :domain-name="domain.name || domain.domain || ''"
                   :domain-id="domain.id"

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dublyo/mailat/api/internal/config"
 	"github.com/dublyo/mailat/api/internal/testutil"
@@ -20,15 +21,91 @@ import (
 type fakeMXResolver struct {
 	mu      sync.Mutex
 	calls   int
+	names   []string
 	records []*net.MX
 	err     error
+	gate    chan struct{} // When set, lookups wait for it to close.
 }
 
 func (f *fakeMXResolver) LookupMX(_ context.Context, name string) ([]*net.MX, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls++
+	f.names = append(f.names, name)
+	gate := f.gate
+	f.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.records, f.err
+}
+
+func (f *fakeMXResolver) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// Forced refreshes are rate limited per name, concurrent lookups share one
+// query, and the name is always fully qualified.
+func TestLookupMXRefreshLimitCoalescingAndFQDN(t *testing.T) {
+	ctx := context.Background()
+	resolver := &fakeMXResolver{records: []*net.MX{{Host: sesInbound + ".", Pref: 10}}}
+	svc := &DomainService{mxResolver: resolver}
+
+	if _, err := svc.lookupMX(ctx, "fresh.example.test", false); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		_, _ = svc.lookupMX(ctx, "fresh.example.test", true)
+	}
+	if resolver.count() != 1 {
+		t.Fatalf("refresh of a fresh answer queried DNS again: %d calls", resolver.count())
+	}
+	if resolver.names[0] != "fresh.example.test." {
+		t.Fatalf("lookup was not fully qualified: %q", resolver.names[0])
+	}
+	// An answer older than the minimum age is refreshed.
+	svc.mxCache.mu.Lock()
+	r := svc.mxCache.entries["fresh.example.test"]
+	r.at = r.at.Add(-mxRefreshMinAge - time.Second)
+	svc.mxCache.entries["fresh.example.test"] = r
+	svc.mxCache.mu.Unlock()
+	_, _ = svc.lookupMX(ctx, "fresh.example.test", true)
+	if resolver.count() != 2 {
+		t.Fatalf("stale answer was not refreshed: %d calls", resolver.count())
+	}
+
+	// Parallel callers for one uncached name share a single query.
+	resolver.mu.Lock()
+	resolver.gate = make(chan struct{})
+	resolver.mu.Unlock()
+	var wg sync.WaitGroup
+	results := make(chan int, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			records, _ := svc.lookupMX(ctx, "burst.example.test", true)
+			results <- len(records)
+		}()
+	}
+	for deadline := time.Now().Add(2 * time.Second); resolver.count() < 3 && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // Let the other callers reach the wait.
+	close(resolver.gate)
+	wg.Wait()
+	close(results)
+	for n := range results {
+		if n != 1 {
+			t.Fatalf("a coalesced caller got %d records", n)
+		}
+	}
+	if resolver.count() != 3 {
+		t.Fatalf("parallel lookups were not coalesced: %d calls", resolver.count())
+	}
 }
 
 const sesInbound = "inbound-smtp.us-east-2.amazonaws.com"
@@ -55,9 +132,15 @@ func TestClassifyReceivingMX(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			status, existing, _ := classifyReceivingMX(tc.records, tc.err, sesInbound)
+			status, existing, reason := classifyReceivingMX(tc.records, tc.err, sesInbound)
 			if status != tc.want || !reflect.DeepEqual(existing, tc.existing) {
 				t.Fatalf("got %s %v, want %s %v", status, existing, tc.want, tc.existing)
+			}
+			if tc.name == "null MX" && !strings.Contains(reason, "null MX") {
+				t.Fatalf("null MX reason: %q", reason)
+			}
+			if tc.name == "elsewhere" && strings.Contains(reason, "null MX") {
+				t.Fatalf("elsewhere reason: %q", reason)
 			}
 		})
 	}
@@ -79,6 +162,10 @@ func TestReceivingStatusIsLiveScopedAndCached(t *testing.T) {
 	}
 	resolver := &fakeMXResolver{records: []*net.MX{{Host: "mx.existing-provider.test.", Pref: 5}}}
 	svc := &DomainService{db: db, cfg: &config.Config{EmailProvider: "ses", AWSRegion: "us-east-2"}, mxResolver: resolver}
+	// Each Re-check below must reach the resolver.
+	previousMinAge := mxRefreshMinAge
+	mxRefreshMinAge = 0
+	t.Cleanup(func() { mxRefreshMinAge = previousMinAge })
 
 	// Off: the record is still shown, existing MX is reported, nothing claims published.
 	st, err := svc.GetReceivingStatus(ctx, org, domainUUID, false)
