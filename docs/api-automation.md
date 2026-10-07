@@ -61,6 +61,8 @@ organization. Choose only the scopes a workflow needs:
 | Template reads / changes | `templates:read` / `templates:manage` |
 | Webhook subscriptions, deliveries, rotation and replay | `webhooks:manage` |
 | Contacts, lists and signup forms: read, import, export, change, delete and GDPR erasure | `contacts:manage` |
+| Campaign reads, stats, progress, audience, recipients, preview and campaign settings | `campaigns:read` |
+| Create, change, schedule, send, pause, resume, cancel, test and delete campaigns; change campaign settings | `campaigns:manage` |
 | Automation lists, stats and enrollments (includes contact emails) | `automations:read` |
 | Enroll contacts, cancel and retry enrollments | `automations:enroll` |
 
@@ -70,11 +72,17 @@ key reaches them only while the user who created it is an owner or admin; a
 member's key gets 403 even with the right scope. Contacts, lists, campaigns,
 automations and templates have no role check.
 
-Team administration is human-only: no API key scope reaches `/org/members`,
-`/org/invites` or `/org/identities`, whatever the role of the key's creator,
-and the same holds for shared mailboxes, forwards, push subscriptions and
-invite acceptance. Those routes still carry `x-mailat-role-required` for
-signed-in sessions; an API key gets 403 on them.
+Authenticated routes that no scope covers are human-session-only: an API key
+gets 403 on them whatever its scopes or the role of its creator, and the OpenAPI reference
+marks them `x-human-session-required`. The route groups with no API key scope
+at all are account and session security (`/auth/*`, `/security/*`, `/oauth/*`,
+`/api-keys`), `/settings`, team administration (`/org/members`, `/org/invites`,
+`/org/identities` and the `/org/...` mailbox-user routes), `/branding`,
+sending health (`/health/*`), `/auto-replies`, `/forwards`,
+`/shared-mailboxes` and `/push`. Within scoped groups, automation management
+(create, update, delete, validate, activate, pause, archive) and
+`PUT /identities/:uuid/password` are session-only too. Role-checked routes
+among them still carry `x-mailat-role-required` for signed-in sessions.
 
 Key expiry, active user status and a PostgreSQL-backed per-minute request counter
 are checked on every call. A 429 includes `Retry-After` in seconds. API keys cannot
