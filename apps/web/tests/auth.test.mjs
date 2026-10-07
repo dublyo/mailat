@@ -278,3 +278,57 @@ test('an expired session keeps legacy browser-only mail rules; a user logout cle
   auth.logout()
   assert.deepEqual(globalThis.__settingsClearedWith, { keepLegacyRules: false })
 })
+
+function pushDevice(calls) {
+  const make = endpoint => ({ endpoint, unsubscribe: async () => { calls.push(`browser-unsubscribe ${endpoint}`); return true } })
+  const device = { current: make('https://push.example/old'), make, registration: null }
+  const container = { getRegistration: () => device.registration ?? Promise.resolve({ pushManager: { getSubscription: async () => device.current } }) }
+  Object.defineProperty(globalThis, 'navigator', { value: { serviceWorker: container }, configurable: true })
+  return device
+}
+
+test('an expired session signs out without ending push in this browser', async () => {
+  const { auth, endpoints } = storesFixture()
+  const calls = []
+  pushDevice(calls)
+  try {
+    globalThis.localStorage = { getItem: () => 'expired-token', setItem() {}, removeItem() {} }
+    endpoints.pushApi.unsubscribe = async endpoint => { calls.push(`server-unsubscribe ${endpoint}`) }
+    endpoints.authApi.me = async () => { throw Object.assign(new Error('expired'), { status: 401 }) }
+    await auth.checkAuth()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(auth.isAuthenticated, false)
+    assert.deepEqual(calls, [], 'push survives an involuntary sign-out')
+    auth.logout()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // Signed out already, so only the browser can drop the subscription.
+    assert.deepEqual(calls, ['browser-unsubscribe https://push.example/old'])
+  } finally {
+    delete globalThis.navigator
+  }
+})
+
+test('switching accounts ends the old push before adopting the new session, never the new subscription', async () => {
+  const { auth, endpoints, state } = storesFixture()
+  const calls = []
+  const device = pushDevice(calls)
+  const registration = deferred()
+  device.registration = registration.promise
+  try {
+    endpoints.pushApi.unsubscribe = async (endpoint, token) => { calls.push(`server-unsubscribe ${endpoint} ${token}`) }
+    endpoints.authApi.logout = async token => { calls.push(`logout ${token}`) }
+    const adopted = auth.setSession('invite-session', { id: 9, email: 'new@acme.test', role: 'member' })
+    // The new account subscribes as soon as it is signed in.
+    if (state.token === 'invite-session') device.current = device.make('https://push.example/new')
+    registration.resolve({ pushManager: { getSubscription: async () => device.current } })
+    await adopted
+    if (device.current.endpoint !== 'https://push.example/new') device.current = device.make('https://push.example/new')
+    device.registration = null
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(state.token, 'invite-session')
+    assert.equal(auth.isAuthenticated, true)
+    assert.deepEqual(calls, ['server-unsubscribe https://push.example/old first-account', 'browser-unsubscribe https://push.example/old', 'logout first-account'])
+  } finally {
+    delete globalThis.navigator
+  }
+})

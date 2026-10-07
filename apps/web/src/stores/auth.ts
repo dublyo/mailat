@@ -61,17 +61,15 @@ export const useAuthStore = defineStore('auth', () => {
     api.setToken(result.token)
   }
 
-  // An involuntary logout (expired or revoked session) keeps the legacy
-  // browser-only mail rules for import; a user-initiated one clears them.
-  function logout(options: { keepLegacyRules?: boolean } = {}) {
-    const currentToken = api.getToken()
-    // Push stops for this browser before the session is revoked, so the
-    // server call still authenticates; then the session itself is revoked.
-    void endDevicePush(currentToken ? endpoint => pushApi.unsubscribe(endpoint, currentToken) : null)
-      .catch(() => { /* No service worker, or push unavailable in this browser. */ })
-      .finally(() => {
-        if (currentToken) void authApi.logout(currentToken).catch(() => { /* Local logout remains possible offline. */ })
-      })
+  // Ends web push in this browser for the account signed in with token: the
+  // server is told while the session still authenticates, then the browser
+  // subscription is dropped.
+  function endPush(token: string | null) {
+    return endDevicePush(token ? endpoint => pushApi.unsubscribe(endpoint, token) : null)
+      .catch(() => false /* No service worker, or push unavailable in this browser. */)
+  }
+
+  function clearLocalSession(options: { keepLegacyRules?: boolean }) {
     challengeToken.value = null
     useReceivedInboxStore().reset()
     useInboxStore().closeCompose()
@@ -83,11 +81,32 @@ export const useAuthStore = defineStore('auth', () => {
     api.setToken(null)
   }
 
+  // A user-initiated logout ends push in this browser, then revokes the
+  // session. An involuntary one (expired or rejected session) passes
+  // involuntary: it keeps the legacy browser-only mail rules for import and
+  // leaves push alone, so an expired session never silently stops new-mail
+  // notifications; signing in again keeps them working.
+  function logout(options: { involuntary?: boolean } = {}) {
+    const currentToken = api.getToken()
+    const pushEnded = options.involuntary ? Promise.resolve() : endPush(currentToken)
+    void pushEnded.finally(() => {
+      if (currentToken) void authApi.logout(currentToken).catch(() => { /* Local logout remains possible offline. */ })
+    })
+    clearLocalSession({ keepLegacyRules: options.involuntary })
+  }
+
   // Adopts a session issued outside the login form (invite acceptance). Any
-  // other account signed in here is signed out first.
-  function setSession(nextToken: string, nextUser: User) {
+  // other account signed in here is signed out first, and its push
+  // subscription is ended before the new session is adopted: the new account
+  // cannot subscribe this browser until then, so the old account's teardown
+  // can never unsubscribe the new account's subscription.
+  async function setSession(nextToken: string, nextUser: User) {
     const previous = api.getToken()
-    if (previous && previous !== nextToken) logout()
+    if (previous && previous !== nextToken) {
+      clearLocalSession({})
+      await endPush(previous)
+      void authApi.logout(previous).catch(() => { /* Local logout remains possible offline. */ })
+    }
     challengeToken.value = null
     authError.value = null
     token.value = nextToken
@@ -114,7 +133,7 @@ export const useAuthStore = defineStore('auth', () => {
       // sign the user out of every tab.
       const status = (e as { status?: number }).status
       if (status === 401 || status === 403) {
-        logout({ keepLegacyRules: true })
+        logout({ involuntary: true })
       } else {
         authError.value = 'Mailat could not reach the server to restore your session.'
       }

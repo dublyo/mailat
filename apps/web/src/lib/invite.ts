@@ -56,12 +56,12 @@ export async function completeInvite(
   input: { token: string; name: string; password: string },
   deps: {
     accept: (input: { token: string; name: string; password: string }) => Promise<{ token: string; user: User }>
-    setSession: (token: string, user: User) => void
+    setSession: (token: string, user: User) => void | Promise<void>
     clearHash: () => void
   },
 ) {
   const session = await deps.accept(input)
   deps.clearHash()
-  deps.setSession(session.token, session.user)
+  await deps.setSession(session.token, session.user)
   return session.user
 }
