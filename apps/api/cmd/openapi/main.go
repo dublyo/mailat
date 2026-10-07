@@ -498,15 +498,25 @@ func main() {
 	}
 	collect(paths)
 	schemas = reachable
-	spec := object{"openapi": "3.0.3", "info": object{"title": "Mailat API", "version": "2026-10-04", "description": "Self-hosted SES email automation. API keys use Authorization: Bearer ue_… and explicit per-operation scopes. Human-only administration is marked. Roles are owner, admin, member and mailbox; x-mailat-role-required marks owner/admin routes, and x-mailat-mailbox-allowed marks the routes a mailbox user (a login that only uses its own mailbox) may call. API keys owned by a mailbox user are rejected. Inbox detail is non-mutating. Webhooks use version 1 events and HMAC-SHA256 over timestamp + '.' + raw body. Cursor retention is 90 days."}, "servers": []object{{"url": "/"}}, "paths": paths, "components": object{"securitySchemes": object{"bearerAuth": object{"type": "http", "scheme": "bearer", "description": "Scoped Mailat API key or active human session JWT."}}, "schemas": schemas}}
+	spec := object{"openapi": "3.0.3", "info": object{"title": "Mailat API", "version": contractVersion, "description": "Self-hosted SES email automation. API keys use Authorization: Bearer ue_… and explicit per-operation scopes. Human-only administration is marked. Roles are owner, admin, member and mailbox; x-mailat-role-required marks owner/admin routes, and x-mailat-mailbox-allowed marks the routes a mailbox user (a login that only uses its own mailbox) may call. API keys owned by a mailbox user are rejected. Inbox detail is non-mutating. Webhooks use version 1 events and HMAC-SHA256 over timestamp + '.' + raw body. Cursor retention is 90 days."}, "servers": []object{{"url": "/"}}, "paths": paths, "components": object{"securitySchemes": object{"bearerAuth": object{"type": "http", "scheme": "bearer", "description": "Scoped Mailat API key or active human session JWT."}}, "schemas": schemas}}
 	data, err := json.MarshalIndent(spec, "", "  ")
 	must(err)
 	data = append(data, '\n')
 	path := "internal/apidocs/openapi.json"
+	digest, err := contractDigest(data)
+	must(err)
+	recorded, err := readVersionRecord(versionPath)
+	must(err)
+	if err := versionGate(recorded, contractVersion, digest); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	version := versionFile(digest)
 	if len(os.Args) > 1 && os.Args[1] == "--check" {
 		existing, e := os.ReadFile(path)
 		must(e)
-		if string(existing) != string(data) {
+		existingVersion, _ := os.ReadFile(versionPath)
+		if string(existing) != string(data) || string(existingVersion) != string(version) {
 			fmt.Fprintln(os.Stderr, "OpenAPI is stale: run go run ./cmd/openapi")
 			os.Exit(1)
 		}
@@ -515,6 +525,7 @@ func main() {
 	}
 	must(os.MkdirAll(filepath.Dir(path), 0755))
 	must(os.WriteFile(path, data, 0644))
+	must(os.WriteFile(versionPath, version, 0644))
 	fmt.Printf("Generated %d API paths\n", len(paths))
 }
 

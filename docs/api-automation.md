@@ -13,6 +13,14 @@ Mailat guide, key management, examples and searchable route reference. Generate
 the contract from `apps/api` with `go run ./cmd/openapi`. `--check` and the normal
 Go test suite detect route/DTO/documentation drift.
 
+`info.version` is a date (`YYYY-MM-DD`) that changes only when the contract's
+paths or components change. It is `contractVersion` in
+`apps/api/cmd/openapi/version.go`; a change that alters the contract sets it to
+the date the change merges. `internal/apidocs/openapi.version.json` records the
+version with a SHA-256 of the canonical paths and components, and both the
+generator and `--check` fail with "contract changed: bump contractVersion" when
+the contract differs but the version did not move.
+
 For a documentation mirror such as Mailat.co, pin the generated contract to a
 Mailat source revision and show that revision with the download. The contract's
 relative server URL refers to the running Mailat instance, not the hosting
