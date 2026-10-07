@@ -79,15 +79,72 @@ Mailbox queries, message mutations, draft operations, labels, and attachment dow
 
 ### Members, roles, and shared mailboxes
 
-Users are `owner`, `admin` or `member`. Owners and admins invite people from Settings (`POST /api/v1/org/invites`); admins can invite and remove members only, and only the owner changes roles. The invite email is sent through SES from the inviter's own identity and links to `${WEB_URL}/invite#token=...`; the link is valid for `INVITE_TTL_HOURS` (default 168, at most 720), single use, and replaced on resend (60-second cooldown, five sends per invite). The invitee sets a name and password, then can link OAuth later. With `DISABLE_APP_LIMITS=false`, active users plus open invites count against the organization's `max_users`. While the SES account is in the sandbox, invites reach only verified addresses.
+Users are `owner`, `admin`, `member` or `mailbox` (see [Mailbox users](#mailbox-users)). Owners and admins invite people from Settings (`POST /api/v1/org/invites`); admins can invite and remove members only, and only the owner changes roles. The invite email is sent through SES from the inviter's own identity and links to `${WEB_URL}/invite#token=...`; the link is valid for `INVITE_TTL_HOURS` (default 168, at most 720), single use, and replaced on resend (60-second cooldown, five sends per invite). The invitee sets a name and password, then can link OAuth later. With `DISABLE_APP_LIMITS=false`, active users plus open invites count against the organization's `max_users`. While the SES account is in the sandbox, invites reach only verified addresses.
 
-Domain, identity, receiving, branding, shared-mailbox creation and member/invite management need the owner or admin role, checked on every request so a demotion applies at once. API keys reach domain, identity, receiving and branding routes only when their creator is an owner or admin; team administration (`/org/members`, `/org/invites`, `/org/identities`) and shared mailboxes are human-only, and no API key scope reaches them. API keys themselves are managed only from an owner or admin session. Contacts, lists, campaigns, automations and templates remain open to every member. Removing a member revokes their sessions, API keys and push subscriptions, deletes their shared-mailbox copies, and moves their personal identities to another member or disables them; their received mail is kept but no one can read it. Inviting the same address again creates a new account: the removed account keeps its mail under a placeholder address, so a new person given that address never sees the previous mailbox.
+Domain, identity, receiving, branding, shared-mailbox creation and member/invite management need the owner or admin role, checked on every request so a demotion applies at once. API keys reach domain, identity, receiving and branding routes only when their creator is an owner or admin; team administration (`/org/members`, `/org/invites`, `/org/identities`) and shared mailboxes are human-only, and no API key scope reaches them. API keys themselves are managed only from an owner or admin session. Contacts, lists, campaigns, automations and templates remain open to every member. Health, reputation, quota, warm-up and delivery logs (`/api/v1/health/*`) are owner and admin only. Removing a member revokes their sessions, API keys and push subscriptions, deletes their shared-mailbox copies, and moves their personal identities to another member or disables them; their received mail is kept but no one can read it. Inviting the same address again creates a new account: the removed account keeps its mail under a placeholder address, so a new person given that address never sees the previous mailbox.
 
 Re-inviting a removed address intentionally departs from spec F5.7, which describes reactivating the removed account. Mailat never reactivates it, because a login address is often reassigned to a different person. Instead, when the invite is accepted, the removed account's login address is renamed to `removed+<account uuid>@invalid` and a fresh account is created for the address. The removed account's received mail, identities and history are retained in the database (and count toward storage) but stay unreadable: no one can sign in as the placeholder, and owners and admins cannot open another account's mail. Settings > Team hides removed accounts by default; "Show removed" lists them labeled "Removed", with the placeholder shown as "Former account (address reassigned)". Deleting that retained mail is a database operation for the operator; the API offers no way to do it.
 
 When a removed member was the last active reader of a shared mailbox, the handover to the owner is recorded in the audit log (`member_remove`, `sharedMailboxesHandedOver`) and raised as an `info` alert of type `shared_mailbox_handover`, shown with the organization's alerts and included in the owner's daily alert digest.
 
 A shared mailbox is a shared identity, such as `support@your-domain`. Each member with read access gets an independent copy of every message that arrives after they join (read state, labels and deletion are per member), and members with send access can compose as the shared address. A shared mailbox has at most 50 members, and its last reader cannot be removed. When an organization member who is the last active reader of a shared mailbox is removed from the organization, the organization owner becomes a reader and manager of that mailbox, so its mail keeps arriving. Removing a member, or taking away their read access, deletes their copies of the mailbox's mail; mail they sent as the shared address stays in their Sent folder when only read access is taken away. Every copy stores its own text and HTML bodies in PostgreSQL (attachments and raw MIME in S3 are shared), so large teams multiply database storage for that mailbox.
+
+### Mailbox users
+
+A mailbox user is a login that owns exactly one address and sees only its own mail, the way a Migadu mailbox works. Example: an owner gives `ibrahim@vayb.dev` its own login, and Ibrahim gets an inbox, compose and his own settings, but no domains, team, campaigns, contacts, health pages or API keys. Mailat is web and SES only: there is no IMAP, POP3, SMTP submission or ManageSieve for mailbox users or anyone else.
+
+**Who manages them.** Owners and admins open Domains, then **Mailboxes** on a domain card. The domain must be `active` and SES-verified. A mailbox user does not use a seat (`max_users`), but its address counts toward `max_identities`. If receiving is off for the domain, the mailbox is still created and the page warns that it won't get mail until receiving is set up. Mailbox users cannot be changed into members or admins (or back); remove the mailbox and invite the person instead.
+
+**Invite or password.** The New mailbox form gives two ways to hand over access:
+
+- **Invite user to set own password** (default). Mailat sends a setup link to an address outside the new mailbox, such as the person's personal email, from the acting admin's own identity. The link is valid for 72 hours and works once. Until it is used the mailbox is `Invited`, and mail to the address is already delivered to it, so it is waiting when the user signs in. Resend issues a fresh link and kills the old one (60-second cooldown, five sends). Whoever holds the link gets that mail, so send it only to an address the person controls.
+- **Set initial password** (8 to 72 bytes). The mailbox is active at once. Give the user the address and password through a secure channel.
+
+From the mailbox page, admins can also change the name, recovery email and the **May send** / **May receive** switches; set a new password (signs the user out everywhere, keeps their 2FA, and tells the recovery email); send a 72-hour reset link to the recovery email or another address (at most five per 24 hours, 60 seconds apart); **reset 2FA** when the user loses their authenticator (signs them out everywhere, and they enrol again); suspend and reactivate; and remove. There is no self-service "forgot password"; resets are admin-driven. Every action is written to the audit log, without passwords or links.
+
+- **Suspend** signs the user out, revokes open reset links, stops their auto-replies and pauses their forwards. Mail keeps arriving. Reactivating does not resume forwards; the user turns them back on, so a forward someone else added never restarts by itself. To send the mail to the catch-all instead, turn off May receive.
+- **Remove** turns the address off for sending and receiving, deletes its send-as aliases and wildcard switch, and revokes every open link. New mail falls back to the catch-all. Old mail is kept but stays unreadable, as for a removed member. Creating the same address again later makes a new login that reuses the address but never sees the old mail. A domain can't be deleted while it still has mailboxes.
+
+**What a mailbox user can do.** The API enforces an allowlist (`apps/api/internal/middleware/mailbox_routes.go`). Mailbox users get the received inbox, labels, filters, trusted senders, compose and drafts, their own identity (display name and signature only), vacation replies, forwarding, push, sessions, 2FA and security keys, and shared mailboxes they belong to. Every other route returns 403 "Not available for mailbox accounts", and the web app sends them back to `/received`. An API key whose creator is now a mailbox user is rejected. Mailbox users can be added to shared mailboxes with read and/or send access, never manage access.
+
+**Who can send as what.** Compose, drafts, `POST /api/v1/emails` and `/emails/batch` use one rule. Members and mailbox users may send as:
+
+1. their identity address, for example `ibrahim@vayb.dev`;
+2. any `+tag` form of it, for example `ibrahim+news@vayb.dev`;
+3. send-as aliases an admin granted on the same domain, for example `sales@vayb.dev` (exactly, not `sales+x@`);
+4. when the admin turns on **Wildcard sender** for that mailbox, any unused address on the domain.
+
+Owners and admins may send as any unused address on the domain. No one, admins included, may send as another identity's address or another identity's send-as alias. Wildcard sending also excludes `+tag` forms of those addresses. Mailbox users can't use `/emails`; members' calls follow the rule above. The Sent copy is filed under the identity the From address belongs to. Signatures are saved per identity (Settings → Signature) and inserted when compose opens.
+
+**Where replies go.** Incoming mail is delivered to the first match, in this order:
+
+1. an identity with exactly that address;
+2. for `local+tag@domain`, the identity at `local@domain`, for every role;
+3. the mailbox that owns that address as a send-as alias, so aliases are send-and-receive like Migadu identities;
+4. the domain's catch-all.
+
+So the catch-all only gets mail for addresses nothing else claims. A removed mailbox, or one with May receive off, no longer matches and its mail goes to the catch-all. Replies to an address used through Wildcard sender go to the catch-all too, because that address isn't an identity or alias. Admins see the catch-all on the Mailboxes page but set it from the Identities list, not per mailbox.
+
+**CSV import.** Mailboxes → Import CSV checks a file with a dry run and then creates the rows (`POST /api/v1/org/domains/:domainUuid/mailboxes/import?dryRun=true|false`, body `text/csv`). The file is UTF-8 (a BOM is fine), at most 1 MiB and 200 rows, with a header row. Header names are case-insensitive, and an unknown column rejects the whole file.
+
+| Column | Required | Value |
+|---|---|---|
+| `local_part` or `address` | yes | `ibrahim`, or `ibrahim@vayb.dev` on this domain; no `+` |
+| `name` | yes | 2 to 255 characters |
+| `invite_email` | one of these two | where to send the setup link; must be outside the new mailbox |
+| `password` | one of these two | initial password, 8 to 72 bytes |
+| `may_send` | no | `true` (default) or `false` |
+| `may_receive` | no | `true` (default) or `false` |
+
+```csv
+local_part,name,invite_email,password,may_send,may_receive
+ibrahim,Ibrahim Ali,ibrahim.personal@example.com,,true,true
+sales-desk,Sales Desk,,Choose-a-long-password,true,false
+```
+
+Each row needs exactly one of `invite_email` or `password`. The dry run checks every row against the database and the rest of the file (duplicates are row errors) without writing anything or hashing passwords. The commit creates each row in its own transaction and reports `created` or `error` per row; passwords are never echoed. The web page only lets you commit after a clean dry run, or after you choose to skip the error rows. Delete the file afterwards if it holds passwords.
+
+**Admin API.** All routes are owner/admin sessions only; no API key scope reaches them: `GET|POST /api/v1/org/domains/:domainUuid/mailboxes`, `POST …/mailboxes/import`, and `GET|PUT|DELETE /api/v1/org/mailboxes/:userUuid` with `/aliases`, `/aliases/:aliasUuid`, `/password`, `/2fa/reset`, `/invite/resend`, `/suspend` and `/reactivate`. `GET /api/v1/org/members?includeMailboxes=true` lists mailbox users with members; without it they are left out. The generic `/org/invites` routes handle join invites only. The OpenAPI document (`/api/v1/openapi.json`) has the request and response shapes.
 
 ## Draft, compose, and attachment contracts
 

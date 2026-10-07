@@ -20,6 +20,23 @@ All-in-one email platform combining transactional email, marketing campaigns, em
 - **Identity Management**: Multiple identities per domain with color coding
 - **Catch-All Support**: Route unmatched emails to a designated identity per domain
 - **Smart Reply**: Auto-selects correct sender identity when replying (including catch-all)
+- **Mailbox Users**: Give any address on a verified domain its own mail-only login, Migadu style, with invite links or admin-set passwords, send-as aliases and CSV import
+
+## Mailbox users
+
+Owners and admins can turn any address on an SES-verified domain into its own login, the way Migadu mailboxes work. Open **Domains → Mailboxes** on a domain, then **New mailbox**:
+
+- **Invite user to set own password**: Mailat emails a 72-hour, single-use setup link to the person's outside address. Mail to the new address is kept for them in the meantime.
+- **Set initial password**: the login works at once; hand over the address and password through a secure channel.
+
+A mailbox user (role `mailbox`) sees only their own mail: inbox, compose, their signature, filters, vacation replies, forwarding, security and shared mailboxes they were added to. Every other page and API route is closed to them (403), and they cannot use API keys. Mailbox users don't take a seat.
+
+- **Sending:** a mailbox user (or member) can send as their address, any `+tag` of it, send-as aliases an admin granted, and, if the admin turned on Wildcard sender for that mailbox, any unused address on the domain. Owners and admins can use any unused address. No one can send as another person's address or alias.
+- **Receiving:** mail goes to the exact address first, then `local+tag` to `local`, then the owner of a send-as alias, and only then to the domain's catch-all.
+- **Admin actions:** change the May send / May receive switches, add or remove aliases, set a new password or send a reset link, reset 2FA, suspend, reactivate, or remove (new mail then falls back to the catch-all).
+- **CSV import:** columns `local_part` (or `address`), `name`, then exactly one of `invite_email` or `password`, plus optional `may_send` and `may_receive` (`true`/`false`). The limit is 200 rows or 1 MiB, and a dry run checks every row before anything is created.
+
+There is no IMAP/SMTP access and no self-service password reset. Details are in [docs/self-hosting-ses.md](docs/self-hosting-ses.md#mailbox-users).
 
 ## Quick Start
 
@@ -227,6 +244,20 @@ Email receiving is only available in these AWS regions:
 | PUT | `/api/v1/identities/:uuid/password` | Update identity password |
 | POST | `/api/v1/identities/:uuid/catch-all` | Set as catch-all for domain |
 | DELETE | `/api/v1/identities/:uuid` | Delete identity |
+
+### Mailbox Users (owner/admin session only)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/org/domains/:domainUuid/mailboxes` | List a domain's mailboxes and its catch-all |
+| POST | `/api/v1/org/domains/:domainUuid/mailboxes` | Create a mailbox (invite link or initial password) |
+| POST | `/api/v1/org/domains/:domainUuid/mailboxes/import?dryRun=true` | Check or import a CSV file |
+| GET / PUT / DELETE | `/api/v1/org/mailboxes/:userUuid` | Mailbox detail, update switches, remove |
+| POST / DELETE | `/api/v1/org/mailboxes/:userUuid/aliases[/:aliasUuid]` | Add or remove a send-as alias |
+| POST | `/api/v1/org/mailboxes/:userUuid/password` | Set a password or send a reset link |
+| POST | `/api/v1/org/mailboxes/:userUuid/2fa/reset` | Turn off the user's 2FA |
+| POST | `/api/v1/org/mailboxes/:userUuid/invite/resend` | Send a fresh setup link |
+| POST | `/api/v1/org/mailboxes/:userUuid/suspend` / `reactivate` | Suspend or reactivate |
 
 ### Received Inbox (AWS SES)
 
