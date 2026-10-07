@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url)
 const { setActivePinia, createPinia } = require('pinia')
 function evaluate(code) { const module = { exports: {} }; new Function('require', 'module', 'exports', code)(require, module, module.exports); return module.exports }
 const lib = evaluate((await build({ entryPoints: [fileURLToPath(new URL('../src/lib/invite.ts', import.meta.url))], bundle: true, write: false, platform: 'node', format: 'cjs' })).outputFiles[0].text)
-const { inviteTokenFromHash, forwardVerificationFromHash, forwardConfirmation, clearFragment, completeInvite } = lib
+const { inviteTokenFromHash, forwardVerificationFromHash, forwardConfirmation, clearFragment, completeInvite, inviteCopy, loginAfterReset } = lib
 
 const token = 'Q2hhbmdlTWVJbnZpdGVUb2tlbl9fMDEyMzQ1Njc4OWFi'
 const forwardId = '0d6c1c1e-8b7a-4b8e-9e2f-6a1f2b3c4d5e'
@@ -46,6 +46,43 @@ test('accepting clears the hash and then adopts the issued session', async () =>
     clearHash: () => failed.push('clear'), setSession: () => failed.push('session'),
   }), /invalid or has expired/)
   assert.deepEqual(failed, [], 'a failed accept keeps the link usable for a retry')
+})
+
+test('each link purpose gets its own text and fields', () => {
+  const base = { orgName: 'Vayb', email: 'ibrahim@vayb.dev', role: 'mailbox', inviterName: 'Owner', expiresAt: '' }
+  const join = inviteCopy({ ...base, role: 'admin', purpose: 'join' })
+  assert.equal(join.title, 'Join Vayb')
+  assert.match(join.intro, /Owner invited ibrahim@vayb\.dev as an admin/)
+  assert.equal(join.askName, true)
+  assert.equal(join.after, '/inbox')
+  assert.deepEqual(inviteCopy({ ...base, role: 'member' }), inviteCopy({ ...base, role: 'member', purpose: 'join' }), 'an older server without purpose is a join invite')
+  const setup = inviteCopy({ ...base, purpose: 'mailbox_setup', name: 'Ibrahim E' })
+  assert.equal(setup.title, 'Set a password for ibrahim@vayb.dev')
+  assert.equal(setup.askName, true)
+  assert.equal(setup.initialName, 'Ibrahim E')
+  assert.equal(setup.after, '/received')
+  const reset = inviteCopy({ ...base, purpose: 'password_reset', inviterName: '' })
+  assert.match(reset.title, /^Reset the password for ibrahim@vayb\.dev/)
+  assert.equal(reset.askName, false, 'a reset asks for the password only')
+  assert.equal(loginAfterReset('a+b@vayb.dev'), '/login?email=a%2Bb%40vayb.dev&passwordReset=1')
+})
+
+test('a reset that cannot sign in (two-factor on) clears the link and starts no session', async () => {
+  const order = []
+  const user = await completeInvite({ token, password: 'long-password' }, {
+    accept: async input => { order.push(['accept', input.name]); return { signedIn: false } },
+    clearHash: () => order.push(['clear']),
+    setSession: () => order.push(['session']),
+  })
+  assert.equal(user, null)
+  assert.deepEqual(order, [['accept', undefined], ['clear']])
+})
+
+test('the accept page sends a name only when the purpose asks for one', () => {
+  const source = readFileSync(new URL('../src/views/AcceptInvite.vue', import.meta.url), 'utf8')
+  assert.match(source, /name: copy\.value\.askName \? name\.value\.trim\(\) : undefined/)
+  assert.match(source, /v-if="copy\.askName"/)
+  assert.match(source, /loginAfterReset\(invite\.value\.email\)/)
 })
 
 const storesBuild = await build({

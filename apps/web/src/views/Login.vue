@@ -12,7 +12,9 @@ const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 
-const email = ref('')
+// A password reset that could not sign in (two-factor on) lands here with ?email=.
+const email = ref(typeof route.query.email === 'string' ? route.query.email : '')
+const passwordReset = route.query.passwordReset === '1'
 const password = ref('')
 const showPassword = ref(false)
 const verificationCode = ref('')
@@ -124,6 +126,10 @@ const handleSubmit = async () => {
           <button type="button" class="font-medium text-gmail-blue hover:underline shrink-0" :disabled="retrying" @click="retrySession">
             {{ retrying ? 'Retrying…' : 'Retry' }}
           </button>
+        </div>
+
+        <div v-if="passwordReset && !error" class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm" role="status">
+          Your password was changed. Sign in with it and your two-factor code.
         </div>
 
         <div v-if="error" class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm" role="alert">

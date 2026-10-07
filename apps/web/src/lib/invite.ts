@@ -51,17 +51,51 @@ export function clearFragment(win: Pick<Window, 'location' | 'history'> = window
   win.history.replaceState(win.history.state, '', win.location.pathname + win.location.search)
 }
 
-/** Accepts an invite and signs the new member in; the token leaves the URL first. */
+export type InvitePurpose = 'join' | 'mailbox_setup' | 'password_reset'
+
+/** Page text for each kind of link. An unknown purpose is shown as a join invite. */
+export function inviteCopy(invite: { purpose?: string; orgName: string; email: string; role: string; inviterName?: string; name?: string }) {
+  if (invite.purpose === 'mailbox_setup') return {
+    title: `Set a password for ${invite.email}`,
+    intro: `${invite.orgName} created this mailbox for you. Mail sent to it is already waiting.`,
+    askName: true, initialName: invite.name || '',
+    submit: 'Set password and sign in', busy: 'Setting up…', after: '/received',
+  }
+  if (invite.purpose === 'password_reset') return {
+    title: `Reset the password for ${invite.email}`,
+    intro: 'Choose a new password. Every other session is signed out.',
+    askName: false, initialName: '',
+    submit: 'Set new password', busy: 'Saving…', after: '/received',
+  }
+  return {
+    title: `Join ${invite.orgName}`,
+    intro: `${invite.inviterName || 'An admin'} invited ${invite.email} as ${invite.role === 'admin' ? 'an admin' : 'a member'}.`,
+    askName: true, initialName: '',
+    submit: 'Accept and sign in', busy: 'Joining…', after: '/inbox',
+  }
+}
+
+type AcceptResult = { token?: string; user?: User; signedIn?: boolean }
+
+/**
+ * Accepts an invite or reset link; the token leaves the URL first. Returns
+ * the signed-in user, or null when the account has two-factor sign-in and
+ * must log in (signedIn:false).
+ */
 export async function completeInvite(
-  input: { token: string; name: string; password: string },
+  input: { token: string; name?: string; password: string },
   deps: {
-    accept: (input: { token: string; name: string; password: string }) => Promise<{ token: string; user: User }>
+    accept: (input: { token: string; name?: string; password: string }) => Promise<AcceptResult>
     setSession: (token: string, user: User) => void | Promise<void>
     clearHash: () => void
   },
 ) {
   const session = await deps.accept(input)
   deps.clearHash()
+  if (session.signedIn === false || !session.token || !session.user) return null
   await deps.setSession(session.token, session.user)
   return session.user
 }
+
+/** Where to sign in after a reset that did not sign the user in. */
+export const loginAfterReset = (email: string) => `/login?email=${encodeURIComponent(email)}&passwordReset=1`

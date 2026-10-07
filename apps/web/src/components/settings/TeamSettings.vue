@@ -12,7 +12,10 @@ import { memberAddress, visibleMembers, removedCount } from '@/lib/team'
 const auth = useAuthStore()
 const domains = useDomainsStore()
 const isOwner = computed(() => auth.user?.role === 'owner')
-const members = ref<OrgMember[]>([])
+// Mailbox users are loaded only to label the identities they own; they are
+// managed per domain on the Mailboxes page, not here.
+const people = ref<OrgMember[]>([])
+const members = computed(() => people.value.filter(m => m.role !== 'mailbox'))
 const invites = ref<OrgInvite[]>([])
 const identities = ref<OrgIdentity[]>([])
 const loading = ref(true)
@@ -31,8 +34,8 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [m, i, ids] = await Promise.all([orgApi.members(), orgApi.invites(), orgApi.identities(), domains.fetchIdentities()])
-    members.value = m ?? []
+    const [m, i, ids] = await Promise.all([orgApi.members({ includeMailboxes: true }), orgApi.invites(), orgApi.identities(), domains.fetchIdentities()])
+    people.value = m ?? []
     invites.value = i ?? []
     identities.value = ids ?? []
   } catch (e) {
@@ -76,7 +79,7 @@ const canRemove = (member: OrgMember) => member.status === 'active' && member.ro
 const currentUuid = computed(() => members.value.find(m => m.email.toLowerCase() === auth.user?.email?.toLowerCase())?.uuid)
 const changeRole = (member: OrgMember, role: string) => run(member.uuid, async () => {
   const updated = await orgApi.changeRole(member.uuid, role as 'admin' | 'member')
-  members.value = members.value.map(m => m.uuid === updated.uuid ? updated : m)
+  people.value = people.value.map(m => m.uuid === updated.uuid ? updated : m)
 }, 'Could not change the role.')
 const removing = ref<OrgMember | null>(null)
 const transferTo = ref('')
@@ -95,6 +98,12 @@ const transferIdentity = (identity: OrgIdentity, userUuid: string) => userUuid &
   const updated = await orgApi.transferIdentity(identity.uuid, userUuid)
   identities.value = identities.value.map(i => i.uuid === updated.uuid ? updated : i)
 }, 'Could not transfer the identity.')
+// The owner shown for an identity whose owner is not an active team member.
+function otherOwner(identity: OrgIdentity) {
+  const owner = people.value.find(m => m.uuid === identity.ownerUuid)
+  if (owner?.role === 'mailbox' && owner.status !== 'disabled') return `${owner.email} (mailbox)`
+  return `${memberAddress(identity.ownerEmail)} (removed)`
+}
 const formatDate = (value: string | null) => value ? new Date(value).toLocaleDateString() : 'Never'
 </script>
 
@@ -127,7 +136,10 @@ const formatDate = (value: string | null) => value ? new Date(value).toLocaleDat
 
     <section aria-labelledby="members-title" class="pt-6 border-t border-gmail-border">
       <div class="flex items-center justify-between gap-3 mb-3">
-        <h3 id="members-title" class="text-base font-medium">Members</h3>
+        <div>
+          <h3 id="members-title" class="text-base font-medium">Members</h3>
+          <p class="text-xs text-gmail-gray">Mailbox users are managed per domain: <router-link to="/domains" class="text-gmail-blue hover:underline">Domains → Mailboxes</router-link>.</p>
+        </div>
         <label v-if="removedMembers" class="text-sm text-gmail-gray flex items-center gap-2"><input v-model="showRemoved" type="checkbox" />Show removed ({{ removedMembers }})</label>
       </div>
       <div class="overflow-x-auto border border-gmail-border rounded-lg">
@@ -178,9 +190,10 @@ const formatDate = (value: string | null) => value ? new Date(value).toLocaleDat
             <Badge v-if="!identity.canReceive && !identity.canSend" size="sm">Disabled</Badge>
           </span>
           <span v-if="identity.kind === 'shared'" class="text-xs text-gmail-gray">Managed in Shared mailboxes</span>
+          <span v-else-if="identity.mailboxPrimary" class="text-xs text-gmail-gray">Managed on the Mailboxes page</span>
           <label v-else class="text-xs text-gmail-gray flex items-center gap-2">Owner
             <select :value="identity.ownerUuid" :disabled="busy === identity.uuid" class="border rounded p-1 bg-white text-sm" @change="transferIdentity(identity, ($event.target as HTMLSelectElement).value) || (($event.target as HTMLSelectElement).value = identity.ownerUuid)">
-              <option v-if="!activeMembers.some(m => m.uuid === identity.ownerUuid)" :value="identity.ownerUuid">{{ memberAddress(identity.ownerEmail) }} (removed)</option>
+              <option v-if="!activeMembers.some(m => m.uuid === identity.ownerUuid)" :value="identity.ownerUuid">{{ otherOwner(identity) }}</option>
               <option v-for="member in activeMembers" :key="member.uuid" :value="member.uuid">{{ member.email }}</option>
             </select>
           </label>

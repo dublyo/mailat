@@ -23,8 +23,9 @@ async function load() {
   error.value = ''
   try {
     mailboxes.value = (await sharedMailboxApi.list()) ?? []
-    // Only admins can list the team, so only they can add new people.
-    if (admin.value) orgMembers.value = ((await orgApi.members()) ?? []).filter(m => m.status === 'active')
+    // Only admins can list the team, so only they can add new people. Mailbox
+    // users may join with read and send access, never manage.
+    if (admin.value) orgMembers.value = ((await orgApi.members({ includeMailboxes: true })) ?? []).filter(m => m.status === 'active')
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not load shared mailboxes.'
   } finally {
@@ -76,6 +77,8 @@ const members = ref<SharedMailboxMember[]>([])
 const membersError = ref('')
 const addForm = ref({ userUuid: '', canRead: true, canSend: false, canManage: false })
 const canManageOpen = computed(() => admin.value || !!open.value?.canManage)
+const isMailboxPerson = (userUuid: string) => orgMembers.value.some(m => m.uuid === userUuid && m.role === 'mailbox')
+const pickedIsMailbox = computed(() => isMailboxPerson(addForm.value.userUuid))
 const candidates = computed(() => orgMembers.value.filter(m => !members.value.some(x => x.userUuid === m.uuid)))
 async function openMembers(mailbox: SharedMailbox) {
   open.value = mailbox
@@ -90,7 +93,7 @@ async function memberAction(key: string, action: () => Promise<void>) {
   try { await action() } catch (e) { membersError.value = e instanceof Error ? e.message : 'Could not update members.' } finally { busy.value = '' }
 }
 const addMember = () => open.value && memberAction('add', async () => {
-  const f = addForm.value
+  const f = { ...addForm.value, canManage: addForm.value.canManage && !pickedIsMailbox.value }
   if (!f.userUuid || !(f.canRead || f.canSend)) { membersError.value = 'Pick a person and allow reading or sending.'; return }
   const added = await sharedMailboxApi.addMember(open.value!.id, f)
   members.value = [...members.value, added]
@@ -155,7 +158,7 @@ const removeMember = (member: SharedMailboxMember) => open.value && confirm(`Rem
           <tbody class="divide-y">
             <tr v-for="member in members" :key="member.userUuid">
               <td class="py-2 pr-2"><span class="font-medium">{{ member.name }}</span><span class="block text-xs text-gmail-gray break-all">{{ member.email }}</span></td>
-              <td v-for="perm in (['canRead', 'canSend', 'canManage'] as const)" :key="perm"><input type="checkbox" class="w-4 h-4" :checked="member[perm]" :disabled="!canManageOpen || busy === member.userUuid" :aria-label="`${perm} for ${member.email}`" @change="updateMember(member, { [perm]: !member[perm] })" /></td>
+              <td v-for="perm in (['canRead', 'canSend', 'canManage'] as const)" :key="perm"><input type="checkbox" class="w-4 h-4" :checked="member[perm]" :disabled="!canManageOpen || busy === member.userUuid || (perm === 'canManage' && !member.canManage && isMailboxPerson(member.userUuid))" :aria-label="`${perm} for ${member.email}`" @change="updateMember(member, { [perm]: !member[perm] })" /></td>
               <td class="text-right"><button v-if="canManageOpen" type="button" class="p-1 rounded hover:bg-red-50" :disabled="busy === member.userUuid" :aria-label="`Remove ${member.email}`" @click="removeMember(member)"><Trash2 class="w-4 h-4 text-red-600" /></button></td>
             </tr>
           </tbody>
@@ -164,12 +167,12 @@ const removeMember = (member: SharedMailboxMember) => open.value && confirm(`Rem
           <label class="flex-1 min-w-[12rem]">Add
             <select v-model="addForm.userUuid" :disabled="members.length >= MEMBER_CAP" class="mt-1 w-full border rounded p-2 bg-white">
               <option value="" disabled>Choose a team member</option>
-              <option v-for="person in candidates" :key="person.uuid" :value="person.uuid">{{ person.name }} ({{ person.email }})</option>
+              <option v-for="person in candidates" :key="person.uuid" :value="person.uuid">{{ person.name }} ({{ person.email }}){{ person.role === 'mailbox' ? ' · mailbox' : '' }}</option>
             </select>
           </label>
           <label class="flex items-center gap-1"><input v-model="addForm.canRead" type="checkbox" class="w-4 h-4" />Read</label>
           <label class="flex items-center gap-1"><input v-model="addForm.canSend" type="checkbox" class="w-4 h-4" />Send</label>
-          <label class="flex items-center gap-1"><input v-model="addForm.canManage" type="checkbox" class="w-4 h-4" />Manage</label>
+          <label class="flex items-center gap-1" :title="pickedIsMailbox ? 'Mailbox users cannot manage members' : undefined"><input v-model="addForm.canManage" type="checkbox" class="w-4 h-4" :disabled="pickedIsMailbox" />Manage</label>
           <Button type="submit" size="sm" :disabled="busy === 'add' || members.length >= MEMBER_CAP">Add</Button>
           <p v-if="members.length >= MEMBER_CAP" class="w-full text-xs text-gmail-gray">A shared mailbox can have at most {{ MEMBER_CAP }} members.</p>
         </form>
