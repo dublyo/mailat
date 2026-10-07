@@ -100,3 +100,16 @@ export function renderMessageDocument(html: string, options: RenderMessageOption
   const doc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${escapeAttribute(csp)}"><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank"><style>${BASE_STYLE}</style></head><body>${container.innerHTML}</body></html>`
   return { doc, remoteCount }
 }
+
+/**
+ * Sanitised signature HTML for the composer, or '' when there is none. The
+ * HTML form wins; a text-only signature is escaped. Signatures are the
+ * sender's own content, so https images stay (as with compose's image button).
+ */
+export function signatureHtml(signature: { signatureHtml?: string; signatureText?: string } | undefined): string {
+  const html = signature?.signatureHtml?.trim()
+  if (html) return renderMessageDocument(html, { mode: 'quote', allowRemote: true }).doc.trim()
+  const text = signature?.signatureText?.trim()
+  if (!text) return ''
+  return `<p>${escapeAttribute(text).replace(/\r?\n/g, '<br>')}</p>`
+}

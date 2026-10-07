@@ -247,7 +247,11 @@ export interface Identity {
   color?: string  // Hex color for UI display
   canSend?: boolean
   canReceive?: boolean
-  signature?: string
+  /** Own personal identities only; sanitise before inserting into compose. */
+  signatureHtml?: string
+  signatureText?: string
+  wildcardSender?: boolean
+  sendAliases?: string[]
   kind?: 'personal' | 'shared'
   /** A shared mailbox identity the caller is a member of; permissions are the caller's. */
   shared?: boolean
@@ -632,7 +636,7 @@ export const identityApi = {
   create: (data: { displayName: string; email: string; domainId: string; password?: string; isCatchAll?: boolean }) =>
     api.post<Identity>('/api/v1/identities', data),
 
-  update: (uuid: string, data: { displayName?: string; isDefault?: boolean; isCatchAll?: boolean }) =>
+  update: (uuid: string, data: { displayName?: string; isDefault?: boolean; isCatchAll?: boolean; signatureHtml?: string; signatureText?: string }) =>
     api.put<Identity>(`/api/v1/identities/${uuid}`, data),
 
   delete: (uuid: string) => api.delete(`/api/v1/identities/${uuid}`),

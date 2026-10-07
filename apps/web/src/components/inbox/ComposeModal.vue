@@ -8,11 +8,11 @@ import { X, Minus, Maximize2, Minimize2, Bold, Italic, Underline, Link2, Image, 
 import { useInboxStore } from '@/stores/inbox'
 import { useReceivedInboxStore } from '@/stores/receivedInbox'
 import { useDomainsStore } from '@/stores/domains'
-import { composeApi, receivedInboxApi, type ComposeAttachment, type ComposeRequest, type SendResult } from '@/lib/api'
-import { replyRecipients, replySender, prefixedSubject, escapeHtml, plainAddress, composeThreadHeaders, failedRetryPayload, retainSendAttempt, memberAliasAllowed } from '@/lib/compose'
+import { composeApi, receivedInboxApi, type ComposeAttachment, type ComposeRequest, type Identity, type SendResult } from '@/lib/api'
+import { replyRecipients, replySender, prefixedSubject, escapeHtml, plainAddress, composeThreadHeaders, failedRetryPayload, retainSendAttempt, senderAllowed, senderSuggestions, senderHint, bodyWithSignature } from '@/lib/compose'
 import { useAuthStore } from '@/stores/auth'
 import { isOrgAdmin } from '@/lib/api'
-import { renderMessageDocument } from '@/lib/mailHtml'
+import { renderMessageDocument, signatureHtml } from '@/lib/mailHtml'
 
 const inboxStore = useInboxStore()
 const mailbox = useReceivedInboxStore()
@@ -20,12 +20,15 @@ const domainsStore = useDomainsStore()
 const isOpen = computed(() => inboxStore.isComposeOpen)
 const identities = computed(() => domainsStore.identities.filter(i => i.canSend !== false))
 const authStore = useAuthStore()
-// Owners and admins may use any free address on the domain; members only the
-// identity address or a +tag of it.
+// Owners and admins may use any free address on the domain; members and
+// mailbox users follow the send-as rule (identity, +tag, aliases, wildcard).
 const restrictAlias = computed(() => !isOrgAdmin(authStore.user))
 const selectedIdentity = computed(() => identities.value.find(i => Number(i.id) === Number(selectedIdentityId.value)))
-const aliasError = computed(() => restrictAlias.value && selectedIdentity.value && fromEmail.value.trim() && !memberAliasAllowed(selectedIdentity.value.email, fromEmail.value)
-  ? `Send as ${selectedIdentity.value.email} or a +tag of it, like ${selectedIdentity.value.email.replace('@', '+news@')}.` : '')
+const fromAllowed = (identity: Identity, from: string) => senderAllowed(identity, from, domainsStore.identities)
+const aliasError = computed(() => restrictAlias.value && selectedIdentity.value && fromEmail.value.trim() && !fromAllowed(selectedIdentity.value, fromEmail.value)
+  ? `Send as ${selectedIdentity.value.email}, a +tag of it${selectedIdentity.value.sendAliases?.length ? ', or one of your send-as addresses' : ''}.` : '')
+const fromSuggestions = computed(() => senderSuggestions(selectedIdentity.value))
+const fromHint = computed(() => restrictAlias.value ? senderHint(selectedIdentity.value) : "You can use an alias on this identity's verified domain.")
 const to = ref('')
 const cc = ref('')
 const bcc = ref('')
@@ -57,6 +60,10 @@ let submissionPayload: ComposeRequest | null = null
 let savePromise: Promise<boolean> | null = null
 let saveTimer: ReturnType<typeof setTimeout> | undefined
 const savedSnapshot = ref('')
+// The body as compose opened it (signature and quote). The signature follows
+// the identity only while the body still matches it.
+const pristineHtml = ref('')
+let quotedHtml = ''
 let composeGeneration = 0
 const locked = computed(() => isSending.value || !!submissionPayload)
 const editor = useEditor({
@@ -68,7 +75,7 @@ const editor = useEditor({
 watch(locked, value => editor.value?.setEditable(!value))
 const snapshot = computed(() => JSON.stringify([selectedIdentityId.value, fromEmail.value, to.value, cc.value, bcc.value, subject.value, html.value, attachments.value]))
 const dirty = computed(() => initialized.value && snapshot.value !== savedSnapshot.value)
-const hasContent = computed(() => !!(to.value || cc.value || bcc.value || subject.value || body.value.trim() || attachments.value.length))
+const hasContent = computed(() => !!(to.value || cc.value || bcc.value || subject.value || (body.value.trim() && html.value !== pristineHtml.value) || attachments.value.length))
 const title = computed(() => inboxStore.composeMode === 'forward' ? 'Forward' : inboxStore.composeMode.startsWith('reply') ? 'Reply' : 'New message')
 const sendLabel = computed(() => ['unknown', 'sending', 'network'].includes(sendState.value) ? 'Check send status' : sendState.value === 'failed' ? 'Retry send' : 'Send')
 
@@ -92,6 +99,7 @@ watch(isOpen, async open => {
   error.value = ''; saveMessage.value = ''; sendState.value = ''; quoteNotice.value = ''
   submissionPayload = null; submissionKey.value = ''; submissionEmailId.value = ''; attemptUncertain.value = false; draftId.value = ''; draftVersion.value = undefined
   to.value = ''; cc.value = ''; bcc.value = ''; subject.value = ''; body.value = ''; html.value = ''; attachments.value = []
+  pristineHtml.value = ''; quotedHtml = ''
   isMinimized.value = false; showCcBcc.value = false
   await domainsStore.fetchIdentities()
   if (generation !== composeGeneration || !isOpen.value) return
@@ -100,7 +108,7 @@ watch(isOpen, async open => {
   const identity = selected?.identity || identities.value.find(i => i.isDefault) || identities.value[0]
   selectedIdentityId.value = identity ? Number(identity.id) : 0
   fromEmail.value = selected?.fromEmail || identity?.email || ''
-  if (identity && restrictAlias.value && !memberAliasAllowed(identity.email, fromEmail.value)) fromEmail.value = identity.email
+  if (identity && restrictAlias.value && !fromAllowed(identity, fromEmail.value)) fromEmail.value = identity.email
   let content = ''
   if (original) {
     if (inboxStore.composeMode === 'draft') {
@@ -127,17 +135,16 @@ watch(isOpen, async open => {
         if (quoted.remoteCount > 0) quoteNotice.value = 'Remote images were left out. Show images in the message first to include them.'
       }
       const lead = forward ? `Forwarded message — From: ${original.from.email}` : `On ${new Date(original.receivedAt).toLocaleString()}, ${original.from.name || original.from.email} wrote:`
-      content = `<p></p><p>${escapeHtml(lead)}</p><blockquote>${originalHtml}</blockquote>`
+      quotedHtml = `<p>${escapeHtml(lead)}</p><blockquote>${originalHtml}</blockquote>`
     }
     if (inboxStore.composeMode === 'forward' || inboxStore.composeMode === 'draft') {
       attachments.value = (original.sourceAttachments || []).map(a => ({ blobId: a.uuid, name: a.filename, type: a.contentType, size: a.sizeBytes }))
     }
   }
-  content = DOMPurify.sanitize(content)
+  if (inboxStore.composeMode !== 'draft') content = bodyWithSignature(signatureHtml(identity), quotedHtml)
   await nextTick()
-  editor.value?.commands.setContent(content, { emitUpdate: false })
-  html.value = editor.value?.getHTML() || content
-  body.value = editor.value?.getText() || original?.body || ''
+  setBody(content)
+  if (!body.value && original) body.value = original.body || ''
   showCcBcc.value = !!(cc.value || bcc.value)
   savedSnapshot.value = snapshot.value
   initialized.value = true
@@ -279,7 +286,18 @@ async function addFiles(event: Event) {
   } catch (e) { error.value = e instanceof Error ? e.message : 'Could not attach file' }
   finally { readingFiles.value = false; input.value = '' }
 }
-function identityChanged() { fromEmail.value = identities.value.find(i => Number(i.id) === Number(selectedIdentityId.value))?.email || '' }
+function setBody(content: string) {
+  content = DOMPurify.sanitize(content)
+  editor.value?.commands.setContent(content, { emitUpdate: false })
+  html.value = editor.value?.getHTML() || content
+  body.value = editor.value?.getText() || ''
+  pristineHtml.value = html.value
+}
+function identityChanged() {
+  fromEmail.value = selectedIdentity.value?.email || ''
+  // Swap the signature only while the body is still as compose opened it.
+  if (inboxStore.composeMode !== 'draft' && html.value === pristineHtml.value) setBody(bodyWithSignature(signatureHtml(selectedIdentity.value), quotedHtml))
+}
 function insertLink() {
   const url = prompt('Link URL (https://…)')
   if (url && /^https?:\/\//i.test(url)) editor.value?.chain().focus().extendMarkRange('link').setLink({ href: url }).run()
@@ -312,8 +330,9 @@ onBeforeUnmount(() => { clearTimeout(saveTimer); editor.value?.destroy(); window
         <fieldset :disabled="locked" class="min-h-0 flex-1 flex flex-col disabled:opacity-70">
           <div class="p-3 border-b space-y-2">
             <label class="flex items-center gap-3 text-sm"><span class="w-12 shrink-0 text-gray-500">Identity</span><select v-model="selectedIdentityId" @change="identityChanged" class="flex-1 min-w-0 bg-white border rounded p-1"><option v-for="identity in identities" :key="identity.id" :value="Number(identity.id)">{{ identity.shared ? identity.sharedMailboxName || identity.displayName : identity.displayName }} &lt;{{ identity.email }}&gt;{{ identity.shared ? ' (shared)' : '' }}</option></select></label>
-            <label class="flex items-center gap-3 text-sm"><span class="w-12 shrink-0 text-gray-500">From</span><input v-model="fromEmail" type="email" class="flex-1 min-w-0 p-1 border-b" aria-label="Sender email or alias" :aria-invalid="!!aliasError" aria-describedby="compose-from-hint" /></label>
-            <p id="compose-from-hint" :class="['text-xs pl-16', aliasError ? 'text-red-700' : 'text-gray-500']">{{ aliasError || (restrictAlias ? 'You can add a +tag to this address, like name+tag@domain.' : "You can use an alias on this identity's verified domain.") }}</p>
+            <label class="flex items-center gap-3 text-sm"><span class="w-12 shrink-0 text-gray-500">From</span><input v-model="fromEmail" type="email" list="compose-from-options" class="flex-1 min-w-0 p-1 border-b" aria-label="Sender email or alias" :aria-invalid="!!aliasError" aria-describedby="compose-from-hint" /></label>
+            <datalist id="compose-from-options"><option v-for="address in fromSuggestions" :key="address" :value="address" /></datalist>
+            <p id="compose-from-hint" :class="['text-xs pl-16', aliasError ? 'text-red-700' : 'text-gray-500']">{{ aliasError || fromHint }}</p>
           </div>
           <div class="px-3 py-2 border-b space-y-2">
             <div class="flex items-center gap-3 text-sm"><label for="compose-to" class="w-12 shrink-0 text-gray-500">To</label><input id="compose-to" ref="recipientInput" v-model="to" class="flex-1 min-w-0 outline-none" placeholder="Recipients, separated by commas" /><button type="button" @click="showCcBcc = !showCcBcc" class="text-blue-600">Cc/Bcc</button></div>

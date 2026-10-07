@@ -115,7 +115,7 @@ export const useDomainsStore = defineStore('domains', () => {
     }
   }
 
-  async function updateIdentity(uuid: string, data: { name?: string; signature?: string; isDefault?: boolean }) {
+  async function updateIdentity(uuid: string, data: { displayName?: string; signatureHtml?: string; signatureText?: string; isDefault?: boolean }) {
     const isCurrent = beginRequest()
     try {
       const updated = await identityApi.update(uuid, data)

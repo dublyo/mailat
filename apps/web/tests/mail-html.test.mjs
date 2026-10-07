@@ -77,3 +77,14 @@ test('evasive CSS url() references count toward the reveal banner', () => {
   assert.equal(renderMessageDocument('<div style="background:url(https:\\\\evil.example/x.png)">x</div>').remoteCount, 1)
   assert.equal(renderMessageDocument('<div style="background:url(data:image/png;base64,AAAA)">x</div>').remoteCount, 0)
 })
+
+test('signatures are sanitised before compose inserts them', () => {
+  const { signatureHtml } = module.exports
+  assert.equal(signatureHtml(undefined), '')
+  assert.equal(signatureHtml({ signatureHtml: '  ', signatureText: '' }), '')
+  const html = signatureHtml({ signatureHtml: '<p onclick="x()">Ibrahim<script>alert(1)</script><img src="https://cdn.test/logo.png"></p><form><input></form>' })
+  assert.ok(!/script|onclick|<form|<input/i.test(html), html)
+  assert.match(html, /Ibrahim/)
+  assert.match(html, /src="https:\/\/cdn\.test\/logo\.png"/)
+  assert.equal(signatureHtml({ signatureText: 'Ibrahim\n<CEO> & co' }), '<p>Ibrahim<br>&lt;CEO&gt; &amp; co</p>')
+})

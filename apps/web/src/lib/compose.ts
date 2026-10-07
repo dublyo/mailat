@@ -75,7 +75,7 @@ export function retainSendAttempt(status: number | undefined, wasUncertain: bool
   return wasUncertain || status === undefined || status < 400 || status >= 500
 }
 
-/** Members may send only as the identity address or a +tag of it (the server enforces this). */
+/** The identity address itself or local+tag@domain of it. */
 export function memberAliasAllowed(identityEmail: string, alias: string): boolean {
   const identity = identityEmail.trim().toLowerCase(), from = alias.trim().toLowerCase()
   if (from === identity) return true
@@ -86,3 +86,43 @@ export function memberAliasAllowed(identityEmail: string, alias: string): boolea
   const tag = from.slice(local.length + 1, from.length - domain.length)
   return tag.length > 0 && !tag.includes('@')
 }
+
+const baseAddress = (address: string) => address.replace(/^([^@+]+)\+[^@]*(@.*)$/, '$1$2')
+
+type SenderIdentity = Pick<Identity, 'email'> & Partial<Pick<Identity, 'id' | 'kind' | 'shared' | 'wildcardSender' | 'sendAliases'>>
+
+/**
+ * Mirrors the server's send-as rule (F8) for members and mailbox users: the
+ * identity address, a +tag of it, one of its send-as aliases (exact), or, with
+ * the wildcard switch on a personal identity, any address on its domain that
+ * is not (a +tag of) another known identity's address or alias. The server
+ * also knows identities this user cannot see, so it has the final say.
+ */
+export function senderAllowed(identity: SenderIdentity, from: string, others: SenderIdentity[] = []): boolean {
+  const address = from.trim().toLowerCase()
+  const domain = identity.email.slice(identity.email.lastIndexOf('@')).toLowerCase()
+  if (!/^[^\s@<>]+@[^\s@<>]+$/.test(address) || !address.endsWith(domain)) return false
+  if (memberAliasAllowed(identity.email, address)) return true
+  if ((identity.sendAliases || []).some(alias => alias.toLowerCase() === address)) return true
+  if (!identity.wildcardSender || identity.shared || (identity.kind && identity.kind !== 'personal')) return false
+  const taken = new Set(others.filter(o => o !== identity && (o.id === undefined || String(o.id) !== String(identity.id)))
+    .flatMap(o => [o.email, ...(o.sendAliases || [])]).map(a => a.toLowerCase()))
+  return !taken.has(address) && !taken.has(baseAddress(address))
+}
+
+/** Addresses offered in the compose From field: the identity and its send-as aliases. */
+export const senderSuggestions = (identity?: SenderIdentity) => identity ? [identity.email, ...(identity.sendAliases || [])] : []
+
+/** The From hint for members and mailbox users. */
+export function senderHint(identity?: SenderIdentity) {
+  if (!identity) return ''
+  const domain = identity.email.slice(identity.email.lastIndexOf('@'))
+  if (identity.wildcardSender && !identity.shared) return `Wildcard sending is on: you can use any unused address on ${domain}, a +tag, or a send-as alias.`
+  const tagged = identity.email.replace('@', '+news@')
+  return identity.sendAliases?.length
+    ? `You can add a +tag to this address, like ${tagged}, or pick one of your send-as addresses.`
+    : `You can add a +tag to this address, like ${tagged}.`
+}
+
+/** Compose body: a blank line to type in, then the signature, then any quote. */
+export const bodyWithSignature = (signature: string, quoted = '') => `<p></p>${signature ? `<p></p>${signature}` : ''}${quoted}`
