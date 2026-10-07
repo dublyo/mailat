@@ -131,6 +131,9 @@ func TestOrganizationRoleMatrixHTTP(t *testing.T) {
 	}
 	// Members keep their own reads and non-admin identity edits.
 	expect(200, "GET", "/domains", member, nil)
+	// Receiving status is a read members may make; a missing domain proves the
+	// role gate passed without a live DNS lookup.
+	expect(404, "GET", "/domains/00000000-0000-0000-0000-0000000000ff/receiving", member, nil)
 	expect(200, "GET", "/identities", member, nil)
 	expect(200, "PUT", memberIdentity, member, map[string]any{"displayName": "Member Two"})
 	expect(403, "PUT", memberIdentity, member, map[string]any{"isCatchAll": true})
@@ -176,6 +179,7 @@ func TestOrganizationRoleMatrixHTTP(t *testing.T) {
 	expect(403, "POST", "/identities", memberKey.Key, map[string]any{"domainId": "00000000-0000-0000-0000-0000000000d1", "email": "nope@roles.test", "displayName": "Nope"})
 	expect(403, "POST", "/domains", memberKey.Key, map[string]any{})
 	expect(200, "GET", "/domains", memberKey.Key, nil)
+	expect(404, "GET", "/domains/00000000-0000-0000-0000-0000000000ff/receiving", memberKey.Key, nil)
 	expect(403, "GET", "/api-keys", adminKey.Key, nil)
 	expect(403, "GET", "/org/members", adminKey.Key, nil)
 

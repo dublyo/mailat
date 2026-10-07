@@ -5581,6 +5581,41 @@
         },
         "type": "object"
       },
+      "service.DomainReceivingStatus": {
+        "properties": {
+          "checkedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "domain": {
+            "type": "string"
+          },
+          "domainUuid": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "existingMx": {
+            "description": "Public MX targets found at the domain root.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mxRecord": {
+            "$ref": "#/components/schemas/service.ReceivingMXRecord"
+          },
+          "mxStatus": {
+            "description": "not_enabled, missing, published, conflict or unknown.",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "service.DraftResult": {
         "properties": {
           "createdAt": {
@@ -6525,6 +6560,32 @@
             "type": "string"
           },
           "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "service.ReceivingMXRecord": {
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "name": {
+            "description": "\"@\" in most DNS dashboards.",
+            "type": "string"
+          },
+          "priority": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "target": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "value": {
+            "description": "Priority and target, as stored with the domain.",
             "type": "string"
           }
         },
@@ -8033,7 +8094,7 @@
   "info": {
     "description": "Self-hosted SES email automation. API keys use Authorization: Bearer ue_… and explicit per-operation scopes. Human-only administration is marked. Roles are owner, admin, member and mailbox; x-mailat-role-required marks owner/admin routes, and x-mailat-mailbox-allowed marks the routes a mailbox user (a login that only uses its own mailbox) may call. API keys owned by a mailbox user are rejected. Inbox detail is non-mutating. Webhooks use version 1 events and HMAC-SHA256 over timestamp + '.' + raw body. Cursor retention is 90 days.",
     "title": "Mailat API",
-    "version": "2026-10-07"
+    "version": "2026-10-08"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -30414,7 +30475,7 @@
     },
     "/api/v1/domains/{uuid}/dns/cloudflare": {
       "post": {
-        "description": "AddDNSToCloudflare adds required DNS records to Cloudflare\nPOST /api/v1/domains/:uuid/dns/cloudflare",
+        "description": "AddDNSToCloudflare adds required DNS records to Cloudflare\nPOST /api/v1/domains/:uuid/dns/cloudflare scope=receiving-mx adds only the root receiving MX. The root MX is written only while receiving is enabled and the zone has no other root MX; otherwise it is reported as skipped or conflict and nothing changes.",
         "operationId": "post_api_v1_domains_uuid_dns_cloudflare",
         "parameters": [
           {
@@ -30432,6 +30493,10 @@
               "schema": {
                 "properties": {
                   "apiToken": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "description": "Empty for every record, or receiving-mx for only the root receiving MX.",
                     "type": "string"
                   },
                   "zoneId": {
@@ -30700,6 +30765,277 @@
           "owner",
           "admin"
         ]
+      }
+    },
+    "/api/v1/domains/{uuid}/receiving": {
+      "get": {
+        "description": "Read-only receiving status for an organization domain. enabled is the owner's opt-in; Mailat never publishes or changes a root MX on its own. mxRecord is the exact root MX to publish (name @). mxStatus: not_enabled (receiving off), missing (no root MX), published (the SES inbound host is the preferred MX), conflict (the root MX points elsewhere) or unknown (the public lookup failed). Lookups are cached briefly; refresh=true re-checks now. Sending works without receiving; mailboxes need it.",
+        "operationId": "get_api_v1_domains_uuid_receiving",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "refresh",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.DomainReceivingStatus"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Receiving",
+        "tags": [
+          "domains"
+        ],
+        "x-api-key-scope": "domains:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/domains/{uuid}/sending-status": {

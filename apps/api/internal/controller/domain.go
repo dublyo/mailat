@@ -336,6 +336,7 @@ func (c *DomainController) AddDNSToCloudflare(r *ghttp.Request) {
 	var req struct {
 		APIToken string `json:"apiToken"`
 		ZoneID   string `json:"zoneId"`
+		Scope    string `json:"scope"` // Empty for every record, or receiving-mx for only the root receiving MX.
 	}
 	if err := r.Parse(&req); err != nil {
 		response.BadRequest(r, err.Error())
@@ -346,6 +347,10 @@ func (c *DomainController) AddDNSToCloudflare(r *ghttp.Request) {
 		response.BadRequest(r, "Cloudflare API token is required")
 		return
 	}
+	if req.Scope != "" && req.Scope != "receiving-mx" {
+		response.BadRequest(r, "scope must be empty or receiving-mx")
+		return
+	}
 
 	domain, err := c.domainService.GetDomain(r.Context(), claims.OrgID, domainUUID)
 	if err != nil {
@@ -354,7 +359,7 @@ func (c *DomainController) AddDNSToCloudflare(r *ghttp.Request) {
 	}
 
 	// Add DNS records to Cloudflare
-	results, err := c.domainService.AddDNSToCloudflare(r.Context(), domain.ID, req.APIToken, req.ZoneID)
+	results, err := c.domainService.AddDNSToCloudflareScoped(r.Context(), domain.ID, req.APIToken, req.ZoneID, req.Scope == "receiving-mx")
 	if err != nil {
 		response.BadRequest(r, domainOperationMessage(err))
 		return
@@ -363,6 +368,23 @@ func (c *DomainController) AddDNSToCloudflare(r *ghttp.Request) {
 	response.SuccessWithMessage(r, "DNS records added to Cloudflare", map[string]interface{}{
 		"results": results,
 	})
+}
+
+// Receiving reports whether the domain receives mail and its live root MX.
+// GET /api/v1/domains/:uuid/receiving
+func (c *DomainController) Receiving(r *ghttp.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+	status, err := c.domainService.GetReceivingStatus(r.Context(), claims.OrgID, r.Get("uuid").String(), r.Get("refresh").Bool())
+	if err != nil {
+		domainReadError(r, err)
+		return
+	}
+	r.Response.Header().Set("Cache-Control", "no-store")
+	response.Success(r, status)
 }
 
 // GetCloudflareZones lists Cloudflare zones for the API token

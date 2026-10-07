@@ -582,6 +582,12 @@ func customize(op object, verb, path string) {
 	if path == "/domains/:uuid/setup-sending" || path == "/domains/:uuid/sending-status" {
 		op["description"] = "Separate attachment storage and outbound SES feedback readiness. Setup does not enable receiving or change MX. Inspect storageReady, feedbackConfigured, subscriptionStatus, feedbackReady and reason even for HTTP 200: an existing foreign SES topic is preserved and reported as a conflict. SNS confirmation can remain pending."
 	}
+	if path == "/domains/:uuid/receiving" {
+		op["description"] = "Read-only receiving status for an organization domain. enabled is the owner's opt-in; Mailat never publishes or changes a root MX on its own. mxRecord is the exact root MX to publish (name @). mxStatus: not_enabled (receiving off), missing (no root MX), published (the SES inbound host is the preferred MX), conflict (the root MX points elsewhere) or unknown (the public lookup failed). Lookups are cached briefly; refresh=true re-checks now. Sending works without receiving; mailboxes need it."
+	}
+	if path == "/domains/:uuid/dns/cloudflare" {
+		op["description"] = fmt.Sprint(op["description"]) + " scope=receiving-mx adds only the root receiving MX. The root MX is written only while receiving is enabled and the zone has no other root MX; otherwise it is reported as skipped or conflict and nothing changes."
+	}
 	if path == "/emails" && verb == "POST" || path == "/emails/batch" {
 		op["description"] = fmt.Sprint(op["description"]) + " Requires a verified owned sender and stable Idempotency-Key. Base64 attachments preserve name, type (MIME), disposition and cid. Same key+content retries return the original result; changed payload is 409. A batch holds one content-bound key for the whole ordered request plus per-item keys. Inspect each item's success/error; retry the identical batch for incomplete items. queued/pending is not provider acceptance. sent is SES acceptance; delivered is destination-server acceptance. unknown needs investigation and must not be blindly retried with a new key. Sender rule: owners, admins and their keys may send as any address on a verified domain of theirs; members and member-owned keys only as one of their identity addresses, a local+tag form of it, a send-as alias granted to it, or any address on its domain when that identity's wildcard sender switch is on. Nobody may send as another user's identity address or send-as alias (400). The Sent copy is stored under the matching identity."
 	}
