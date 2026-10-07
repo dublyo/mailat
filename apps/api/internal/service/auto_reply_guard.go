@@ -72,8 +72,21 @@ func AutoReplyEligible(h mail.Header, envelopeFrom, sender string, ownAddrs, rcp
 	if v.Folder == "spam" || v.Folder == "trash" {
 		return false, "folder"
 	}
-	// Backscatter: never answer a sender the receipt could not authenticate.
-	if strings.EqualFold(v.DMARC, "FAIL") || (strings.EqualFold(v.SPF, "FAIL") && strings.EqualFold(v.DKIM, "FAIL")) {
+	// Backscatter: answer only a From address the receipt proved genuine.
+	// DMARC PASS aligns From with SPF or DKIM. Without a DMARC pass (GRAY when
+	// the domain has no policy, PROCESSING_FAILED or missing) only an SPF PASS
+	// for an envelope sender in exactly the From domain counts; an SPF pass for
+	// some other envelope domain says nothing about the From address.
+	if !strings.EqualFold(v.DMARC, "PASS") {
+		envelopeDomain := ""
+		if i := strings.LastIndex(envelope, "@"); i >= 0 {
+			envelopeDomain = envelope[i+1:]
+		}
+		if strings.EqualFold(v.DMARC, "FAIL") || !strings.EqualFold(v.SPF, "PASS") || !strings.EqualFold(envelopeDomain, sender[at+1:]) {
+			return false, "unauthenticated"
+		}
+	}
+	if strings.EqualFold(v.SPF, "FAIL") && strings.EqualFold(v.DKIM, "FAIL") {
 		return false, "unauthenticated"
 	}
 	if !addressedTo(h, rcpts) {
