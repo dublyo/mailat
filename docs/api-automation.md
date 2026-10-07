@@ -56,11 +56,17 @@ organization. Choose only the scopes a workflow needs:
 | Automation lists, stats and enrollments (includes contact emails) | `automations:read` |
 | Enroll contacts, cancel and retry enrollments | `automations:enroll` |
 
-Domain, identity, receiving, branding, shared-mailbox creation and
-member/invite routes carry `x-mailat-role-required` (the roles allowed, such as `["owner","admin"]`) in the OpenAPI
-reference. A key reaches them only while the user who created it is
-an owner or admin; a member's key gets 403 even with the right scope. Contacts,
-lists, campaigns, automations and templates have no role check.
+Domain, identity, receiving and branding routes carry `x-mailat-role-required`
+(the roles allowed, such as `["owner","admin"]`) in the OpenAPI reference. A
+key reaches them only while the user who created it is an owner or admin; a
+member's key gets 403 even with the right scope. Contacts, lists, campaigns,
+automations and templates have no role check.
+
+Team administration is human-only: no API key scope reaches `/org/members`,
+`/org/invites` or `/org/identities`, whatever the role of the key's creator,
+and the same holds for shared mailboxes, forwards, push subscriptions and
+invite acceptance. Those routes still carry `x-mailat-role-required` for
+signed-in sessions; an API key gets 403 on them.
 
 Key expiry, active user status and a PostgreSQL-backed per-minute request counter
 are checked on every call. A 429 includes `Retry-After` in seconds. API keys cannot

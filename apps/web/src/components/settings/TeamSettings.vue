@@ -7,6 +7,7 @@ import Modal from '@/components/common/Modal.vue'
 import { orgApi, type OrgIdentity, type OrgInvite, type OrgMember, type InviteStatus } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainsStore } from '@/stores/domains'
+import { memberAddress, visibleMembers, removedCount } from '@/lib/team'
 
 const auth = useAuthStore()
 const domains = useDomainsStore()
@@ -19,6 +20,10 @@ const busy = ref('')
 const error = ref('')
 const notice = ref('')
 const activeMembers = computed(() => members.value.filter(m => m.status === 'active'))
+// Removed accounts stay listed for history but are hidden by default.
+const showRemoved = ref(false)
+const listedMembers = computed(() => visibleMembers(members.value, showRemoved.value))
+const removedMembers = computed(() => removedCount(members.value))
 const senderIdentities = computed(() => domains.identities.filter(i => !i.shared && i.canSend !== false))
 const inviteBadge: Record<InviteStatus, 'warning' | 'success' | 'default' | 'error'> = { pending: 'warning', accepted: 'success', expired: 'default', revoked: 'error' }
 
@@ -121,15 +126,18 @@ const formatDate = (value: string | null) => value ? new Date(value).toLocaleDat
     </section>
 
     <section aria-labelledby="members-title" class="pt-6 border-t border-gmail-border">
-      <h3 id="members-title" class="text-base font-medium mb-3">Members</h3>
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <h3 id="members-title" class="text-base font-medium">Members</h3>
+        <label v-if="removedMembers" class="text-sm text-gmail-gray flex items-center gap-2"><input v-model="showRemoved" type="checkbox" />Show removed ({{ removedMembers }})</label>
+      </div>
       <div class="overflow-x-auto border border-gmail-border rounded-lg">
         <table class="w-full text-sm">
           <thead class="bg-gmail-lightGray text-left text-gmail-gray"><tr><th class="p-2 font-medium">Name</th><th class="p-2 font-medium">Role</th><th class="p-2 font-medium">Last sign-in</th><th class="p-2"><span class="sr-only">Actions</span></th></tr></thead>
           <tbody class="divide-y">
-            <tr v-for="member in members" :key="member.uuid" :class="member.status !== 'active' ? 'text-gmail-gray' : ''">
-              <td class="p-2"><span class="font-medium">{{ member.name }}</span><span class="block text-xs text-gmail-gray">{{ member.email }}</span></td>
+            <tr v-for="member in listedMembers" :key="member.uuid" :class="member.status !== 'active' ? 'text-gmail-gray' : ''">
+              <td class="p-2"><span class="font-medium">{{ member.name }}</span><span class="block text-xs text-gmail-gray">{{ memberAddress(member.email) }}</span></td>
               <td class="p-2">
-                <span v-if="member.status !== 'active'">Removed</span>
+                <Badge v-if="member.status !== 'active'" size="sm">Removed</Badge>
                 <select v-else-if="isOwner && member.role !== 'owner'" :value="member.role" :disabled="busy === member.uuid" :aria-label="`Role for ${member.email}`" class="border rounded p-1 bg-white" @change="changeRole(member, ($event.target as HTMLSelectElement).value)">
                   <option value="member">Member</option>
                   <option value="admin">Admin</option>
@@ -172,7 +180,7 @@ const formatDate = (value: string | null) => value ? new Date(value).toLocaleDat
           <span v-if="identity.kind === 'shared'" class="text-xs text-gmail-gray">Managed in Shared mailboxes</span>
           <label v-else class="text-xs text-gmail-gray flex items-center gap-2">Owner
             <select :value="identity.ownerUuid" :disabled="busy === identity.uuid" class="border rounded p-1 bg-white text-sm" @change="transferIdentity(identity, ($event.target as HTMLSelectElement).value) || (($event.target as HTMLSelectElement).value = identity.ownerUuid)">
-              <option v-if="!activeMembers.some(m => m.uuid === identity.ownerUuid)" :value="identity.ownerUuid">{{ identity.ownerEmail }} (removed)</option>
+              <option v-if="!activeMembers.some(m => m.uuid === identity.ownerUuid)" :value="identity.ownerUuid">{{ memberAddress(identity.ownerEmail) }} (removed)</option>
               <option v-for="member in activeMembers" :key="member.uuid" :value="member.uuid">{{ member.email }}</option>
             </select>
           </label>
