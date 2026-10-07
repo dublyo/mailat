@@ -171,8 +171,11 @@ func TestArrivalJobsEnqueuedOnIngest(t *testing.T) {
 	f.deliver(t, "bulk", "alice@sender.test", "Precedence: bulk")
 	f.deliver(t, "daemon", "mailer-daemon@sender.test")
 	f.deliverWith(t, "spoofed", "alice@sender.test", func(r *model.SESReceipt) { r.DMARCVerdict.Status = "FAIL" })
+	// No DMARC policy: an SPF pass for the attacker's own envelope domain does
+	// not prove the From address, so a forged From gets no reply.
+	f.deliverWith(t, "gray", "victim@sender.test", func(r *model.SESReceipt) { r.DMARCVerdict.Status = "GRAY" })
 	f.deliver(t, "self", "owner@arrival.test")
-	if c := f.count(t, `SELECT COUNT(*) FROM mail_arrival_jobs WHERE ses_message_id IN ('bulk','daemon','spoofed','self')`); c != 0 {
+	if c := f.count(t, `SELECT COUNT(*) FROM mail_arrival_jobs WHERE ses_message_id IN ('bulk','daemon','spoofed','gray','self')`); c != 0 {
 		t.Fatalf("guarded mail queued %d jobs", c)
 	}
 
@@ -324,7 +327,7 @@ func TestArrivalRunnerCrashRetryAndLease(t *testing.T) {
 
 	// Crash after the claim and the handler's writes, before commit.
 	f.deliver(t, "c1", "alice@sender.test")
-	jobs, err := f.runner.claim(ctx)
+	jobs, err := f.runner.claim(ctx, arrivalBatch)
 	if err != nil || len(jobs) != 1 {
 		t.Fatal(jobs, err)
 	}
@@ -357,7 +360,7 @@ func TestArrivalRunnerCrashRetryAndLease(t *testing.T) {
 
 	// A runner whose lease expired cannot complete the job; its writes roll back.
 	f.deliver(t, "c2", "bob@sender.test")
-	stale, err := f.runner.claim(ctx)
+	stale, err := f.runner.claim(ctx, arrivalBatch)
 	if err != nil || len(stale) != 1 {
 		t.Fatal(stale, err)
 	}
@@ -366,7 +369,7 @@ func TestArrivalRunnerCrashRetryAndLease(t *testing.T) {
 	}
 	other := NewArrivalRunner(f.db, f.runner.cfg, f.runner.tx)
 	other.dispatch = f.runner.dispatch
-	fresh, err := other.claim(ctx)
+	fresh, err := other.claim(ctx, arrivalBatch)
 	if err != nil || len(fresh) != 1 {
 		t.Fatal(fresh, err)
 	}
@@ -386,7 +389,7 @@ func TestArrivalRunnerCrashRetryAndLease(t *testing.T) {
 	// Concurrent jobs for one sender: the sender claim lets one through.
 	f.deliver(t, "c3", "carol@sender.test")
 	f.deliver(t, "c4", "carol@sender.test")
-	both, err := f.runner.claim(ctx)
+	both, err := f.runner.claim(ctx, arrivalBatch)
 	if err != nil || len(both) != 2 {
 		t.Fatal(both, err)
 	}
@@ -438,22 +441,44 @@ func (p *failingPusher) SendNewEmailNotification(context.Context, int64, string,
 	return errors.New("push endpoint unavailable")
 }
 
+// insertJob queues one job for the fixture user's copy emailID.
+func (f *arrivalFixture) insertJob(t *testing.T, kind, dedupe string, emailID int64) {
+	t.Helper()
+	tx, err := f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err = insertArrivalJob(context.Background(), tx, f.org, f.identity, f.user, 0, emailID, kind, dedupe, dedupe, arrivalPush{UUID: "u", From: "a@b.test", Subject: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// inboxCopy delivers one message and returns the id of its inbox copy.
+func (f *arrivalFixture) inboxCopy(t *testing.T, sesID string) int64 {
+	t.Helper()
+	f.deliver(t, sesID, "copy@sender.test")
+	var id int64
+	if err := f.db.QueryRow(`SELECT id FROM received_emails WHERE ses_message_id=$1 AND mailbox_owner_id=$2 AND folder='inbox'`, sesID, f.user).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 func TestArrivalRunnerRetryFailureAndRetention(t *testing.T) {
 	f := newArrivalFixture(t)
 	ctx := context.Background()
+	copyID := f.inboxCopy(t, "push-copy")
 	insert := func(kind, dedupe string) {
 		t.Helper()
-		tx, err := f.db.Begin()
-		if err != nil {
-			t.Fatal(err)
+		emailID := copyID
+		if kind != "push" {
+			emailID = 0
 		}
-		defer tx.Rollback()
-		if err = insertArrivalJob(ctx, tx, f.org, f.identity, f.user, 0, 0, kind, dedupe, dedupe, arrivalPush{UUID: "u", From: "a@b.test", Subject: "s"}); err != nil {
-			t.Fatal(err)
-		}
-		if err = tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
+		f.insertJob(t, kind, dedupe, emailID)
 	}
 
 	// Without a pusher, push jobs finish skipped.
@@ -521,6 +546,96 @@ func TestArrivalRunnerRetryFailureAndRetention(t *testing.T) {
 	}
 	if c := f.count(t, `SELECT COUNT(*) FROM mail_arrival_jobs WHERE status<>'failed'`); c != 0 {
 		t.Fatal("retention kept a finished job")
+	}
+}
+
+// recordingPusher records each delivery and what the runner held at that time.
+type recordingPusher struct {
+	db       *sql.DB
+	calls    int
+	running  []int
+	deadline []time.Duration
+}
+
+func (p *recordingPusher) SendNewEmailNotification(ctx context.Context, _ int64, _, _, _, _ string) error {
+	p.calls++
+	var n int
+	if err := p.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mail_arrival_jobs WHERE status='running'`).Scan(&n); err != nil {
+		return err
+	}
+	p.running = append(p.running, n)
+	d, ok := ctx.Deadline()
+	if !ok {
+		p.deadline = append(p.deadline, -1)
+	} else {
+		p.deadline = append(p.deadline, time.Until(d))
+	}
+	return nil
+}
+
+func TestArrivalPushSkipsGoneCopyAndLeasesPerJob(t *testing.T) {
+	f := newArrivalFixture(t)
+	pusher := &recordingPusher{db: f.db}
+	f.runner.SetPusher(pusher)
+
+	// A deleted copy, a copy moved out of the inbox and a job without a copy
+	// never push the sender and subject.
+	gone := f.inboxCopy(t, "gone")
+	moved := f.inboxCopy(t, "moved")
+	f.insertJob(t, "push", "gone", gone)
+	f.insertJob(t, "push", "moved", moved)
+	f.insertJob(t, "push", "nocopy", 0)
+	if _, err := f.db.Exec(`DELETE FROM received_emails WHERE id=$1`, gone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE received_emails SET folder='trash' WHERE id=$1`, moved); err != nil {
+		t.Fatal(err)
+	}
+	f.runOnce(t)
+	for _, dedupe := range []string{"gone", "moved", "nocopy"} {
+		if _, result := f.job(t, dedupe, "push"); result != "skipped:copy-gone" {
+			t.Fatal(dedupe, result)
+		}
+	}
+	if pusher.calls != 0 {
+		t.Fatalf("pushed %d notifications for gone copies", pusher.calls)
+	}
+
+	// A job whose user does not own the copy (a removed member) never pushes.
+	other := f.inboxCopy(t, "other")
+	f.insertJob(t, "push", "other", other)
+	var second int64
+	if err := f.db.QueryRow(`INSERT INTO users(org_id,email,password_hash,updated_at) VALUES($1,'second@arrival.test','x',now()) RETURNING id`, f.org).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE mail_arrival_jobs SET user_id=$1 WHERE dedupe_key='other'`, second); err != nil {
+		t.Fatal(err)
+	}
+	f.runOnce(t)
+	if _, result := f.job(t, "other", "push"); result != "skipped:copy-gone" || pusher.calls != 0 {
+		t.Fatal(result, pusher.calls)
+	}
+
+	// Each job is leased only when it runs, and a push finishes within its lease.
+	for _, id := range []string{"l1", "l2", "l3"} {
+		f.insertJob(t, "push", id, f.inboxCopy(t, id))
+	}
+	f.runOnce(t)
+	if pusher.calls != 3 {
+		t.Fatalf("pushes %d", pusher.calls)
+	}
+	for i := range pusher.running {
+		if pusher.running[i] != 1 {
+			t.Fatalf("push %d ran while %d jobs were leased", i, pusher.running[i])
+		}
+		if pusher.deadline[i] <= 0 || pusher.deadline[i] >= arrivalLease {
+			t.Fatalf("push %d deadline %v not within the %v lease", i, pusher.deadline[i], arrivalLease)
+		}
+	}
+	for _, id := range []string{"l1", "l2", "l3"} {
+		if status, _ := f.job(t, id, "push"); status != "done" {
+			t.Fatal(id, status)
+		}
 	}
 }
 

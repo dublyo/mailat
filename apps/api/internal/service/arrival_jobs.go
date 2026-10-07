@@ -30,8 +30,12 @@ import (
 // completion, so a crash either rolls everything back for a retry or leaves a
 // committed transactional row for the durable email worker.
 const (
-	arrivalTick        = 2 * time.Second
-	arrivalBatch       = 20
+	arrivalTick  = 2 * time.Second
+	arrivalBatch = 20
+	arrivalLease = 2 * time.Minute
+	// A push handler stops before its lease ends, so no other runner can
+	// reclaim a job whose notification is still being delivered.
+	arrivalPushBudget  = 90 * time.Second
 	arrivalMaxAttempts = 6
 	arrivalBaseBackoff = 30 * time.Second
 	arrivalMaxBackoff  = 6 * time.Hour
@@ -209,6 +213,10 @@ func arrivalFailed(reason string) arrivalResult {
 // back.
 type arrivalHandler func(ctx context.Context, tx *sql.Tx, job *arrivalJob) (arrivalResult, error)
 
+// arrivalDirectHandler runs a job whose effect is outside the database (push),
+// so it holds no transaction open during network calls.
+type arrivalDirectHandler func(ctx context.Context, job *arrivalJob) (arrivalResult, error)
+
 // ArrivalPusher delivers a new-mail push to a user's devices.
 type ArrivalPusher interface {
 	SendNewEmailNotification(ctx context.Context, userID int64, uuid, from, subject, identityEmail string) error
@@ -221,6 +229,7 @@ type ArrivalRunner struct {
 	tx       *TransactionalService
 	push     ArrivalPusher
 	handlers map[string]arrivalHandler
+	direct   map[string]arrivalDirectHandler
 	dispatch func(*worker.EmailSendPayload)
 }
 
@@ -229,7 +238,8 @@ func NewArrivalRunner(db *sql.DB, cfg *config.Config, tx *TransactionalService) 
 	if tx != nil {
 		r.dispatch = tx.Dispatch
 	}
-	r.handlers = map[string]arrivalHandler{"auto_reply": r.runAutoReply, "forward": r.runForward, "push": r.runPush}
+	r.handlers = map[string]arrivalHandler{"auto_reply": r.runAutoReply, "forward": r.runForward}
+	r.direct = map[string]arrivalDirectHandler{"push": r.runPush}
 	return r
 }
 
@@ -262,38 +272,42 @@ func (r *ArrivalRunner) Run(ctx context.Context) {
 	}
 }
 
-// runOnce claims one batch and runs it, returning the number claimed.
+// runOnce claims and runs up to arrivalBatch jobs, one lease at a time so a
+// slow job never lets the lease of a waiting one expire. It returns the number
+// claimed.
 func (r *ArrivalRunner) runOnce(ctx context.Context) (int, error) {
 	// A lease that expired on its last allowed attempt will never be claimed again.
 	if _, err := r.db.ExecContext(ctx, `UPDATE mail_arrival_jobs SET status='failed', result='failed:lease-expired', lease_until=NULL, updated_at=now()
 		WHERE status='running' AND lease_until<now() AND attempts>=$1`, arrivalMaxAttempts); err != nil {
 		return 0, fmt.Errorf("expire arrival jobs: %w", err)
 	}
-	jobs, err := r.claim(ctx)
-	if err != nil {
-		return 0, err
-	}
-	for i := range jobs {
-		if ctx.Err() != nil {
+	n := 0
+	for n < arrivalBatch && ctx.Err() == nil {
+		jobs, err := r.claim(ctx, 1)
+		if err != nil {
+			return n, err
+		}
+		if len(jobs) == 0 {
 			break
 		}
-		if err := r.processOne(ctx, &jobs[i]); err != nil && ctx.Err() == nil {
-			log.Printf("Arrival job %d (%s): %v", jobs[i].ID, jobs[i].Kind, err)
+		n++
+		if err := r.processOne(ctx, &jobs[0]); err != nil && ctx.Err() == nil {
+			log.Printf("Arrival job %d (%s): %v", jobs[0].ID, jobs[0].Kind, err)
 		}
 	}
-	return len(jobs), nil
+	return n, nil
 }
 
-func (r *ArrivalRunner) claim(ctx context.Context) ([]arrivalJob, error) {
+func (r *ArrivalRunner) claim(ctx context.Context, limit int) ([]arrivalJob, error) {
 	token := uuid.NewString()
-	rows, err := r.db.QueryContext(ctx, `UPDATE mail_arrival_jobs SET status='running', lease_until=now()+interval '2 minutes',
+	rows, err := r.db.QueryContext(ctx, `UPDATE mail_arrival_jobs SET status='running', lease_until=now()+make_interval(secs=>$4),
 			claim_token=$1, attempts=attempts+1, updated_at=now()
 		WHERE id IN (SELECT id FROM mail_arrival_jobs
 			WHERE status IN ('pending','running') AND next_attempt_at<=now() AND attempts<$3
 				AND (lease_until IS NULL OR lease_until<now())
 			ORDER BY next_attempt_at LIMIT $2 FOR UPDATE SKIP LOCKED)
 		RETURNING id,kind,org_id,identity_id,COALESCE(user_id,0),COALESCE(rule_id,0),COALESCE(received_email_id,0),ses_message_id,payload,attempts`,
-		token, arrivalBatch, arrivalMaxAttempts)
+		token, limit, arrivalMaxAttempts, arrivalLease.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("claim arrival jobs: %w", err)
 	}
@@ -316,6 +330,13 @@ var errArrivalLeaseLost = errors.New("arrival job lease lost")
 // processOne runs a claimed job in its own transaction and finishes it with
 // the claim token, so a runner whose lease expired cannot complete it.
 func (r *ArrivalRunner) processOne(ctx context.Context, job *arrivalJob) error {
+	if direct := r.direct[job.Kind]; direct != nil {
+		result, err := direct(ctx, job)
+		if err != nil {
+			return r.retry(ctx, job, err)
+		}
+		return r.finish(ctx, r.db, job, result)
+	}
 	handler := r.handlers[job.Kind]
 	if handler == nil {
 		return r.finish(ctx, r.db, job, arrivalSkipped("unsupported"))
@@ -550,9 +571,11 @@ func systemSendFailure(err error) (arrivalResult, error) {
 	return arrivalResult{}, err
 }
 
-// runPush delivers a new-mail notification. Delivery outcomes per device are
-// the pusher's concern; the job retries only on an error it returns.
-func (r *ArrivalRunner) runPush(ctx context.Context, _ *sql.Tx, job *arrivalJob) (arrivalResult, error) {
+// runPush delivers a new-mail notification while the user's copy still sits
+// in their inbox, so a deleted copy or a removed shared-mailbox member never
+// sees its sender and subject. Delivery outcomes per device are the pusher's
+// concern; the job retries only on an error it returns.
+func (r *ArrivalRunner) runPush(ctx context.Context, job *arrivalJob) (arrivalResult, error) {
 	if r.push == nil {
 		return arrivalSkipped("push-not-configured"), nil
 	}
@@ -560,7 +583,17 @@ func (r *ArrivalRunner) runPush(ctx context.Context, _ *sql.Tx, job *arrivalJob)
 	if err := json.Unmarshal(job.Payload, &p); err != nil || p.UUID == "" {
 		return arrivalFailed("invalid-payload"), nil
 	}
-	if err := r.push.SendNewEmailNotification(ctx, job.UserID, p.UUID, p.From, p.Subject, p.Identity); err != nil {
+	var present bool
+	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM received_emails WHERE id=$1 AND mailbox_owner_id=$2 AND folder='inbox')`, job.EmailID, job.UserID).Scan(&present)
+	if err != nil {
+		return arrivalResult{}, err
+	}
+	if job.EmailID == 0 || !present {
+		return arrivalSkipped("copy-gone"), nil
+	}
+	pushCtx, cancel := context.WithTimeout(ctx, arrivalPushBudget)
+	defer cancel()
+	if err := r.push.SendNewEmailNotification(pushCtx, job.UserID, p.UUID, p.From, p.Subject, p.Identity); err != nil {
 		return arrivalResult{}, err
 	}
 	return arrivalDone(), nil
