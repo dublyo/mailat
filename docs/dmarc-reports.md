@@ -17,6 +17,22 @@ including for users whose settings row has not been created. Turning it off
 does not move existing messages or remove the folder. Other settings saves do
 not implicitly change this preference.
 
+Reports only arrive when your DMARC record asks for them. Mailat never writes a
+reporting address: the policy it can add for you is `v=DMARC1; p=quarantine;`,
+which has no `rua=` tag, so no aggregate reports are sent. To fill this folder:
+
+1. Enable receiving on a Mailat domain, so that an address there is delivered to
+   a Mailat mailbox (for example `dmarc@example.com`).
+2. Add `rua=mailto:<that address>` to the DMARC record of each domain you want
+   reports for, for example `v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com`.
+3. If the report address is on a different domain than the policy, that domain
+   must also publish an authorization record,
+   `<policy domain>._report._dmarc.<report domain>` with the TXT value
+   `v=DMARC1`, or receivers will not send reports there.
+
+The DMARC panel on the Domains screen shows this reminder whenever no policy
+applies or the existing or inherited policy has no `rua=`.
+
 An attachment-only message explains that its content is in the attachment.
 This change does not add an XML report dashboard or certify attachment safety.
 

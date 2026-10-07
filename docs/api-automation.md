@@ -43,6 +43,11 @@ routes use JMAP; SES integrations should use `/inbox/received`, `/inbox/changes`
 and `/inbox/filters`. Auto-replies and verified forwards run when mail
 arrives through SES, and shared mailboxes deliver an independent copy to each
 member who can read them (members see only shared mailboxes they belong to).
+A forwarded copy is sent from `"Original Name via Mailat" <identity@your-domain>`
+with `Reply-To` set to the original sender; subject, body and attachments are
+unchanged. Campaign and automation emails always carry the unsubscribe footer
+and `List-Unsubscribe`/`List-Unsubscribe-Post` headers; open and click tracking
+can be switched off per campaign or email step (see [Campaigns](campaigns.md)).
 Sieve scripts are no longer supported (existing rows are kept but never run);
 inbox filters are the only rule engine. Use the domain sending-setup and
 explicit inbox receiving-setup routes for SES configuration (the legacy

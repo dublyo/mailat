@@ -12,7 +12,8 @@ The results below retain the original automation acceptance snapshot.
 
 - Explicit API-key route scopes, ownership, expiry, shared request limits and
   human-only credential/security administration. Persisted sessions, logout and
-  password revocation, enforced TOTP login, one-use challenges and SSE tickets.
+  password revocation, enforced TOTP login, one-use challenges and single-use
+  SSE stream tickets (a fresh 60-second ticket for every connection).
 - Durable versioned HMAC webhook events, transactional outbox, connection-time
   SSRF checks, retry/lease recovery, dead letters, replay, secret rotation and
   truthful receiver outcomes in Settings → Integrations.

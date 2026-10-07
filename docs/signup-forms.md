@@ -8,7 +8,9 @@ Give people a place to join your mailing list: a hosted page, an embedded form, 
 2. Open **Signup forms → Create form**, choose the list, and write the headline, introduction, consent wording and button label. Include your business name, the type of updates and frequency in the consent wording.
 3. Optionally collect a first name and add an HTTPS privacy policy link. For double opt-in, choose your own verified sending identity.
 4. Check **Published**, save, then copy the hosted link or iframe snippet into your website’s HTML block. No API key belongs in the embed. You can create multiple forms for one list.
-5. Use **View signups** to review requests, or **Refresh** to update counts. Unpublish a form to stop new requests and pause outstanding confirmations. Changing the form’s list requires creating another form.
+5. Use **View signups** to review requests, or **Refresh** to update counts. Unpublish a form to stop new requests and pause outstanding confirmations. Changing the form’s list requires creating another form. **Delete** removes a form after you confirm its name.
+
+Forms are visible only to the user who created them, and the `contact.subscribed` webhook event goes to that user's webhooks.
 
 The preview uses the same component as the live page. Configuration is plain text; HTML/scripts are not accepted. The iframe is responsive, with a default height of 760 pixels. Increase its height if your introduction or consent wording is longer.
 
@@ -49,7 +51,7 @@ Public JSON bodies are limited to 16 KiB. Expect 400 for validation, 404 for una
 - Use the updated web Nginx configuration: only `/subscribe/{uuid}` permits cross-site framing; `/subscribe/confirm` denies framing. Private SPA routes retain frame protection, and the client prevents iframe navigation into authenticated views. Custom reverse proxies must preserve those headers. See [MDN frame-ancestors](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/frame-ancestors) and [iframe accessibility](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe).
 - Set `TRUSTED_PROXY_CIDRS` to your actual trusted proxy networks. The application defaults to loopback. The Docker deployment additionally trusts private container networks. Do not expose the API directly to untrusted clients on a network included in this list. Forwarded addresses are considered only from a trusted immediate peer.
 - Database-backed limits apply per hour: 30 submissions per client IP, 3 per organization/email, 1,000 per form, and 60 confirmation attempts per IP. Rate-limit keys are HMAC hashes. Old buckets are removed after two days; expired pending requests are removed after 30 days. These limits and the honeypot bound basic abuse; they are not a CAPTCHA or proof of consent by the address owner.
-- Confirmation tokens are random and stored only as SHA-256 digests. Public URLs use fragments to keep tokens out of HTTP request URLs/referrers. Consent wording and policy are retained in request history and the contact audit. Contact data export includes signup history; erasure deletes that history and pending links while retaining the existing suppression mechanism.
+- Confirmation tokens are random and stored only as SHA-256 digests. Public URLs use fragments to keep tokens out of HTTP request URLs/referrers. Consent wording and policy are retained in request history and the contact audit, together with the submitting client's IP address (resolved through `TRUSTED_PROXY_CIDRS`) and user agent. Contact data export includes signup history; erasure deletes that history and pending links while retaining the existing suppression mechanism.
 - Confirmation emails use Mailat’s configured transactional provider and queue. An accepted/queued send is not proof of delivery; delivery failures leave the subscriber pending. No welcome campaign is sent automatically.
 
 ## Local acceptance

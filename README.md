@@ -2,9 +2,9 @@
   <img src="logo.jpg" alt="Mailat" width="120" />
 </p>
 
-# mailat.co
+# Mailat
 
-All-in-one email platform combining transactional email, marketing campaigns, email receiving, and unified inbox management.
+Mailat is an MIT-licensed, self-hosted email platform built on Amazon SES. One install gives you team mailboxes, a transactional sending API, signup forms, campaigns and automations, all running on your own AWS account and your own domains.
 
 <p align="center">
   <img src="https://dublyo.com/images/ossaas/mailat-gmail-inbox-like.jpg" alt="Mailat — Gmail-like unified inbox" width="100%" />
@@ -12,15 +12,23 @@ All-in-one email platform combining transactional email, marketing campaigns, em
 
 ## Features
 
-- **Send Emails**: Transactional email API with templates, webhooks, and tracking
-- **Receive Emails**: AWS SES integration for receiving emails with real-time notifications
-- **Unified Inbox**: Gmail-like interface with folders, labels, and search across all identities
-- **Multi-Domain**: Support for multiple domains with DNS management
-- **Real-time**: SSE (Server-Sent Events) for instant email notifications
-- **Identity Management**: Multiple identities per domain with color coding
-- **Catch-All Support**: Route unmatched emails to a designated identity per domain
-- **Smart Reply**: Auto-selects correct sender identity when replying (including catch-all)
-- **Mailbox Users**: Give any address on a verified domain its own mail-only login, Migadu style, with invite links or admin-set passwords, send-as aliases and CSV import
+- **Send and receive through SES.** Domains are verified with Easy DKIM and a custom MAIL FROM. Receiving uses SES receipt rules, a private S3 bucket and signed SNS notifications. Bounce, complaint and delivery feedback updates send status and suppressions.
+- **Unified inbox per user.** A Gmail-like web inbox with folders, labels, search, drafts, attachments, live updates and desktop push. Each user sees only their own mail; owners and admins cannot read other people's mailboxes.
+- **Server-side inbox filters.** Filters run when mail arrives (labels, folder, star, read, archive, trash). A DMARC Reports folder files aggregate reports automatically. Sieve is not supported.
+- **Teams.** Owner, admin and member roles, email invites, and shared mailboxes such as `support@` where every member gets their own copy.
+- **Mailbox users.** Turn any address on a verified domain into its own mail-only login, with invite links or admin-set passwords, send-as aliases and CSV import (see below).
+- **Forwarding and auto-replies.** Verified forwards are sent through SES as "Name via Mailat" with Reply-To set to the original sender. Vacation replies have daily caps.
+- **Transactional API.** `POST /emails` and `/emails/batch` with templates, attachments, scheduling, required idempotency keys and per-message status.
+- **Contacts, lists and signup forms.** Static and dynamic lists, CSV import, hosted and embeddable signup forms with single or double opt-in, preference center and GDPR erasure.
+- **Campaigns via SES.** Durable, paced sending with an audience snapshot and a recheck before every message, an unsubscribe footer and `List-Unsubscribe`/`List-Unsubscribe-Post` headers on every email, and open and click tracking that is on by default and can be switched off per campaign.
+- **Automations.** Trigger-based workflows (contact subscribed, contact created, manual) with send-email, wait, if/else, filter, list, field-update and webhook steps, run by a durable executor in the API.
+- **Webhooks and API keys.** Signed, versioned webhook events with retries, dead letters and replay. API keys carry explicit scopes; routes no scope covers are closed to keys.
+
+### Known limits
+
+- No conversation threading for SES mail: messages are listed one by one.
+- Run a single API container; multiple API replicas are unsupported.
+- No IMAP, POP3 or SMTP submission. Mail is read and sent in the web app or through the API.
 
 ## Mailbox users
 
@@ -42,44 +50,48 @@ There is no IMAP/SMTP access and no self-service password reset. Details are in 
 
 ### Prerequisites
 
-- Go 1.24+
-- Node.js 20+
-- Docker
-- PostgreSQL database
-- AWS account (for SES email sending/receiving)
+- Go 1.27.1 (pinned by the `toolchain` line in `apps/api/go.mod`; an older Go 1.21+ downloads it automatically unless `GOTOOLCHAIN=local`)
+- Node.js 24 and pnpm 9
+- PostgreSQL 16
+- Redis 7
+- An AWS account with SES in a region that supports receiving
 
-### Local Development
+### Local development
+
+Start PostgreSQL and Redis any way you like. With Docker, for example:
 
 ```bash
-# Install dependencies
+docker run -d --name mailat-postgres -p 5432:5432 \
+  -e POSTGRES_USER=mailat -e POSTGRES_PASSWORD=change-me -e POSTGRES_DB=mailat postgres:16-alpine
+docker run -d --name mailat-redis -p 6379:6379 redis:7-alpine
+```
+
+Then:
+
+```bash
+cp .env.example .env        # fill in DATABASE_URL, REDIS_URL, secrets and AWS values
 pnpm install
 
-# Start Stalwart mail server
-docker-compose up -d
-
-# Build and run Go API
+# API on port 3001 (run from apps/api so ../../.env resolves)
 cd apps/api
-go build -o bin/server ./cmd/server
-./bin/server
+go run ./cmd/server
 
-# Run Vue frontend (in another terminal)
+# Web app on port 3000 (in another terminal)
 cd apps/web
 npm run dev
 ```
 
-The database schema lives in the versioned SQL migrations under
-`apps/api/internal/database/migrations`; they are authoritative. The API
-applies pending migrations on startup (`AUTO_MIGRATE=true` by default).
+The API applies the versioned SQL migrations in `apps/api/internal/database/migrations` on startup (`AUTO_MIGRATE=true` by default). They are the authoritative schema. The root `docker-compose.yml` only starts the legacy Stalwart server and is not needed for SES mode. Receiving mail needs a public HTTPS URL that SNS can reach, so local development covers sending and the UI but not inbound mail.
 
-### Environment Variables
+### Environment variables
 
-Copy `.env.example` to `.env` and configure:
+`.env.example` lists every variable with comments. The important ones:
 
 ```bash
 # Database
 DATABASE_URL="postgresql://user:password@host:5432/database?sslmode=require"
 
-# Redis (optional)
+# Redis (required: the API exits at startup without it, and /api/v1/health reports it)
 REDIS_URL="redis://:password@host:6379"
 
 # Authentication (startup fails unless both are set, at least 32 bytes and different;
@@ -88,307 +100,46 @@ JWT_SECRET="replace-with-a-long-random-jwt-secret"
 ENCRYPTION_KEY="replace-with-a-separate-long-random-encryption-key"
 JWT_EXPIRES_IN="7d"
 
-# AWS SES (Required for email sending/receiving)
+# Email provider: "ses" (the default when unset) or legacy "smtp" (Stalwart/JMAP)
+EMAIL_PROVIDER="ses"
 AWS_REGION="us-east-1"
 AWS_ACCESS_KEY_ID="your-access-key"
 AWS_SECRET_ACCESS_KEY="your-secret-key"
 
-# Stalwart Mail Server
-STALWART_URL="http://localhost:8080"
-STALWART_ADMIN_TOKEN="your-admin-token"
+# Reverse proxies whose X-Forwarded-For is trusted (rate limits, consent records, audit logs).
+# The API default is loopback only; never include networks untrusted clients can reach.
+TRUSTED_PROXY_CIDRS="127.0.0.1/32,::1/128"
 ```
 
----
+`docker-compose.prod.yml` defaults `TRUSTED_PROXY_CIDRS` to loopback plus the private ranges `172.16.0.0/12`, `10.0.0.0/8` and `192.168.0.0/16`, which suits Caddy on the Compose network; narrow it if untrusted clients can reach the API from those ranges.
 
-## AWS SES Requirements
+`WORKER_ENABLED` only controls the Redis (Asynq) worker and scheduler; Redis is required either way. The legacy `smtp` provider keeps the old Stalwart/JMAP path and its `STALWART_*` and `SMTP_*` variables; SES mode needs none of them.
 
-### Overview
+## AWS
 
-Mailat uses AWS SES for:
-- **Sending emails** via SES SMTP or API
-- **Receiving emails** via SES Receipt Rules → S3 → SNS → Webhook
+Mailat uses SES for sending, receiving and feedback, S3 for raw mail and attachments, and SNS to notify the API. The API creates its own buckets and topics (all named `mailat-…`) when you set up sending or receiving for a domain.
 
-### Required AWS Services
+- **IAM permissions:** use the least-privilege policy in [docs/self-hosting-ses.md#iam-policy](docs/self-hosting-ses.md#iam-policy).
+- **Regions, DNS, receiving and feedback setup:** see [AWS setup and receiving](docs/self-hosting-ses.md#aws-setup-and-receiving).
 
-| Service | Purpose |
-|---------|---------|
-| **SES** | Send and receive emails |
-| **S3** | Store raw received emails |
-| **SNS** | Notify webhook of new emails |
-| **IAM** | API credentials with required permissions |
+## API
 
-### IAM Policy
+The running API documents itself:
 
-Create an IAM user with the following policy:
+- `/docs/`: interactive reference (Swagger UI)
+- `/api/v1/openapi.json`: the generated OpenAPI contract; `info.version` is the contract date
+- `/api-docs`: the in-app guide with API key management, examples and route search
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "ses:SendEmail",
-        "ses:SendRawEmail",
-        "ses:VerifyDomainIdentity",
-        "ses:VerifyDomainDkim",
-        "ses:GetIdentityVerificationAttributes",
-        "ses:CreateReceiptRule",
-        "ses:CreateReceiptRuleSet",
-        "ses:SetActiveReceiptRuleSet",
-        "ses:DescribeReceiptRuleSet",
-        "ses:DeleteReceiptRule"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:CreateBucket",
-        "s3:PutBucketPolicy",
-        "s3:GetBucketPolicy",
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject",
-        "s3:ListBucket"
-      ],
-      "Resource": [
-        "arn:aws:s3:::mailat-*",
-        "arn:aws:s3:::mailat-*/*"
-      ]
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "sns:CreateTopic",
-        "sns:Subscribe",
-        "sns:ConfirmSubscription",
-        "sns:Publish",
-        "sns:DeleteTopic"
-      ],
-      "Resource": "arn:aws:sns:*:*:mailat-*"
-    }
-  ]
-}
-```
-
-### SES Region Requirements
-
-Email receiving is only available in these AWS regions:
-- `us-east-1` (N. Virginia)
-- `us-west-2` (Oregon)
-- `eu-west-1` (Ireland)
-
-### Domain Setup for Receiving
-
-1. **Verify Domain in SES Console**
-   - Go to AWS SES → Verified Identities → Create Identity
-   - Add your domain and complete DNS verification
-
-2. **Configure MX Record**
-   ```
-   MX  @  10  inbound-smtp.us-east-1.amazonaws.com
-   ```
-   (Replace region with your SES region)
-
-3. **Enable Receiving in Mailat**
-   - Go to Domains page in the app
-   - Click "Enable Receiving" on your verified domain
-   - The system automatically creates:
-     - S3 bucket for email storage
-     - SNS topic for notifications
-     - SES receipt rule for your domain
-
-### Email Receiving Flow
-
-```
-1. Email sent to user@yourdomain.com
-2. AWS SES receives email (via MX record)
-3. SES stores raw email in S3
-4. SES sends notification to SNS
-5. SNS POSTs to your webhook endpoint
-6. API processes and stores email metadata
-7. SSE notifies connected clients in real-time
-```
-
----
-
-## API Endpoints
+[docs/api-automation.md](docs/api-automation.md) explains scopes, idempotency, the change feed, webhooks and automations.
 
 ### Authentication
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/auth/register` | Register new user with organization |
-| POST | `/api/v1/auth/login` | Login and get JWT token |
-| GET | `/api/v1/auth/me` | Get current user profile |
+Browsers sign in with `POST /api/v1/auth/login` and send `Authorization: Bearer <JWT>`. Integrations use API keys (`ue_…`) in the same header, limited by their scopes:
 
-### Domains
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/domains` | Add domain with DKIM generation |
-| GET | `/api/v1/domains` | List all domains |
-| GET | `/api/v1/domains/:uuid` | Get domain with DNS records |
-| POST | `/api/v1/domains/:uuid/verify` | Verify DNS records |
-| POST | `/api/v1/domains/:uuid/setup-receiving` | Setup email receiving |
-| DELETE | `/api/v1/domains/:uuid` | Delete domain |
-
-### Identities (Mailboxes)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/identities` | Create identity with Stalwart sync |
-| GET | `/api/v1/identities` | List all identities |
-| GET | `/api/v1/identities/:uuid` | Get identity details |
-| PUT | `/api/v1/identities/:uuid/password` | Update identity password |
-| POST | `/api/v1/identities/:uuid/catch-all` | Set as catch-all for domain |
-| DELETE | `/api/v1/identities/:uuid` | Delete identity |
-
-### Mailbox Users (owner/admin session only)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/org/domains/:domainUuid/mailboxes` | List a domain's mailboxes and its catch-all |
-| POST | `/api/v1/org/domains/:domainUuid/mailboxes` | Create a mailbox (invite link or initial password) |
-| POST | `/api/v1/org/domains/:domainUuid/mailboxes/import?dryRun=true` | Check or import a CSV file |
-| GET / PUT / DELETE | `/api/v1/org/mailboxes/:userUuid` | Mailbox detail, update switches, remove |
-| POST / DELETE | `/api/v1/org/mailboxes/:userUuid/aliases[/:aliasUuid]` | Add or remove a send-as alias |
-| POST | `/api/v1/org/mailboxes/:userUuid/password` | Set a password or send a reset link |
-| POST | `/api/v1/org/mailboxes/:userUuid/2fa/reset` | Turn off the user's 2FA |
-| POST | `/api/v1/org/mailboxes/:userUuid/invite/resend` | Send a fresh setup link |
-| POST | `/api/v1/org/mailboxes/:userUuid/suspend` / `reactivate` | Suspend or reactivate |
-
-### Received Inbox (AWS SES)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/inbox/received` | List received emails with filters |
-| GET | `/api/v1/inbox/received/:uuid` | Get single email with content |
-| GET | `/api/v1/inbox/received/counts` | Get folder counts |
-| POST | `/api/v1/inbox/received/mark` | Mark emails as read/unread |
-| POST | `/api/v1/inbox/received/star` | Star/unstar emails |
-| POST | `/api/v1/inbox/received/move` | Move emails to folder |
-| POST | `/api/v1/inbox/received/trash` | Trash or permanently delete |
-
-### Compose (Email Sending)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/compose/send` | Send email via AWS SES |
-| POST | `/api/v1/compose/draft` | Save email as draft |
-| PUT | `/api/v1/compose/draft/:uuid` | Update existing draft |
-| DELETE | `/api/v1/compose/draft/:uuid` | Delete draft |
-| GET | `/api/v1/compose/reply/:uuid` | Get reply context for email |
-| GET | `/api/v1/compose/forward/:uuid` | Get forward context for email |
-
-**Query Parameters for listing:**
-- `identityId` - Filter by identity ID (0 or omitted = unified inbox, all identities)
-- `folder` - inbox, sent, drafts, spam, trash, archive, all
-- `search` - Search in subject, from, body
-- `labels` - Filter by label UUIDs
-- `page` - Page number (default: 1)
-- `pageSize` - Items per page (default: 50)
-
-**Unified Inbox:**
-- When `identityId=0` or omitted, emails from all user's identities are returned
-- Response includes `identityEmail`, `identityDisplayName`, `identityColor` for UI display
-- Counts endpoint also supports unified view with `identityId=0`
-
-### Real-time Updates (SSE)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/sse/connect?token=JWT` | SSE connection for real-time updates |
-
-**Event Types:**
-- `connected` - Connection established
-- `heartbeat` - Keep-alive (every 30s)
-- `new_email` - New email received
-- `email_update` - Email status changed
-- `email_deleted` - Email deleted
-- `counts_update` - Folder counts changed
-
-### Labels
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/labels` | List user labels |
-| POST | `/api/v1/labels` | Create label |
-| DELETE | `/api/v1/labels/:uuid` | Delete label |
-
-### Transactional Email API
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/emails` | Send single transactional email |
-| POST | `/api/v1/emails/batch` | Batch send (up to 100) |
-| GET | `/api/v1/emails/:id` | Get email status and events |
-| DELETE | `/api/v1/emails/:id` | Cancel scheduled email |
-
-### Email Templates
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/templates` | Create new template |
-| GET | `/api/v1/templates` | List all templates |
-| GET | `/api/v1/templates/:uuid` | Get template details |
-| PUT | `/api/v1/templates/:uuid` | Update template |
-| DELETE | `/api/v1/templates/:uuid` | Delete template |
-| POST | `/api/v1/templates/:uuid/preview` | Preview with variables |
-
-### Webhooks (Outgoing)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/webhooks` | Create webhook endpoint |
-| GET | `/api/v1/webhooks` | List all webhooks |
-| PUT | `/api/v1/webhooks/:uuid` | Update webhook |
-| DELETE | `/api/v1/webhooks/:uuid` | Delete webhook |
-| POST | `/api/v1/webhooks/:uuid/rotate-secret` | Rotate webhook secret |
-| POST | `/api/v1/webhooks/:uuid/test` | Send test webhook |
-
-### Webhooks (Incoming - Public)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/webhooks/ses/incoming` | AWS SNS notifications for received emails |
-
-### API Keys
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/api-keys` | Create new API key |
-| GET | `/api/v1/api-keys` | List all API keys |
-| DELETE | `/api/v1/api-keys/:uuid` | Revoke API key |
-
-### Health
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/health` | Health check (PostgreSQL + Redis) |
-| GET | `/api/v1/ready` | Readiness check |
-
----
-
-## Authentication
-
-### JWT Token (for users)
 ```bash
-curl -X POST http://localhost:3001/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"user@example.com","password":"password"}'
-
-# Use the token
-curl http://localhost:3001/api/v1/auth/me \
-  -H "Authorization: Bearer <jwt_token>"
-```
-
-### API Key (for programmatic access)
-```bash
-curl -X POST http://localhost:3001/api/v1/emails \
+curl -X POST https://mail.example.com/api/v1/emails \
   -H "Authorization: Bearer ue_<api_key>" \
-  -H "Idempotency-Key: unique-request-id" \
+  -H "Idempotency-Key: order-123-confirmation" \
   -H "Content-Type: application/json" \
   -d '{
     "from": "sender@yourdomain.com",
@@ -399,146 +150,72 @@ curl -X POST http://localhost:3001/api/v1/emails \
   }'
 ```
 
----
+The idempotency key (8–128 characters) is required. For live updates, the browser fetches a 60-second, single-use stream ticket from `POST /api/v1/auth/stream-token` and opens `GET /api/v1/sse/connect` with it, fetching a new ticket on every reconnect. Session JWTs and API keys are never accepted in a URL; headless clients send an `email:read` key in the `Authorization` header instead.
+
+### SDKs
+
+Client libraries live in `packages/`: [JavaScript/TypeScript](packages/sdk-js/README.md) (`@mailat/sdk`), [Python](packages/sdk-python/README.md) (`mailat`) and [Go](packages/sdk-go/README.md) (`github.com/dublyo/mailat-go`). Version 0.2.0 requires your instance's base URL; there is no default host.
 
 ## Deployment
 
-### One-Click Deploy (Recommended)
+Images are published to GHCR as `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web`, tagged `sha-<full commit SHA>`. The API image listens on port 8000 (local development uses 3001); the web image serves the app with nginx on port 80 and answers liveness checks at `/nginx-health`.
 
-Deploy Mailat instantly on [Dublyo PaaS](https://dublyo.com/templates/mailat) — handles SSL, DNS, containers, and updates automatically.
+`docker-compose.prod.yml` runs Caddy, web and API, with the images set to `:${VERSION:-latest}`. Always set `VERSION=sha-<full commit SHA>` so an upgrade is deliberate. The `stalwart` Compose profile and the Caddy `MAIL_DOMAIN` block are legacy and stay off unless you need the old Stalwart server.
 
-### Self-Hosting
+Start with `.env.production.example` and follow the [SES self-hosting guide](docs/self-hosting-ses.md): it covers configuration, the IAM policy, receiving, delivery feedback, mailbox ownership, send and retry behaviour, limits, upgrades and rollback.
 
-For Docker-based self-hosting, see `docker-compose.prod.yml` and `.env.production.example` in this repository.
+Further guides:
 
-The [SES self-hosting guide](docs/self-hosting-ses.md) documents the current configuration, authentication, plural draft routes, attachment storage, and send/retry behavior.
-
-[Campaigns](docs/campaigns.md) explains campaign sending requirements (SES identity, bounce/complaint feedback, postal address), statuses, pacing and tracking.
-
----
+- [Campaigns](docs/campaigns.md): sending requirements, statuses, pacing and tracking
+- [Signup forms](docs/signup-forms.md): hosted and embedded forms, opt-in and safeguards
+- [DMARC reports](docs/dmarc-reports.md): the DMARC Reports folder and how to receive reports
+- [API automation](docs/api-automation.md): API keys, webhooks, change feed and automations
 
 ## Project Structure
 
 ```
 mailat/
 ├── apps/
-│   ├── api/                        # Go + GoFrame Backend API
-│   │   ├── cmd/server/             # Entry point
+│   ├── api/                          # Go API (GoFrame)
+│   │   ├── cmd/server/               # API entry point
+│   │   ├── cmd/openapi/              # OpenAPI generator (--check detects drift)
+│   │   ├── cmd/vapid-keys/           # Web push key generator
 │   │   └── internal/
-│   │       ├── config/             # Configuration
-│   │       ├── controller/         # HTTP handlers
-│   │       │   ├── received_inbox.go  # Received email handlers
-│   │       │   ├── compose.go         # Compose/Send handlers
-│   │       │   └── sse.go             # SSE real-time
-│   │       ├── database/           # DB connections
-│   │       │   └── migrations/        # Versioned SQL migrations (authoritative schema)
-│   │       ├── middleware/         # Auth middleware
-│   │       ├── model/              # Data models
-│   │       ├── provider/           # External providers
-│   │       │   └── receiving_provider.go  # AWS setup
-│   │       ├── router/             # Route definitions
-│   │       └── service/            # Business logic
-│   │           ├── inbox.go           # Inbox service
-│   │           ├── compose.go         # Email sending (SES/JMAP)
-│   │           ├── identity.go        # Identity & Stalwart sync
-│   │           ├── receiving.go       # Email receiving
-│   │           └── transactional.go   # Sending API
-│   └── web/                        # Vue 3 Frontend
-│       └── src/
-│           ├── views/
-│           │   └── ReceivedInbox.vue  # Gmail-like inbox
-│           ├── stores/
-│           │   └── receivedInbox.ts   # Pinia state
-│           └── lib/
-│               └── api.ts             # API client
-├── docker/
-│   └── caddy/Caddyfile             # Reverse proxy config
-└── docker-compose.yml              # Local development
+│   │       ├── controller/           # HTTP handlers
+│   │       ├── database/migrations/  # Versioned SQL migrations (authoritative schema)
+│   │       ├── middleware/           # Auth, API key scopes, roles
+│   │       ├── provider/             # SES, S3, SNS, Cloudflare and legacy SMTP providers
+│   │       ├── router/               # Route definitions
+│   │       ├── service/              # Business logic
+│   │       └── worker/               # Asynq jobs and send recovery
+│   └── web/                          # Vue 3 front end (nginx image)
+├── packages/
+│   ├── sdk-js/                       # @mailat/sdk
+│   ├── sdk-python/                   # mailat
+│   └── sdk-go/                       # github.com/dublyo/mailat-go
+├── docker/caddy/Caddyfile            # Reverse proxy for docker-compose.prod.yml
+├── docker-compose.prod.yml           # Production stack (stalwart profile is legacy)
+├── docker-compose.yml                # Legacy Stalwart server only
+└── docs/                             # Operator and API guides
 ```
-
----
 
 ## Tech Stack
 
 | Component | Technology |
 |-----------|------------|
-| **Backend** | Go 1.24+, GoFrame v2 |
-| **Frontend** | Vue 3.5+, TypeScript, Pinia, Tailwind |
-| **Database** | PostgreSQL 17 |
-| **Cache/Queue** | Redis 7.4+, Asynq |
-| **Mail Server** | Stalwart (IMAP/SMTP/JMAP) |
-| **Email Provider** | AWS SES |
-| **Storage** | AWS S3 |
-| **Notifications** | AWS SNS |
-| **Real-time** | Server-Sent Events (SSE) |
-| **Reverse Proxy** | Caddy (auto SSL) |
-
----
-
-## Development Progress
-
-### Phase 0: Stalwart Integration ✅
-- Stalwart mail server with RocksDB backend
-- Management API integration
-- Account provisioning
-
-### Phase 1: Core Foundation ✅
-- User authentication with JWT
-- Organization and role management
-- Domain management with DNS records
-- Identity/mailbox management
-- JMAP client for Stalwart
-
-### Phase 2: Transactional Email API ✅
-- Send single and batch emails
-- Template system with variables
-- Job queue with Redis/Asynq
-- Webhook notifications
-- Idempotency support
-- Rate limiting
-
-### Phase 2.5: Email Receiving ✅
-- AWS SES receipt rules
-- S3 storage for raw emails
-- SNS → Webhook processing
-- Real-time SSE notifications
-- Gmail-like inbox UI
-- Folder management
-- Labels and filters
-- Search functionality
-
-### Phase 2.6: Email Sending ✅
-- AWS SES as primary email provider
-- Compose/Reply/Forward UI
-- Draft saving and editing
-- Email threading support
-- Stalwart JMAP as fallback
-- Automatic From address handling
-
-### Phase 2.7: Unified Inbox & Identity Management ✅ NEW
-- **Unified Inbox**: View emails from all identities in one place (`identityId=0`)
-- **Identity Filter**: Dropdown to filter by specific identity
-- **Identity Color Coding**: Visual distinction with colored dots
-- **Catch-All Support**: One catch-all address per domain for unmatched emails
-- **Smart Reply**: Auto-selects correct sender identity (works with catch-all)
-- **Identity Actions Menu**: Set default, toggle catch-all, delete identities
-
-### Phase 3: Marketing Campaigns ⏳
-- Contact management
-- List segmentation
-- Campaign builder
-- A/B testing
-
-### Phase 4: Health & Operations ⏳
-- Monitoring dashboard
-- Analytics and reporting
-- Alerting system
-
----
+| **Backend** | Go (toolchain 1.27.1), GoFrame v2 |
+| **Frontend** | Vue 3, TypeScript, Pinia, Tailwind |
+| **Database** | PostgreSQL 16 (tested in CI) |
+| **Queue** | Redis 7, Asynq |
+| **Email** | Amazon SES |
+| **Storage** | Amazon S3 |
+| **Notifications** | Amazon SNS |
+| **Real-time** | Server-Sent Events, Web Push |
+| **Reverse proxy** | Caddy |
 
 ## n8n Integration
 
-Automate your email workflows with the official [n8n community node](https://www.npmjs.com/package/n8n-nodes-mailat). Send emails, manage your inbox, and react to email events directly from n8n.
+Automate email workflows with the [n8n community node](https://www.npmjs.com/package/n8n-nodes-mailat). Send emails, manage your inbox, and react to email events from n8n.
 
 ```
 n8n-nodes-mailat
@@ -550,11 +227,9 @@ Install via **Settings > Community Nodes > Install** in your n8n instance, or ma
 cd ~/.n8n && npm install n8n-nodes-mailat
 ```
 
-**Supported operations:** Send email, batch send, inbox management, domain & identity listing, and 8 webhook trigger events (email received, email sent, contact CRUD, bounces, complaints).
+**Supported operations:** send email, batch send, inbox management, domain and identity listing, and webhook triggers for mail and contact events. Example n8n workflow files are not part of this repository.
 
 See the [n8n-nodes-mailat README](https://github.com/dublyo/n8n-nodes-mailat) for full documentation.
-
----
 
 ## License
 
