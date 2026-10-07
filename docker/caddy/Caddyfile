@@ -6,7 +6,7 @@
 # Configure domains via environment variables:
 #   DOMAIN         - Main app domain (e.g., mailat.example.com)
 #   API_DOMAIN     - API subdomain (e.g., api.example.com)
-#   MAIL_DOMAIN    - Mail server admin UI (e.g., mail.example.com)
+#   MAIL_DOMAIN    - Legacy Stalwart admin UI (legacy profile only)
 
 # Main web app
 {$DOMAIN:localhost} {
@@ -45,7 +45,8 @@
     encode gzip zstd
 }
 
-# Stalwart mail server admin UI (optional)
+# Stalwart mail server admin UI: legacy profile only. The default EMAIL_PROVIDER
+# is ses and needs no Stalwart; drop this block when the legacy profile is off.
 {$MAIL_DOMAIN:mail.localhost} {
     reverse_proxy stalwart:8080
 }
