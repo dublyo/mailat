@@ -12,8 +12,8 @@ type User struct {
 	Email         string     `json:"email"`
 	PasswordHash  string     `json:"-"`
 	Name          string     `json:"name"`
-	Role          string     `json:"role"` // owner, admin, member
-	Status        string     `json:"status"`
+	Role          string     `json:"role"`   // owner, admin, member, mailbox
+	Status        string     `json:"status"` // active, pending, suspended, disabled (removed)
 	EmailVerified bool       `json:"emailVerified"`
 	LastLoginAt   *time.Time `json:"lastLoginAt,omitempty"`
 	CreatedAt     time.Time  `json:"createdAt"`

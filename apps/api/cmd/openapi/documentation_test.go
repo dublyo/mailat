@@ -260,11 +260,23 @@ func TestOrganizationRolesAndPublicInvites(t *testing.T) {
 		{"/api/v1/identities", "post"}, {"/api/v1/identities/{uuid}", "delete"}, {"/api/v1/identities/{uuid}/catch-all", "post"},
 		{"/api/v1/api-keys", "get"}, {"/api/v1/api-keys", "post"}, {"/api/v1/branding", "put"},
 		{"/api/v1/org/members", "get"}, {"/api/v1/org/members/{uuid}", "delete"}, {"/api/v1/org/invites", "post"}, {"/api/v1/org/identities/{uuid}/owner", "put"},
+		{"/api/v1/health/summary", "get"}, {"/api/v1/health/logs", "get"}, {"/api/v1/health/quota", "get"}, {"/api/v1/health/warmup", "post"}, {"/api/v1/health/blacklist-check", "post"},
 	}
 	for _, route := range admin {
 		if fmt.Sprint(op(route[0], route[1])["x-mailat-role-required"]) != "[owner admin]" {
 			t.Errorf("%s %s missing the owner/admin role", route[1], route[0])
 		}
+	}
+	for _, route := range [][3]string{
+		{"/api/v1/inbox/received", "get", "true"}, {"/api/v1/compose/send", "post", "true"}, {"/api/v1/identities/{uuid}", "put", "true"},
+		{"/api/v1/domains", "get", "false"}, {"/api/v1/emails", "post", "false"}, {"/api/v1/campaigns", "get", "false"}, {"/api/v1/org/members", "get", "false"},
+	} {
+		if fmt.Sprint(op(route[0], route[1])["x-mailat-mailbox-allowed"]) != route[2] {
+			t.Errorf("%s %s: x-mailat-mailbox-allowed should be %s", route[1], route[0], route[2])
+		}
+	}
+	if op("/api/v1/auth/login", "post")["x-mailat-mailbox-allowed"] != nil {
+		t.Error("public routes carry no mailbox flag")
 	}
 	if fmt.Sprint(op("/api/v1/org/members/{uuid}", "put")["x-mailat-role-required"]) != "[owner]" {
 		t.Error("role changes are owner only")

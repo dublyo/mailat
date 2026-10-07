@@ -210,7 +210,7 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			authGroup.POST("/invites/accept", orgCtrl.AcceptInvite)
 
 			// Protected auth routes
-			authGroup.Middleware(middleware.Auth)
+			authGroup.Middleware(middleware.Auth, middleware.MailboxGate)
 			authGroup.GET("/me", authCtrl.Me)
 			authGroup.POST("/logout", authCtrl.Logout)
 			authGroup.POST("/stream-token", authCtrl.StreamToken)
@@ -231,7 +231,7 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 
 		// Protected routes
 		group.Group("/", func(protectedGroup *ghttp.RouterGroup) {
-			protectedGroup.Middleware(middleware.Auth)
+			protectedGroup.Middleware(middleware.Auth, middleware.MailboxGate)
 
 			// User Settings
 			protectedGroup.GET("/settings", settingsCtrl.GetSettings)
@@ -403,17 +403,6 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.POST("/automations/:uuid/enrollments/:enrollmentUuid/cancel", automationCtrl.CancelEnrollment)
 			protectedGroup.POST("/automations/:uuid/enrollments/:enrollmentUuid/retry", automationCtrl.RetryEnrollment)
 
-			// Phase 4: Health & Operations
-			protectedGroup.POST("/health/blacklist-check", healthOpsCtrl.CheckBlacklists)
-			protectedGroup.GET("/health/reputation", healthOpsCtrl.GetReputationMetrics)
-			protectedGroup.GET("/health/ses-limits", healthOpsCtrl.GetSESLimits)
-			protectedGroup.GET("/health/summary", healthOpsCtrl.GetEmailHealthSummary)
-			protectedGroup.GET("/health/warmup/schedules", healthOpsCtrl.GetWarmupSchedules)
-			protectedGroup.POST("/health/warmup", healthOpsCtrl.StartWarmup)
-			protectedGroup.GET("/health/warmup/:ip", healthOpsCtrl.GetWarmupStatus)
-			protectedGroup.GET("/health/quota", healthOpsCtrl.GetQuotaStatus)
-			protectedGroup.GET("/health/logs", healthOpsCtrl.GetDeliveryLogs)
-
 			// Phase 5.1: Email Rules & Filters
 			protectedGroup.POST("/rules", emailRulesCtrl.CreateRule)
 			protectedGroup.GET("/rules", emailRulesCtrl.ListRules)
@@ -527,7 +516,18 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 				adminGroup.DELETE("/org/invites/:uuid", orgCtrl.RevokeInvite)
 				adminGroup.GET("/org/identities", orgCtrl.ListOrgIdentities)
 				adminGroup.PUT("/org/identities/:uuid/owner", orgCtrl.TransferIdentity)
-				// Alerts include org-wide handover notices for the owner.
+
+				// Health and operations: org-wide sending data, alerts (including
+				// handover notices) and delivery logs are for owners and admins.
+				adminGroup.POST("/health/blacklist-check", healthOpsCtrl.CheckBlacklists)
+				adminGroup.GET("/health/reputation", healthOpsCtrl.GetReputationMetrics)
+				adminGroup.GET("/health/ses-limits", healthOpsCtrl.GetSESLimits)
+				adminGroup.GET("/health/summary", healthOpsCtrl.GetEmailHealthSummary)
+				adminGroup.GET("/health/warmup/schedules", healthOpsCtrl.GetWarmupSchedules)
+				adminGroup.POST("/health/warmup", healthOpsCtrl.StartWarmup)
+				adminGroup.GET("/health/warmup/:ip", healthOpsCtrl.GetWarmupStatus)
+				adminGroup.GET("/health/quota", healthOpsCtrl.GetQuotaStatus)
+				adminGroup.GET("/health/logs", healthOpsCtrl.GetDeliveryLogs)
 				adminGroup.GET("/health/alerts", healthOpsCtrl.GetAlerts)
 				adminGroup.POST("/health/alerts/:id/acknowledge", healthOpsCtrl.AcknowledgeAlert)
 

@@ -347,6 +347,10 @@ func main() {
 	public := map[string]bool{"/health": true, "/ready": true, "/auth/register-status": true, "/auth/register": true, "/auth/login": true, "/auth/2fa/challenge": true, "/webhooks/ses/incoming": true, "/oauth/providers": true, "/oauth/:provider": true, "/oauth/:provider/callback": true, "/forwards/verify": true, "/auth/invites/lookup": true, "/auth/invites/accept": true}
 	lineRx := regexp.MustCompile(`(\w+)\.(GET|POST|PUT|DELETE|PATCH)\("([^"]+)",\s*(\w+)\.(\w+)\)`)
 	paramRx := regexp.MustCompile(`:(\w+)`)
+	mailboxAllowed := map[string]bool{}
+	for _, k := range middleware.MailboxRouteKeys() {
+		mailboxAllowed[k] = true
+	}
 	for _, m := range lineRx.FindAllStringSubmatch(source, -1) {
 		group, verb, path, ctrl, method := m[1], m[2], m[3], m[4], m[5]
 		if group == "authGroup" {
@@ -373,6 +377,10 @@ func main() {
 			op["x-human-session-required"] = len(op["security"].([]object)) > 0
 		}
 		annotateBackend(op, controller, path)
+		// Mailbox users reach only their own mail, compose and account routes.
+		if len(op["security"].([]object)) > 0 {
+			op["x-mailat-mailbox-allowed"] = mailboxAllowed[verb+" "+full]
+		}
 		// Routes registered inside the router's admin groups need an organization role.
 		if group == "adminGroup" || group == "humanAdminGroup" {
 			op["x-mailat-role-required"] = []string{"owner", "admin"}
@@ -490,7 +498,7 @@ func main() {
 	}
 	collect(paths)
 	schemas = reachable
-	spec := object{"openapi": "3.0.3", "info": object{"title": "Mailat API", "version": "2026-10-04", "description": "Self-hosted SES email automation. API keys use Authorization: Bearer ue_… and explicit per-operation scopes. Human-only administration is marked. Inbox detail is non-mutating. Webhooks use version 1 events and HMAC-SHA256 over timestamp + '.' + raw body. Cursor retention is 90 days."}, "servers": []object{{"url": "/"}}, "paths": paths, "components": object{"securitySchemes": object{"bearerAuth": object{"type": "http", "scheme": "bearer", "description": "Scoped Mailat API key or active human session JWT."}}, "schemas": schemas}}
+	spec := object{"openapi": "3.0.3", "info": object{"title": "Mailat API", "version": "2026-10-04", "description": "Self-hosted SES email automation. API keys use Authorization: Bearer ue_… and explicit per-operation scopes. Human-only administration is marked. Roles are owner, admin, member and mailbox; x-mailat-role-required marks owner/admin routes, and x-mailat-mailbox-allowed marks the routes a mailbox user (a login that only uses its own mailbox) may call. API keys owned by a mailbox user are rejected. Inbox detail is non-mutating. Webhooks use version 1 events and HMAC-SHA256 over timestamp + '.' + raw body. Cursor retention is 90 days."}, "servers": []object{{"url": "/"}}, "paths": paths, "components": object{"securitySchemes": object{"bearerAuth": object{"type": "http", "scheme": "bearer", "description": "Scoped Mailat API key or active human session JWT."}}, "schemas": schemas}}
 	data, err := json.MarshalIndent(spec, "", "  ")
 	must(err)
 	data = append(data, '\n')

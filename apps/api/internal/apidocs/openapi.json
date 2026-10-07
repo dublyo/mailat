@@ -4299,10 +4299,11 @@
             "type": "integer"
           },
           "role": {
-            "description": "owner, admin, member",
+            "description": "owner, admin, member, mailbox",
             "type": "string"
           },
           "status": {
+            "description": "active, pending, suspended, disabled (removed)",
             "type": "string"
           },
           "updatedAt": {
@@ -7542,7 +7543,7 @@
     }
   },
   "info": {
-    "description": "Self-hosted SES email automation. API keys use Authorization: Bearer ue_… and explicit per-operation scopes. Human-only administration is marked. Inbox detail is non-mutating. Webhooks use version 1 events and HMAC-SHA256 over timestamp + '.' + raw body. Cursor retention is 90 days.",
+    "description": "Self-hosted SES email automation. API keys use Authorization: Bearer ue_… and explicit per-operation scopes. Human-only administration is marked. Roles are owner, admin, member and mailbox; x-mailat-role-required marks owner/admin routes, and x-mailat-mailbox-allowed marks the routes a mailbox user (a login that only uses its own mailbox) may call. API keys owned by a mailbox user are rejected. Inbox detail is non-mutating. Webhooks use version 1 events and HMAC-SHA256 over timestamp + '.' + raw body. Cursor retention is 90 days.",
     "title": "Mailat API",
     "version": "2026-10-04"
   },
@@ -7793,6 +7794,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -8049,6 +8051,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -8299,6 +8302,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -8830,7 +8834,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/auth/2fa/enable": {
@@ -9078,7 +9083,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/auth/2fa/verify": {
@@ -9344,7 +9350,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/auth/change-password": {
@@ -9607,7 +9614,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/auth/invites/accept": {
@@ -10605,7 +10613,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/auth/me": {
@@ -10849,7 +10858,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/auth/register": {
@@ -11595,7 +11605,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/auth/sessions/revoke-all": {
@@ -11840,7 +11851,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/auth/sessions/{uuid}": {
@@ -12086,7 +12098,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/auth/stream-token": {
@@ -12334,7 +12347,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/auto-replies": {
@@ -12581,7 +12595,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT)."
+        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT).",
+        "x-mailat-mailbox-allowed": true
       },
       "post": {
         "description": "CreateAutoReply creates a new auto-reply\nPOST /api/v1/auto-replies",
@@ -12833,7 +12848,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT)."
+        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT).",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/auto-replies/{id}": {
@@ -13079,7 +13095,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT)."
+        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT).",
+        "x-mailat-mailbox-allowed": true
       },
       "get": {
         "description": "GetAutoReply gets an auto-reply by ID\nGET /api/v1/auto-replies/:id",
@@ -13331,7 +13348,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT)."
+        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT).",
+        "x-mailat-mailbox-allowed": true
       },
       "put": {
         "description": "UpdateAutoReply updates an auto-reply\nPUT /api/v1/auto-replies/:id",
@@ -13593,7 +13611,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT)."
+        "x-mailat-backend-note": "Executed on SES arrival for the rule owner's identities (empty identityIds means all of them); the oldest active rule wins. Replies go only to the original sender, through the durable send queue, with Auto-Submitted: auto-replied. No reply to lists, bulk or automated mail (RFC 3834), mailer-daemon/no-reply senders, org addresses, Bcc or catch-all deliveries, spam, or mail failing DMARC (or both SPF and DKIM). Each sender gets at most one reply per replyIntervalDays (or ever, with replyOnce); each rule is capped per day (AUTO_REPLY_DAILY_LIMIT).",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/automations": {
@@ -13872,7 +13891,8 @@
         ],
         "x-api-key-scope": "automations:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "description": "Create saves a new draft; only structural problems are rejected.\nPOST /api/v1/automations",
@@ -14124,7 +14144,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/automations/{uuid}": {
@@ -14370,7 +14391,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       },
       "get": {
         "description": "Get returns the draft, the published version number, whether the draft has\nunpublished changes, and live enrollment counts.\nGET /api/v1/automations/:uuid",
@@ -14631,7 +14653,8 @@
         ],
         "x-api-key-scope": "automations:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "description": "Update changes the draft only; running enrollments keep their published\nversion. Archived automations cannot be edited.\nPUT /api/v1/automations/:uuid",
@@ -14893,7 +14916,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/automations/{uuid}/activate": {
@@ -15157,7 +15181,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/automations/{uuid}/archive": {
@@ -15420,7 +15445,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/automations/{uuid}/enroll": {
@@ -15693,7 +15719,8 @@
         ],
         "x-api-key-scope": "automations:enroll",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/automations/{uuid}/enrollments": {
@@ -15980,7 +16007,8 @@
         ],
         "x-api-key-scope": "automations:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/automations/{uuid}/enrollments/{enrollmentUuid}": {
@@ -16251,7 +16279,8 @@
         ],
         "x-api-key-scope": "automations:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/automations/{uuid}/enrollments/{enrollmentUuid}/cancel": {
@@ -16522,7 +16551,8 @@
         ],
         "x-api-key-scope": "automations:enroll",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/automations/{uuid}/enrollments/{enrollmentUuid}/retry": {
@@ -16793,7 +16823,8 @@
         ],
         "x-api-key-scope": "automations:enroll",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/automations/{uuid}/pause": {
@@ -17047,7 +17078,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/automations/{uuid}/stats": {
@@ -17317,7 +17349,8 @@
         ],
         "x-api-key-scope": "automations:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/automations/{uuid}/validate": {
@@ -17566,7 +17599,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes."
+        "x-mailat-backend-note": "Published versions run in every API process via a database-leased executor. Email steps send through the SES marketing pipeline with suppression, unsubscribe and List-Unsubscribe. Editing changes the draft; activate publishes.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/branding": {
@@ -17810,7 +17844,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "description": "UpdateBranding updates organization branding\nPUT /api/v1/branding",
@@ -18063,6 +18098,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -18289,7 +18325,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/branding/verify-domain": {
@@ -18540,6 +18577,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -18796,7 +18834,8 @@
         ],
         "x-api-key-scope": "campaigns:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "description": "UpdateSettings stores the postal address; owner/admin sessions only\nPUT /api/v1/campaign-settings",
@@ -19057,7 +19096,8 @@
         ],
         "x-api-key-scope": "campaigns:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns": {
@@ -19336,7 +19376,8 @@
         ],
         "x-api-key-scope": "campaigns:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "description": "Create creates a new campaign\nPOST /api/v1/campaigns",
@@ -19597,7 +19638,8 @@
         ],
         "x-api-key-scope": "campaigns:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}": {
@@ -19852,7 +19894,8 @@
         ],
         "x-api-key-scope": "campaigns:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       },
       "get": {
         "description": "Get retrieves a campaign by UUID\nGET /api/v1/campaigns/:uuid",
@@ -20113,7 +20156,8 @@
         ],
         "x-api-key-scope": "campaigns:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "description": "Update updates a campaign; absent fields are unchanged and a JSON null\nreplyTo or textContent clears it.\nPUT /api/v1/campaigns/:uuid",
@@ -20384,7 +20428,8 @@
         ],
         "x-api-key-scope": "campaigns:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}/audience": {
@@ -20647,7 +20692,8 @@
         ],
         "x-api-key-scope": "campaigns:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}/cancel": {
@@ -20910,7 +20956,8 @@
         ],
         "x-api-key-scope": "campaigns:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}/pause": {
@@ -21173,7 +21220,8 @@
         ],
         "x-api-key-scope": "campaigns:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}/preview": {
@@ -21446,7 +21494,8 @@
         ],
         "x-api-key-scope": "campaigns:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}/progress": {
@@ -21709,7 +21758,8 @@
         ],
         "x-api-key-scope": "campaigns:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}/recipients": {
@@ -21996,7 +22046,8 @@
         ],
         "x-api-key-scope": "campaigns:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}/resume": {
@@ -22259,7 +22310,8 @@
         ],
         "x-api-key-scope": "campaigns:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}/schedule": {
@@ -22532,7 +22584,8 @@
         ],
         "x-api-key-scope": "campaigns:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}/send": {
@@ -22795,7 +22848,8 @@
         ],
         "x-api-key-scope": "campaigns:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}/stats": {
@@ -23058,7 +23112,8 @@
         ],
         "x-api-key-scope": "campaigns:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/campaigns/{uuid}/test": {
@@ -23342,7 +23397,8 @@
         ],
         "x-api-key-scope": "campaigns:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses."
+        "x-mailat-backend-note": "Campaigns send only through SES from an owned, can_send identity on an active, SES-verified domain with bounce/complaint feedback configured; requires EMAIL_PROVIDER=ses.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/compose/attachments": {
@@ -23618,7 +23674,8 @@
         ],
         "x-api-key-scope": "email:send",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP."
+        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/compose/drafts": {
@@ -23891,7 +23948,8 @@
         ],
         "x-api-key-scope": "email:send",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP."
+        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/compose/drafts/{id}": {
@@ -24146,7 +24204,8 @@
         ],
         "x-api-key-scope": "email:send",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP."
+        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP.",
+        "x-mailat-mailbox-allowed": true
       },
       "put": {
         "description": "UpdateDraft updates an existing draft\nPUT /api/v1/compose/drafts/:id",
@@ -24423,7 +24482,8 @@
         ],
         "x-api-key-scope": "email:send",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP."
+        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/compose/forward/{id}": {
@@ -24686,7 +24746,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP."
+        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/compose/reply/{id}": {
@@ -24956,7 +25017,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP."
+        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/compose/send": {
@@ -25246,7 +25308,8 @@
         ],
         "x-api-key-scope": "email:send",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP."
+        "x-mailat-backend-note": "Primary SES compose workflow. Reply/forward contexts use public SES mailbox UUIDs; draft and attachment operations use owned records. In legacy non-SES configurations, sending can fall back to JMAP.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/contacts": {
@@ -25563,7 +25626,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "description": "CreateContact creates a new contact. The email is lowercased; listIds from\nanother organization are rejected (400 unknown_list) and suppressed\naddresses are refused (409 suppressed).\nPOST /api/v1/contacts",
@@ -25824,7 +25888,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/contacts/export": {
@@ -26085,7 +26150,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/contacts/import": {
@@ -26348,7 +26414,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/contacts/unsubscribe": {
@@ -26612,7 +26679,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/contacts/{uuid}": {
@@ -26867,7 +26935,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "get": {
         "description": "GetContact retrieves a contact by UUID\nGET /api/v1/contacts/:uuid",
@@ -27128,7 +27197,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "description": "UpdateContact updates a contact. status accepts only \"active\" or\n\"unsubscribed\": unsubscribing is always allowed, reactivation only for a\nbounced, unsuppressed address (409 reactivation_blocked otherwise). Other\nstatuses are system-managed (400). 409 duplicate_email if the new email is taken.\nPUT /api/v1/contacts/:uuid",
@@ -27399,7 +27469,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/contacts/{uuid}/consent-audit": {
@@ -27660,7 +27731,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/contacts/{uuid}/export": {
@@ -27919,7 +27991,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/contacts/{uuid}/gdpr": {
@@ -28174,7 +28247,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/domains": {
@@ -28493,7 +28567,8 @@
         ],
         "x-api-key-scope": "domains:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "description": "Create adds a new domain\nPOST /api/v1/domains",
@@ -28774,6 +28849,7 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -29044,6 +29120,7 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -29303,6 +29380,7 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -29583,7 +29661,8 @@
         ],
         "x-api-key-scope": "domains:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/domains/{uuid}/dmarc": {
@@ -29841,7 +29920,8 @@
         ],
         "x-api-key-scope": "domains:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/domains/{uuid}/dns/cloudflare": {
@@ -30127,6 +30207,7 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -30393,7 +30474,8 @@
         ],
         "x-api-key-scope": "domains:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/domains/{uuid}/ses-status": {
@@ -30665,7 +30747,8 @@
         ],
         "x-api-key-scope": "domains:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/domains/{uuid}/ses-verify": {
@@ -30954,6 +31037,7 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -31221,6 +31305,7 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -31510,6 +31595,7 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -31804,7 +31890,8 @@
         ],
         "x-api-key-scope": "email:send",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/emails/batch": {
@@ -32093,7 +32180,8 @@
         ],
         "x-api-key-scope": "email:send",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/emails/{id}": {
@@ -32348,7 +32436,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       },
       "get": {
         "description": "GetEmailStatus retrieves the status of a sent email\nGET /api/v1/emails/:id",
@@ -32609,7 +32698,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/forwards": {
@@ -32856,7 +32946,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
+        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy.",
+        "x-mailat-mailbox-allowed": true
       },
       "post": {
         "description": "CreateEmailForward creates a pending forward and emails the destination a\nverification link.\nPOST /api/v1/forwards",
@@ -33112,7 +33203,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
+        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/forwards/verify": {
@@ -33620,7 +33712,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
+        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy.",
+        "x-mailat-mailbox-allowed": true
       },
       "put": {
         "description": "UpdateEmailForward pauses or resumes a forward or changes keepCopy.\nPUT /api/v1/forwards/:uuid",
@@ -33882,7 +33975,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
+        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/forwards/{uuid}/resend-verification": {
@@ -34140,7 +34234,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
+        "x-mailat-backend-note": "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/health": {
@@ -34706,6 +34801,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -34956,6 +35052,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -35219,7 +35316,12 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/health/logs": {
@@ -35493,7 +35595,12 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/health/quota": {
@@ -35737,7 +35844,12 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/health/reputation": {
@@ -35991,7 +36103,12 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/health/ses-limits": {
@@ -36235,7 +36352,12 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/health/summary": {
@@ -36479,7 +36601,12 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/health/warmup": {
@@ -36745,7 +36872,12 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/health/warmup/schedules": {
@@ -36987,7 +37119,12 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/health/warmup/{ip}": {
@@ -37241,7 +37378,12 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/identities": {
@@ -37497,7 +37639,8 @@
         ],
         "x-api-key-scope": "identities:read",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server."
+        "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server.",
+        "x-mailat-mailbox-allowed": true
       },
       "post": {
         "description": "Create adds a new identity. Owner or admin only; ownerUserUuid assigns it to\nanother active member of the organization.\nPOST /api/v1/identities",
@@ -37764,6 +37907,7 @@
         "x-api-key-scope": "identities:manage",
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -38023,6 +38167,7 @@
         "x-api-key-scope": "identities:manage",
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -38287,7 +38432,8 @@
         ],
         "x-api-key-scope": "identities:read",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server."
+        "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server.",
+        "x-mailat-mailbox-allowed": true
       },
       "put": {
         "description": "Update changes one of the caller's personal identities. Changing isCatchAll\nor canReceive requires the owner or admin role (403 otherwise).\nPUT /api/v1/identities/:uuid",
@@ -38558,7 +38704,8 @@
         ],
         "x-api-key-scope": "identities:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server."
+        "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/identities/{uuid}/catch-all": {
@@ -38832,6 +38979,7 @@
         "x-api-key-scope": "identities:manage",
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -39100,7 +39248,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server."
+        "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/inbox": {
@@ -39409,7 +39558,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "jmap",
-        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation."
+        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/inbox/changes": {
@@ -39681,7 +39831,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/delete": {
@@ -39936,7 +40087,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "jmap",
-        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation."
+        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/inbox/emails/{id}": {
@@ -40199,7 +40351,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "jmap",
-        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation."
+        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/inbox/filters": {
@@ -40465,7 +40618,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       },
       "post": {
         "description": "SaveFilter kind=blocked_sender takes exactly one from condition (equals an address, or endsWith @domain; subdomains are not covered) and actionFolder spam or trash, with only actionMarkRead as an extra action; the value is lowercased and priority forced to 0. Blocked-sender rules always run after every other filter, so no filter can route a blocked sender back to the inbox. Blocking an already blocked sender returns the existing rule with 200. Explicit user filter destinations override the automatic DMARC report folder. actionFolder accepts dmarc-reports; label-only and mark-read filters retain the automatically selected folder. Spam and virus decisions are preserved.",
@@ -40836,7 +40990,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/filters/{uuid}": {
@@ -41091,7 +41246,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       },
       "get": {
         "description": "GetFilter Explicit user filter destinations override the automatic DMARC report folder. actionFolder accepts dmarc-reports; label-only and mark-read filters retain the automatically selected folder. Spam and virus decisions are preserved.",
@@ -41352,7 +41508,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       },
       "put": {
         "description": "SaveFilter kind cannot be changed (400). Explicit user filter destinations override the automatic DMARC report folder. actionFolder accepts dmarc-reports; label-only and mark-read filters retain the automatically selected folder. Spam and virus decisions are preserved.",
@@ -41708,7 +41865,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/filters/{uuid}/test": {
@@ -42019,7 +42177,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/labels": {
@@ -42270,7 +42429,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       },
       "post": {
         "description": "SaveLabel",
@@ -42535,7 +42695,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/labels/{uuid}": {
@@ -42790,7 +42951,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       },
       "put": {
         "description": "SaveLabel",
@@ -43065,7 +43227,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/mailboxes": {
@@ -43316,7 +43479,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "jmap",
-        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation."
+        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/inbox/mark-read": {
@@ -43571,7 +43735,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "jmap",
-        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation."
+        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/inbox/move": {
@@ -43826,7 +43991,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "jmap",
-        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation."
+        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/inbox/received": {
@@ -44230,7 +44396,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/received/counts": {
@@ -44495,7 +44662,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/received/labels": {
@@ -44759,7 +44927,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/received/mark": {
@@ -45020,7 +45189,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/received/move": {
@@ -45281,7 +45451,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/received/star": {
@@ -45542,7 +45713,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/received/trash": {
@@ -45803,7 +45975,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/received/{uuid}": {
@@ -46066,7 +46239,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/received/{uuid}/attachments/{attachmentUuid}": {
@@ -46317,7 +46491,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/search": {
@@ -46593,7 +46768,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "jmap",
-        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation."
+        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/inbox/setup": {
@@ -46869,6 +47045,7 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -47133,7 +47310,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "jmap",
-        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation."
+        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/inbox/toggle-flag": {
@@ -47388,7 +47566,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "jmap",
-        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation."
+        "x-mailat-backend-note": "Legacy mailbox operation requiring configured Stalwart/JMAP accounts. This is not the SES received-mail API; use /inbox/received and /inbox/changes for SES automation.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/inbox/trusted-senders": {
@@ -47639,7 +47818,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       },
       "post": {
         "description": "Per-user trusted senders (an address or @domain, max 500). Remote images in their mail load automatically only when DMARC passed and the message is not in Spam. POST is idempotent: 201 when created, 200 with the existing entry otherwise; 409 limit_reached at the cap.",
@@ -47954,7 +48134,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/inbox/trusted-senders/{uuid}": {
@@ -48209,7 +48390,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/labels": {
@@ -48460,7 +48642,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       },
       "post": {
         "description": "SaveLabel",
@@ -48725,7 +48908,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/labels/{uuid}": {
@@ -48980,7 +49164,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       },
       "put": {
         "description": "SaveLabel",
@@ -49255,7 +49440,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/lists": {
@@ -49506,7 +49692,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "description": "CreateList creates a new contact list\nPOST /api/v1/lists",
@@ -49767,7 +49954,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/lists/{uuid}": {
@@ -50022,7 +50210,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "get": {
         "description": "GetList retrieves a list by UUID\nGET /api/v1/lists/:uuid",
@@ -50283,7 +50472,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "description": "UpdateList updates a list\nPUT /api/v1/lists/:uuid",
@@ -50554,7 +50744,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/lists/{uuid}/contacts": {
@@ -50819,7 +51010,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "get": {
         "description": "GetListContacts retrieves contacts in a list\nGET /api/v1/lists/:uuid/contacts",
@@ -51096,7 +51288,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "description": "AddContacts adds contacts to a list\nPOST /api/v1/lists/:uuid/contacts",
@@ -51359,7 +51552,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/lists/{uuid}/contacts/import": {
@@ -51632,7 +51826,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/lists/{uuid}/contacts/manual": {
@@ -51905,7 +52100,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/oauth/connections": {
@@ -52152,7 +52348,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/oauth/link/confirm": {
@@ -52418,7 +52615,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/oauth/providers": {
@@ -53643,7 +53841,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/org/identities": {
@@ -53891,6 +54090,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -54159,6 +54359,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -54410,6 +54611,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Invite links are emailed through SES from an owned sending identity using the durable send queue, suppression list and monthly quota. The single-use token travels in the link fragment and only its SHA-256 hash is stored; accepting creates the account in the inviting organization and signs it in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -54666,6 +54868,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Invite links are emailed through SES from an owned sending identity using the durable send queue, suppression list and monthly quota. The single-use token travels in the link fragment and only its SHA-256 hash is stored; accepting creates the account in the inviting organization and signs it in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -54916,6 +55119,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Invite links are emailed through SES from an owned sending identity using the durable send queue, suppression list and monthly quota. The single-use token travels in the link fragment and only its SHA-256 hash is stored; accepting creates the account in the inviting organization and signs it in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -55174,6 +55378,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Invite links are emailed through SES from an owned sending identity using the durable send queue, suppression list and monthly quota. The single-use token travels in the link fragment and only its SHA-256 hash is stored; accepting creates the account in the inviting organization and signs it in.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -55425,6 +55630,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -55693,6 +55899,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -55959,6 +56166,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner"
         ]
@@ -57515,7 +57723,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/push/subscriptions": {
@@ -57762,7 +57971,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/push/subscriptions/{uuid}/preferences": {
@@ -58044,7 +58254,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/push/unsubscribe": {
@@ -58295,7 +58506,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/push/vapid-key": {
@@ -58534,7 +58746,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/ready": {
@@ -59079,7 +59292,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "deprecated": true,
@@ -59341,7 +59555,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/rules/reorder": {
@@ -59606,7 +59821,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/rules/{id}": {
@@ -59862,7 +60078,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       },
       "get": {
         "deprecated": true,
@@ -60124,7 +60341,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "deprecated": true,
@@ -60396,7 +60614,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/rules/{id}/test": {
@@ -60676,7 +60895,8 @@
         ],
         "x-api-key-scope": "email:manage",
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in."
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/security/2fa/backup-codes": {
@@ -60945,7 +61165,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/2fa/disable": {
@@ -61207,7 +61428,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/2fa/setup": {
@@ -61455,7 +61677,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/2fa/status": {
@@ -61703,7 +61926,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/2fa/verify": {
@@ -61969,7 +62193,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/audit-logs": {
@@ -62290,7 +62515,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/security/events": {
@@ -62546,7 +62772,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/security/my-activity": {
@@ -62802,7 +63029,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/sessions": {
@@ -63054,7 +63282,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/sessions/revoke-all": {
@@ -63299,7 +63528,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/sessions/{uuid}": {
@@ -63545,7 +63775,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/webauthn/authenticate/begin": {
@@ -63789,7 +64020,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/webauthn/authenticate/finish": {
@@ -64035,7 +64267,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/webauthn/credentials": {
@@ -64282,7 +64515,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/webauthn/credentials/{uuid}": {
@@ -64528,7 +64762,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/webauthn/register/begin": {
@@ -64772,7 +65007,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/security/webauthn/register/finish": {
@@ -65039,7 +65275,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/settings": {
@@ -65283,7 +65520,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       },
       "put": {
         "description": "UpdateSettings updates the current user's settings\nPUT /api/v1/settings Human session required; scoped API keys cannot access account settings. autoOrganizeDmarcReports defaults to true, including users without a settings row. Omit the update field to preserve it; false opts out of sorting future arrivals. The preference does not move existing messages, remove the folder or change DNS/receiving setup.",
@@ -65538,7 +65776,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/shared-mailboxes": {
@@ -65785,7 +66024,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
+        "x-mailat-mailbox-allowed": true
       },
       "post": {
         "description": "CreateSharedMailbox creates a shared identity and mailbox; the creator\nbecomes a member with every permission.\nPOST /api/v1/shared-mailboxes",
@@ -66038,6 +66278,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -66288,6 +66529,7 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
+        "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",
           "admin"
@@ -66543,7 +66785,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/shared-mailboxes/{id}/members": {
@@ -66800,7 +67043,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "description": "AddSharedMailboxMember adds an active org user. Admin or can_manage.\nPOST /api/v1/shared-mailboxes/:id/members",
@@ -67062,7 +67306,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/shared-mailboxes/{id}/members/{userId}": {
@@ -67316,7 +67561,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "description": "UpdateSharedMailboxMember changes a member's permissions. Admin or can_manage.\nPUT /api/v1/shared-mailboxes/:id/members/:userId",
@@ -67586,7 +67832,8 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
-        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated."
+        "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/signup-forms": {
@@ -67837,7 +68084,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "description": "Hosted and embeddable opt-in forms. One static list per form; its single/double confirmation policy is inherited. Management is scoped to the authenticated creator. Public requests never need an API key.",
@@ -68093,7 +68341,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/signup-forms/{uuid}": {
@@ -68348,7 +68597,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "get": {
         "description": "Hosted and embeddable opt-in forms. One static list per form; its single/double confirmation policy is inherited. Management is scoped to the authenticated creator. Public requests never need an API key.",
@@ -68604,7 +68854,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "description": "Hosted and embeddable opt-in forms. One static list per form; its single/double confirmation policy is inherited. Management is scoped to the authenticated creator. Public requests never need an API key.",
@@ -68870,7 +69121,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/signup-forms/{uuid}/signups": {
@@ -69136,7 +69388,8 @@
         ],
         "x-api-key-scope": "contacts:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/sse/connect": {
@@ -69388,7 +69641,8 @@
         ],
         "x-api-key-scope": "email:read",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": true
       }
     },
     "/api/v1/templates": {
@@ -69644,7 +69898,8 @@
         ],
         "x-api-key-scope": "templates:read",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "description": "CreateTemplate creates a new email template\nPOST /api/v1/templates",
@@ -69905,7 +70160,8 @@
         ],
         "x-api-key-scope": "templates:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/templates/{uuid}": {
@@ -70160,7 +70416,8 @@
         ],
         "x-api-key-scope": "templates:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "get": {
         "description": "GetTemplate retrieves a template by UUID\nGET /api/v1/templates/:uuid",
@@ -70421,7 +70678,8 @@
         ],
         "x-api-key-scope": "templates:read",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "description": "UpdateTemplate updates a template\nPUT /api/v1/templates/:uuid",
@@ -70692,7 +70950,8 @@
         ],
         "x-api-key-scope": "templates:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/templates/{uuid}/preview": {
@@ -70965,7 +71224,8 @@
         ],
         "x-api-key-scope": "templates:read",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/tracking/click/{token}": {
@@ -72457,7 +72717,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhook-deliveries/{uuid}": {
@@ -72731,7 +72992,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhook-deliveries/{uuid}/replay": {
@@ -72986,7 +73248,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhook-triggers": {
@@ -73242,7 +73505,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "description": "CreateWebhookTrigger creates a new webhook trigger\nPOST /api/v1/webhook-triggers User-owned subscriptions. Secret returned only on create/rotate. Events: version,id,type,createdAt,data.messageUuid (+data.identityUuid where available). Verify X-Webhook-Signature t=\u003cunix\u003e,v1=\u003cHMAC-SHA256(timestamp+'.'+rawBody)\u003e with 5-minute timestamp tolerance; deduplicate id. 8 delivery attempts, then dead letter; replay keeps event id. Tests return real HTTP outcome. Key revocation does not delete subscriptions; disabled owners pause delivery. Public HTTPS only; redirects are blocked.",
@@ -73503,7 +73767,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhook-triggers/types": {
@@ -73757,7 +74022,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhook-triggers/{id}": {
@@ -74012,7 +74278,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "get": {
         "description": "GetWebhookTrigger gets a webhook trigger\nGET /api/v1/webhook-triggers/:id User-owned subscriptions. Secret returned only on create/rotate. Events: version,id,type,createdAt,data.messageUuid (+data.identityUuid where available). Verify X-Webhook-Signature t=\u003cunix\u003e,v1=\u003cHMAC-SHA256(timestamp+'.'+rawBody)\u003e with 5-minute timestamp tolerance; deduplicate id. 8 delivery attempts, then dead letter; replay keeps event id. Tests return real HTTP outcome. Key revocation does not delete subscriptions; disabled owners pause delivery. Public HTTPS only; redirects are blocked.",
@@ -74273,7 +74540,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "description": "UpdateWebhookTrigger User-owned subscriptions. Secret returned only on create/rotate. Events: version,id,type,createdAt,data.messageUuid (+data.identityUuid where available). Verify X-Webhook-Signature t=\u003cunix\u003e,v1=\u003cHMAC-SHA256(timestamp+'.'+rawBody)\u003e with 5-minute timestamp tolerance; deduplicate id. 8 delivery attempts, then dead letter; replay keeps event id. Tests return real HTTP outcome. Key revocation does not delete subscriptions; disabled owners pause delivery. Public HTTPS only; redirects are blocked.",
@@ -74582,7 +74850,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhook-triggers/{id}/rotate-secret": {
@@ -74840,7 +75109,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhook-triggers/{id}/test": {
@@ -75103,7 +75373,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhooks": {
@@ -75359,7 +75630,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "post": {
         "description": "CreateWebhook creates a new webhook endpoint\nPOST /api/v1/webhooks User-owned subscriptions. Secret returned only on create/rotate. Events: version,id,type,createdAt,data.messageUuid (+data.identityUuid where available). Verify X-Webhook-Signature t=\u003cunix\u003e,v1=\u003cHMAC-SHA256(timestamp+'.'+rawBody)\u003e with 5-minute timestamp tolerance; deduplicate id. 8 delivery attempts, then dead letter; replay keeps event id. Tests return real HTTP outcome. Key revocation does not delete subscriptions; disabled owners pause delivery. Public HTTPS only; redirects are blocked.",
@@ -75629,7 +75901,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhooks/ses/incoming": {
@@ -76124,7 +76397,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "get": {
         "description": "GetWebhook retrieves a webhook by UUID\nGET /api/v1/webhooks/:uuid User-owned subscriptions. Secret returned only on create/rotate. Events: version,id,type,createdAt,data.messageUuid (+data.identityUuid where available). Verify X-Webhook-Signature t=\u003cunix\u003e,v1=\u003cHMAC-SHA256(timestamp+'.'+rawBody)\u003e with 5-minute timestamp tolerance; deduplicate id. 8 delivery attempts, then dead letter; replay keeps event id. Tests return real HTTP outcome. Key revocation does not delete subscriptions; disabled owners pause delivery. Public HTTPS only; redirects are blocked.",
@@ -76385,7 +76659,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       },
       "put": {
         "description": "UpdateWebhook updates a webhook\nPUT /api/v1/webhooks/:uuid User-owned subscriptions. Secret returned only on create/rotate. Events: version,id,type,createdAt,data.messageUuid (+data.identityUuid where available). Verify X-Webhook-Signature t=\u003cunix\u003e,v1=\u003cHMAC-SHA256(timestamp+'.'+rawBody)\u003e with 5-minute timestamp tolerance; deduplicate id. 8 delivery attempts, then dead letter; replay keeps event id. Tests return real HTTP outcome. Key revocation does not delete subscriptions; disabled owners pause delivery. Public HTTPS only; redirects are blocked.",
@@ -76663,7 +76938,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhooks/{uuid}/calls": {
@@ -76936,7 +77212,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhooks/{uuid}/rotate-secret": {
@@ -77194,7 +77471,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/webhooks/{uuid}/test": {
@@ -77457,7 +77735,8 @@
         ],
         "x-api-key-scope": "webhooks:manage",
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-mailbox-allowed": false
       }
     }
   },

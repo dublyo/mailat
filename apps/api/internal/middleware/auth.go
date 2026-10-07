@@ -128,6 +128,11 @@ func validateAPIKey(r *ghttp.Request, raw string) {
 		}
 		return
 	}
+	// Mailbox users cannot create keys; this is a backstop for any that exist.
+	if claims.KeyOwnerRole == "mailbox" {
+		response.Forbidden(r, "Not available for mailbox accounts")
+		return
+	}
 	// Atomic fixed-minute window: no replica-local counters and no asynchronous
 	// last-used write that could race revocation or overwhelm the database.
 	var remaining int

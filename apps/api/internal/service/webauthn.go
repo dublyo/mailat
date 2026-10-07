@@ -203,6 +203,9 @@ func (s *WebAuthnService) BeginRegistration(ctx context.Context, userID int64, e
 
 // FinishRegistration completes the WebAuthn registration
 func (s *WebAuthnService) FinishRegistration(ctx context.Context, userID int64, credentialName string, response *RegistrationResponse) (*WebAuthnCredential, error) {
+	if response == nil {
+		return nil, fmt.Errorf("response is required")
+	}
 	// Decode client data
 	clientDataJSON, err := base64.RawURLEncoding.DecodeString(response.ClientDataJSON)
 	if err != nil {

@@ -121,6 +121,10 @@ func TestOrganizationRoleMatrixHTTP(t *testing.T) {
 		{"GET", "/org/members"}, {"PUT", "/org/members/00000000-0000-0000-0000-000000000000"}, {"DELETE", "/org/members/00000000-0000-0000-0000-000000000000"},
 		{"GET", "/org/invites"}, {"POST", "/org/invites"}, {"POST", "/org/invites/00000000-0000-0000-0000-000000000000/resend"}, {"DELETE", "/org/invites/00000000-0000-0000-0000-000000000000"},
 		{"GET", "/org/identities"}, {"PUT", "/org/identities/00000000-0000-0000-0000-0000000000a1/owner"},
+		// Health data is org-wide, so every /health/* route is admin-only.
+		{"POST", "/health/blacklist-check"}, {"GET", "/health/reputation"}, {"GET", "/health/ses-limits"}, {"GET", "/health/summary"},
+		{"GET", "/health/warmup/schedules"}, {"POST", "/health/warmup"}, {"GET", "/health/warmup/1"}, {"GET", "/health/quota"},
+		{"GET", "/health/logs"}, {"GET", "/health/alerts"}, {"POST", "/health/alerts/1/acknowledge"},
 	}
 	for _, route := range memberWrites {
 		expect(403, route[0], route[1], member, map[string]any{})
@@ -138,6 +142,8 @@ func TestOrganizationRoleMatrixHTTP(t *testing.T) {
 	expect(200, "GET", "/org/invites", admin, nil)
 	expect(200, "GET", "/org/identities", admin, nil)
 	expect(200, "GET", "/api-keys", admin, nil)
+	expect(200, "GET", "/health/logs", admin, nil)
+	expect(200, "GET", "/health/alerts", admin, nil)
 	expect(400, "POST", "/domains", admin, map[string]any{})
 	expect(400, "POST", "/identities", admin, map[string]any{})
 	expect(200, "POST", "/identities/00000000-0000-0000-0000-0000000000a2/catch-all", admin, map[string]any{"isCatchAll": true})
