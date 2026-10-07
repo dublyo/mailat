@@ -357,7 +357,7 @@ It does not cover: the transactional `suppression_list` (SES bounce and complain
 - **No conversation threading for SES mail.** Received messages store a thread ID, but the SES inbox lists messages individually; `/inbox/threads/:id` serves only the legacy JMAP inbox.
 - **Compose sends have no stale-`sending` reconciler** (see [Send status and safe retries](#send-status-and-safe-retries)).
 - **SNS SHA1 signatures are still accepted**; see the `SignatureVersion` step above.
-- **The web image's nginx master runs as root.** The workers that serve requests run as the `nginx` user; a fully non-root web image is deferred.
+- **The web image's nginx master runs as root.** The workers that serve requests run as the `nginx` user; a fully non-root web image is deferred. The image keeps an `appuser` account with writable nginx paths but sets no `USER`; if your compose file sets `user:`, `cap_drop` or `read_only` on the web service, confirm it still starts after an upgrade.
 
 ### Upgrade rollback
 

@@ -2,9 +2,9 @@
 
 Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web` tagged `sha-<full commit SHA>`; there are no version tags. Upgrade notes, backups and rollback are in [docs/self-hosting-ses.md](docs/self-hosting-ses.md).
 
-## M6: docs, hygiene and release (unreleased)
+## M6: docs, hygiene and release
 
-No new migrations.
+Pushed through `c017fd8`; no new migrations. Not yet on a release-verified deployment.
 
 ### Breaking
 
@@ -16,9 +16,14 @@ No new migrations.
 - OpenAPI `info.version` is now a date-based contract version (`contractVersion`, currently `2026-10-07`). The generator records it with a digest of the paths and components in `apps/api/internal/apidocs/openapi.version.json`; `go run ./cmd/openapi --check` fails when the contract changes without a version bump. The contract itself is unchanged from M5.1.
 - Go toolchain 1.27.1. Base images are supported versions pinned by digest: `golang:1.27.1-alpine3.24` and `alpine:3.24.2` for the API, `node:24` and `nginx:1.30.5-alpine` for the web image. The API image sets `PORT=8000`.
 - CI: actions pinned to commit SHAs, read-only default permissions, checkouts without persisted credentials, `go mod tidy -diff`, `go vet` and the OpenAPI check before tests, and image smoke tests (the API image must not run as uid 0; the web image must serve `/`, `/nginx-health` and `/subscribe/*` headers) before push. Dependabot updates actions and base images weekly.
+- **Redis is required.** Startup has always exited without Redis and `/health` reports it; the code comments and docs that called it optional now say so. `WORKER_ENABLED` only controls the Asynq worker and scheduler; the database-backed recovery loops always run.
 - Signup forms get a Delete button; the per-form signup rate limit is keyed on the form UUID.
 - The Domains DMARC panel explains that the default record has no `rua`, so no aggregate reports arrive until you add one.
 - A least-privilege IAM policy, an accurate startup banner, and rewritten README and operator guides.
+
+### Added
+
+- A **Mailboxes** item in the sidebar for owners and admins opens `/mailboxes`: the mailbox list, create and CSV import screen with a domain switcher (active, SES-verified domains) kept in `?domain=`. The per-domain route still works, and mailbox detail pages return to this list (`c017fd8`).
 
 ### Fixed
 
@@ -27,6 +32,7 @@ No new migrations.
 ### Not changed
 
 - The web image's nginx master process still runs as root; the workers run as the `nginx` user. A fully non-root web image is deferred.
+- The web image keeps the `appuser` account and its writable nginx paths but has no `USER` line. A first M6 commit removed them and `ad01286` restored them, so a compose file that sets `user: appuser` on the web service still starts. If your compose sets `user:`, `cap_drop` or `read_only` on the web service, check that it still starts before you upgrade; the default runtime (no `user:`) is unaffected.
 
 ## M5.1: mailbox users
 
