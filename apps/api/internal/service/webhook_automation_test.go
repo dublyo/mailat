@@ -191,7 +191,7 @@ func TestTransactionalFeedbackEventAfterSentDelete(t *testing.T) {
 	org, user, _ := mailboxFixture(t, db, "event-feedback.test")
 	fake := &mailboxTestProvider{}
 	svc := &TransactionalService{db: db, cfg: &config.Config{EmailProvider: "ses", DisableAppLimits: true}, emailProvider: fake}
-	result, err := svc.SendEmailForUser(ctx, org, user, &model.SendEmailRequest{From: "owner@event-feedback.test", To: []string{"to@external.test"}, Subject: "Feedback", Text: "test", IdempotencyKey: "event-feedback"})
+	result, err := svc.SendEmailForUser(ctx, org, SendActor{UserID: user, Admin: true}, &model.SendEmailRequest{From: "owner@event-feedback.test", To: []string{"to@external.test"}, Subject: "Feedback", Text: "test", IdempotencyKey: "event-feedback"})
 	if err != nil {
 		t.Fatal(err)
 	}

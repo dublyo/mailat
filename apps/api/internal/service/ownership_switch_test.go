@@ -138,7 +138,7 @@ func TestSharedIdentityIsForeignToSendPaths(t *testing.T) {
 
 	svc := &TransactionalService{db: db, cfg: &config.Config{EmailProvider: "ses", DisableAppLimits: true}, emailProvider: &mailboxTestProvider{}}
 	req := &model.SendEmailRequest{From: "team@one.test", To: []string{"r@example.net"}, Subject: "s", Text: "t"}
-	if _, err := svc.SendEmailForUser(ctx, 1, 1, req); err == nil {
+	if _, err := svc.SendEmailForUser(ctx, 1, SendActor{UserID: 1}, req); err == nil {
 		t.Fatal("transactional API sent as a shared identity")
 	}
 

@@ -56,9 +56,11 @@ func normalizeSenderAlias(alias, domain string) (string, error) {
 	return strings.ToLower(a.Address), nil
 }
 
-// errMemberAlias rejects a member's From address other than the identity
-// address or a +tag form of it.
-var errMemberAlias = &provider.MailValidationError{Message: "From must be the identity address or a +tag form of it"}
+// errMemberAlias rejects a non-admin From address outside the send-as rule.
+var errMemberAlias = &provider.MailValidationError{Message: "From must be one of your addresses"}
+
+// errForeignSender rejects another identity's address or send-as alias, for every role.
+var errForeignSender = &provider.MailValidationError{Message: "that From address belongs to another user"}
 
 // memberAliasAllowed reports whether alias is identity itself or local+tag@domain.
 func memberAliasAllowed(identity, alias string) bool {
@@ -75,19 +77,62 @@ func memberAliasAllowed(identity, alias string) bool {
 	return ok && strings.HasSuffix(tag, domain) && len(tag) > len(domain) && !strings.Contains(strings.TrimSuffix(tag, domain), "@")
 }
 
+// baseAddress strips a +tag from the local part: a+x@d -> a@d.
+func baseAddress(addr string) string {
+	addr = strings.ToLower(addr)
+	at := strings.LastIndexByte(addr, '@')
+	if plus := strings.IndexByte(addr, '+'); plus > 0 && at > plus {
+		return addr[:plus] + addr[at:]
+	}
+	return addr
+}
+
+// senderAllowed is the send-as rule shared by compose and /emails. Alias is a
+// normalised address on the identity's domain. Allowed: the identity address,
+// a +tag of it, one of its send-as aliases (exact), and, with the wildcard
+// switch on a personal identity, any address that is not (a +tag of) another
+// identity's address or alias. Admins may use any address; foreignSender
+// still applies to every role.
+func senderAllowed(ctx context.Context, q queryer, identityID int64, identityEmail, kind string, wildcard bool, alias string, isAdmin bool) (bool, error) {
+	if isAdmin || memberAliasAllowed(identityEmail, alias) {
+		return true, nil
+	}
+	var ok bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identity_send_aliases WHERE identity_id=$1 AND address=$2)`, identityID, alias).Scan(&ok); err != nil || ok {
+		return ok, err
+	}
+	if !wildcard || kind != "personal" {
+		return false, nil
+	}
+	var taken bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE lower(email)=ANY($2) AND id<>$1)
+	 OR EXISTS(SELECT 1 FROM identity_send_aliases WHERE address=ANY($2) AND identity_id<>$1)`, identityID, pq.Array([]string{alias, baseAddress(alias)})).Scan(&taken)
+	return !taken, err
+}
+
+// foreignSender reports whether addr is the address or a send-as alias of an
+// identity other than identityID that is not one of the user's own personal identities.
+func foreignSender(ctx context.Context, q queryer, userID, identityID int64, addr string) (bool, error) {
+	var foreign bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE lower(email)=$1 AND id<>$3 AND NOT (kind='personal' AND user_id=$2))
+	 OR EXISTS(SELECT 1 FROM identity_send_aliases a JOIN identities i ON i.id=a.identity_id WHERE a.address=$1 AND i.id<>$3 AND NOT (i.kind='personal' AND i.user_id=$2))`, addr, userID, identityID).Scan(&foreign)
+	return foreign, err
+}
+
 // Domain ownership is checked independently of SES account-wide identity
 // verification. The sender is a personal identity the user owns, or a shared
-// identity the user may send as. Owners and admins may use any free address on
-// the identity's domain; members only the identity address or a +tag of it.
+// identity the user may send as; the From address follows senderAllowed, where
+// only a live owner or admin role counts as admin.
 func (s *ComposeService) authorizeMailboxSender(ctx context.Context, userID, identityID int64, alias string) (*mailboxSender, error) {
 	sender := &mailboxSender{userID: userID}
-	var role string
+	var role, kind string
+	var wildcard bool
 	err := s.db.QueryRowContext(ctx, `SELECT i.id,d.id,u.org_id,i.email,COALESCE(i.display_name,''),d.name,
-	 COALESCE(NULLIF(d.attachment_s3_bucket,''),NULLIF(d.receiving_s3_bucket,''),rc.s3_bucket,''),COALESCE(u.role,'')
+	 COALESCE(NULLIF(d.attachment_s3_bucket,''),NULLIF(d.receiving_s3_bucket,''),rc.s3_bucket,''),COALESCE(u.role,''),i.kind,i.wildcard_sender
 	 FROM identities i JOIN users u ON u.id=$2 JOIN domains d ON d.id=i.domain_id
 	 LEFT JOIN receiving_configs rc ON rc.org_id=u.org_id
 	 WHERE i.id=$1 AND `+identityAccessSQL("i", "$2", identityCanSend)+` AND i.can_send=true AND d.org_id=u.org_id
-	 AND d.status='active' AND d.ses_verified=true`, identityID, userID).Scan(&sender.identityID, &sender.domainID, &sender.orgID, &sender.email, &sender.name, &sender.domain, &sender.bucket, &role)
+	 AND d.status='active' AND d.ses_verified=true`, identityID, userID).Scan(&sender.identityID, &sender.domainID, &sender.orgID, &sender.email, &sender.name, &sender.domain, &sender.bucket, &role, &kind, &wildcard)
 	if err == sql.ErrNoRows {
 		return nil, &provider.MailValidationError{Message: "select an authorized sending identity on a verified SES domain"}
 	}
@@ -102,17 +147,19 @@ func (s *ComposeService) authorizeMailboxSender(ctx context.Context, userID, ide
 	if err != nil {
 		return nil, err
 	}
-	if role != "owner" && role != "admin" && !memberAliasAllowed(identityEmail, sender.email) {
-		return nil, errMemberAlias
-	}
-	// Any other identity's address is foreign unless it is the user's own personal identity.
-	var otherOwner bool
-	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE LOWER(email)=$1 AND id<>$3 AND NOT (kind='personal' AND user_id=$2))`, sender.email, userID, identityID).Scan(&otherOwner)
+	foreign, err := foreignSender(ctx, s.db, userID, identityID, sender.email)
 	if err != nil {
 		return nil, err
 	}
-	if otherOwner {
-		return nil, &provider.MailValidationError{Message: "that From address belongs to another user"}
+	if foreign {
+		return nil, errForeignSender
+	}
+	allowed, err := senderAllowed(ctx, s.db, identityID, identityEmail, kind, wildcard, sender.email, role == "owner" || role == "admin")
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		return nil, errMemberAlias
 	}
 	return sender, nil
 }

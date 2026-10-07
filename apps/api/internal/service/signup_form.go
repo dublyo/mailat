@@ -31,7 +31,7 @@ func (e *SignupError) Error() string               { return e.Message }
 func signupError(status int, message string) error { return &SignupError{status, message} }
 
 type signupSender interface {
-	SendEmailForUser(context.Context, int64, int64, *model.SendEmailRequest) (*model.SendEmailResponse, error)
+	SendEmailForUser(context.Context, int64, SendActor, *model.SendEmailRequest) (*model.SendEmailResponse, error)
 }
 type SignupFormService struct {
 	db     *sql.DB
@@ -459,7 +459,7 @@ func (s *SignupFormService) Submit(ctx context.Context, id, ip, ua string, r *mo
 		if s.sender == nil {
 			return nil, signupError(503, "Confirmation email could not be sent. Please try again later.")
 		}
-		_, err = s.sender.SendEmailForUser(ctx, f.OrgID, f.CreatedBy, &model.SendEmailRequest{From: f.FromEmail, To: []string{email}, Subject: "Confirm your subscription", Text: text, HTML: body, IdempotencyKey: "signup-" + hash})
+		_, err = s.sender.SendEmailForUser(ctx, f.OrgID, SendActor{UserID: f.CreatedBy}, &model.SendEmailRequest{From: f.FromEmail, To: []string{email}, Subject: "Confirm your subscription", Text: text, HTML: body, IdempotencyKey: "signup-" + hash})
 		if err != nil {
 			return nil, signupError(503, "Confirmation email could not be sent. Please try again later.")
 		}

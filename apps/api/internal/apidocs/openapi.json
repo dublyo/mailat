@@ -2540,6 +2540,12 @@
             "format": "int64",
             "type": "integer"
           },
+          "sendAliases": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "shared": {
             "type": "boolean"
           },
@@ -2547,6 +2553,12 @@
             "type": "string"
           },
           "sharedMailboxUuid": {
+            "type": "string"
+          },
+          "signatureHtml": {
+            "type": "string"
+          },
+          "signatureText": {
             "type": "string"
           },
           "stalwartAcctId": {
@@ -2569,6 +2581,9 @@
           },
           "uuid": {
             "type": "string"
+          },
+          "wildcardSender": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -4149,6 +4164,22 @@
             "allOf": [
               {
                 "type": "boolean"
+              }
+            ],
+            "nullable": true
+          },
+          "signatureHtml": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "signatureText": {
+            "allOf": [
+              {
+                "type": "string"
               }
             ],
             "nullable": true
@@ -31604,7 +31635,7 @@
     },
     "/api/v1/emails": {
       "post": {
-        "description": "SendEmail sends a single transactional email\nPOST /api/v1/emails Requires a verified owned sender and stable Idempotency-Key. Base64 attachments preserve name, type (MIME), disposition and cid. Same key+content retries return the original result; changed payload is 409. A batch holds one content-bound key for the whole ordered request plus per-item keys. Inspect each item's success/error; retry the identical batch for incomplete items. queued/pending is not provider acceptance. sent is SES acceptance; delivered is destination-server acceptance. unknown needs investigation and must not be blindly retried with a new key.",
+        "description": "SendEmail sends a single transactional email\nPOST /api/v1/emails Requires a verified owned sender and stable Idempotency-Key. Base64 attachments preserve name, type (MIME), disposition and cid. Same key+content retries return the original result; changed payload is 409. A batch holds one content-bound key for the whole ordered request plus per-item keys. Inspect each item's success/error; retry the identical batch for incomplete items. queued/pending is not provider acceptance. sent is SES acceptance; delivered is destination-server acceptance. unknown needs investigation and must not be blindly retried with a new key. Sender rule: owners, admins and their keys may send as any address on a verified domain of theirs; members and member-owned keys only as one of their identity addresses, a local+tag form of it, a send-as alias granted to it, or any address on its domain when that identity's wildcard sender switch is on. Nobody may send as another user's identity address or send-as alias (400). The Sent copy is stored under the matching identity.",
         "operationId": "post_api_v1_emails",
         "parameters": [
           {
@@ -31896,7 +31927,7 @@
     },
     "/api/v1/emails/batch": {
       "post": {
-        "description": "BatchSendEmail sends multiple emails in batch\nPOST /api/v1/emails/batch Requires a verified owned sender and stable Idempotency-Key. Base64 attachments preserve name, type (MIME), disposition and cid. Same key+content retries return the original result; changed payload is 409. A batch holds one content-bound key for the whole ordered request plus per-item keys. Inspect each item's success/error; retry the identical batch for incomplete items. queued/pending is not provider acceptance. sent is SES acceptance; delivered is destination-server acceptance. unknown needs investigation and must not be blindly retried with a new key.",
+        "description": "BatchSendEmail sends multiple emails in batch\nPOST /api/v1/emails/batch Requires a verified owned sender and stable Idempotency-Key. Base64 attachments preserve name, type (MIME), disposition and cid. Same key+content retries return the original result; changed payload is 409. A batch holds one content-bound key for the whole ordered request plus per-item keys. Inspect each item's success/error; retry the identical batch for incomplete items. queued/pending is not provider acceptance. sent is SES acceptance; delivered is destination-server acceptance. unknown needs investigation and must not be blindly retried with a new key. Sender rule: owners, admins and their keys may send as any address on a verified domain of theirs; members and member-owned keys only as one of their identity addresses, a local+tag form of it, a send-as alias granted to it, or any address on its domain when that identity's wildcard sender switch is on. Nobody may send as another user's identity address or send-as alias (400). The Sent copy is stored under the matching identity.",
         "operationId": "post_api_v1_emails_batch",
         "parameters": [
           {
@@ -38436,7 +38467,7 @@
         "x-mailat-mailbox-allowed": true
       },
       "put": {
-        "description": "Update changes one of the caller's personal identities. Changing isCatchAll\nor canReceive requires the owner or admin role (403 otherwise).\nPUT /api/v1/identities/:uuid",
+        "description": "Update one of the caller's personal identities. signatureHtml and signatureText (at most 20 KB each) are stored as given; clients sanitise the HTML before inserting it into compose. isCatchAll and canReceive need an owner or admin. Identity reads return the signature, wildcardSender and sendAliases for the caller's own personal identities.",
         "operationId": "put_api_v1_identities_uuid",
         "parameters": [
           {

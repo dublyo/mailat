@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/dublyo/mailat/api/internal/config"
@@ -305,6 +306,11 @@ func (s *IdentityService) UpdateIdentity(ctx context.Context, userID int64, iden
 	if req.Color != nil && !regexp.MustCompile(`^#[0-9a-fA-F]{6}$`).MatchString(*req.Color) {
 		return nil, fmt.Errorf("invalid identity color")
 	}
+	for _, sig := range []*string{req.SignatureHtml, req.SignatureText} {
+		if sig != nil && (len(*sig) > maxSignatureBytes || strings.ContainsRune(*sig, 0)) {
+			return nil, fmt.Errorf("signature must be at most 20 KB")
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -337,7 +343,9 @@ func (s *IdentityService) UpdateIdentity(ctx context.Context, userID int64, iden
 			return nil, err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE identities SET display_name=COALESCE($1,display_name),is_default=COALESCE($2,is_default),is_catch_all=COALESCE($3,is_catch_all),color=COALESCE($4,color),can_receive=COALESCE($6,can_receive),updated_at=now() WHERE id=$5`, req.DisplayName, req.IsDefault, req.IsCatchAll, req.Color, id, req.CanReceive)
+	_, err = tx.ExecContext(ctx, `UPDATE identities SET display_name=COALESCE($1,display_name),is_default=COALESCE($2,is_default),is_catch_all=COALESCE($3,is_catch_all),color=COALESCE($4,color),can_receive=COALESCE($6,can_receive),
+	 signature_html=COALESCE($7,signature_html),signature_text=COALESCE($8,signature_text),updated_at=now() WHERE id=$5`,
+		req.DisplayName, req.IsDefault, req.IsCatchAll, req.Color, id, req.CanReceive, req.SignatureHtml, req.SignatureText)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +366,8 @@ func (s *IdentityService) GetIdentity(ctx context.Context, userID int64, identit
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, uuid, user_id, domain_id, email, COALESCE(display_name, ''), is_default, is_catch_all, color,
-		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive, kind
+		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive, kind,
+		       COALESCE(signature_html, ''), COALESCE(signature_text, ''), wildcard_sender
 		FROM identities
 		WHERE uuid = $1 AND user_id = $2 AND kind = 'personal'
 	`, identityUUID, userID).Scan(
@@ -366,6 +375,7 @@ func (s *IdentityService) GetIdentity(ctx context.Context, userID int64, identit
 		&identity.Email, &identity.DisplayName, &identity.IsDefault, &identity.IsCatchAll, &colorNull,
 		&stalwartAcctID, &identity.QuotaBytes, &identity.UsedBytes,
 		&identity.CreatedAt, &identity.UpdatedAt, &identity.CanSend, &identity.CanReceive, &identity.Kind,
+		&identity.SignatureHtml, &identity.SignatureText, &identity.WildcardSender,
 	)
 
 	if err == sql.ErrNoRows {
@@ -382,7 +392,9 @@ func (s *IdentityService) GetIdentity(ctx context.Context, userID int64, identit
 		identity.Color = colorNull.String
 	}
 	identity.Status = "active" // Virtual field
-
+	if err = s.attachSendAliases(ctx, []*model.Identity{&identity}); err != nil {
+		return nil, err
+	}
 	return &identity, nil
 }
 
@@ -393,13 +405,13 @@ func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, uuid, user_id, domain_id, email, COALESCE(display_name, ''), is_default, is_catch_all, color,
 		       stalwart_account_id, quota_bytes, used_bytes, created_at, updated_at, can_send, can_receive, kind,
-		       true, false, '', ''
+		       true, false, '', '', COALESCE(signature_html, ''), COALESCE(signature_text, ''), wildcard_sender
 		FROM identities
 		WHERE user_id = $1 AND kind = 'personal'
 		UNION ALL
 		SELECT i.id, i.uuid, i.user_id, i.domain_id, i.email, COALESCE(i.display_name, ''), false, false, i.color,
 		       i.stalwart_account_id, i.quota_bytes, i.used_bytes, i.created_at, i.updated_at, i.can_send AND m.can_send, i.can_receive, i.kind,
-		       m.can_read, m.can_manage, sm.uuid::text, sm.name
+		       m.can_read, m.can_manage, sm.uuid::text, sm.name, '', '', false
 		FROM shared_mailbox_members m JOIN shared_mailboxes sm ON sm.id = m.shared_mailbox_id
 		JOIN identities i ON i.id = sm.identity_id AND i.kind = 'shared'
 		WHERE m.user_id = $1
@@ -419,7 +431,8 @@ func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*
 			&identity.Email, &identity.DisplayName, &identity.IsDefault, &identity.IsCatchAll, &colorNull,
 			&stalwartAcctID, &identity.QuotaBytes, &identity.UsedBytes,
 			&identity.CreatedAt, &identity.UpdatedAt, &identity.CanSend, &identity.CanReceive, &identity.Kind,
-			&identity.CanRead, &identity.CanManage, &identity.SharedMailboxUuid, &identity.SharedMailboxName); err != nil {
+			&identity.CanRead, &identity.CanManage, &identity.SharedMailboxUuid, &identity.SharedMailboxName,
+			&identity.SignatureHtml, &identity.SignatureText, &identity.WildcardSender); err != nil {
 			return nil, fmt.Errorf("failed to scan identity: %w", err)
 		}
 		if stalwartAcctID.Valid {
@@ -435,8 +448,46 @@ func (s *IdentityService) ListIdentities(ctx context.Context, userID int64) ([]*
 		identity.Status = "active" // Virtual field
 		identities = append(identities, &identity)
 	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err = s.attachSendAliases(ctx, identities); err != nil {
+		return nil, err
+	}
+	return identities, nil
+}
 
-	return identities, rows.Err()
+const maxSignatureBytes = 20 * 1024
+
+// attachSendAliases fills SendAliases for personal identities.
+func (s *IdentityService) attachSendAliases(ctx context.Context, identities []*model.Identity) error {
+	byID := map[int64]*model.Identity{}
+	ids := []int64{}
+	for _, identity := range identities {
+		if identity.Kind == "personal" {
+			identity.SendAliases = []string{}
+			byID[identity.ID] = identity
+			ids = append(ids, identity.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT identity_id,address FROM identity_send_aliases WHERE identity_id=ANY($1) ORDER BY address`, pq.Array(ids))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var address string
+		if err = rows.Scan(&id, &address); err != nil {
+			return err
+		}
+		byID[id].SendAliases = append(byID[id].SendAliases, address)
+	}
+	return rows.Err()
 }
 
 // UpdateIdentityPassword updates the password for an identity

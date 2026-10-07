@@ -171,14 +171,14 @@ func TestN8NAcceptanceFixture(t *testing.T) {
 			e = json.NewDecoder(r.Body).Decode(&req)
 			if e == nil {
 				req.IdempotencyKey = r.Header.Get("Idempotency-Key")
-				v, e = transactional.BatchSendEmailForUser(r.Context(), org, user, &req)
+				v, e = transactional.BatchSendEmailForUser(r.Context(), org, SendActor{UserID: user, Admin: true}, &req)
 			}
 		case path == "emails":
 			var req model.SendEmailRequest
 			e = json.NewDecoder(r.Body).Decode(&req)
 			if e == nil {
 				req.IdempotencyKey = r.Header.Get("Idempotency-Key")
-				v, e = transactional.SendEmailForUser(r.Context(), org, user, &req)
+				v, e = transactional.SendEmailForUser(r.Context(), org, SendActor{UserID: user, Admin: true}, &req)
 			}
 		case strings.HasPrefix(path, "emails/"):
 			v, e = transactional.GetEmailStatusForUser(r.Context(), org, user, strings.TrimPrefix(path, "emails/"))

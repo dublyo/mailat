@@ -94,7 +94,7 @@ func TestOrganizationRoleMatrixHTTP(t *testing.T) {
 	}
 	owner, admin, member := login("owner@roles.test"), login("admin@roles.test"), login("member@roles.test")
 	auth := service.NewAuthService(db, cfg)
-	scopes := []string{"domains:read", "domains:manage", "identities:read", "identities:manage"}
+	scopes := []string{"domains:read", "domains:manage", "identities:read", "identities:manage", "email:send"}
 	adminKey, err := auth.CreateAPIKey(context.Background(), 1, 2, &model.CreateApiKeyRequest{Name: "Admin key", Permissions: scopes, RateLimit: 1000})
 	if err != nil {
 		t.Fatal(err)
@@ -136,6 +136,24 @@ func TestOrganizationRoleMatrixHTTP(t *testing.T) {
 	expect(403, "PUT", memberIdentity, member, map[string]any{"isCatchAll": true})
 	expect(403, "PUT", memberIdentity, member, map[string]any{"canReceive": false})
 	expect(404, "PUT", "/identities/00000000-0000-0000-0000-0000000000a1", member, map[string]any{"displayName": "Not mine"})
+
+	// POST /emails follows the send-as rule for members, by session or key,
+	// and nobody may send as another user's send-as alias. Only rejected sends
+	// are exercised here, so nothing reaches the provider.
+	if _, err = db.Exec(`INSERT INTO identity_send_aliases(identity_id,address) VALUES(3,'sales@roles.test')`); err != nil {
+		t.Fatal(err)
+	}
+	sendAs := func(token, from, key, want string) {
+		t.Helper()
+		status, b := call("POST", "/emails", token, map[string]any{"from": from, "to": []string{"r@external.test"}, "subject": "s", "text": "t", "idempotencyKey": key})
+		if status != 400 || !bytes.Contains(b, []byte(want)) {
+			t.Fatalf("send as %s: %d %s", from, status, b)
+		}
+	}
+	sendAs(member, "ceo@roles.test", "member-free-address", "one of your addresses")
+	sendAs(memberKey.Key, "ceo@roles.test", "member-key-free-address", "one of your addresses")
+	sendAs(member, "owner@roles.test", "member-foreign-address", "belongs to another user")
+	sendAs(owner, "sales@roles.test", "owner-foreign-alias", "belongs to another user")
 
 	// Admin sessions pass the gate; validation and ownership still apply.
 	expect(200, "GET", "/org/members", admin, nil)

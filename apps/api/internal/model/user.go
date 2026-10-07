@@ -125,6 +125,11 @@ type Identity struct {
 	Status            string    `json:"status"`
 	CreatedAt         time.Time `json:"createdAt"`
 	UpdatedAt         time.Time `json:"updatedAt"`
+	// Filled only for the caller's own personal identities.
+	SignatureHtml  string   `json:"signatureHtml,omitempty"`
+	SignatureText  string   `json:"signatureText,omitempty"`
+	WildcardSender bool     `json:"wildcardSender,omitempty"`
+	SendAliases    []string `json:"sendAliases,omitempty"`
 }
 
 // JWT Claims
@@ -177,6 +182,10 @@ type UpdateIdentityRequest struct {
 	IsCatchAll  *bool   `json:"isCatchAll"` // Owner or admin only
 	CanReceive  *bool   `json:"canReceive"` // Owner or admin only
 	Color       *string `json:"color"`
+	// Signatures are stored as given (at most 20 KB each) and sanitised by the
+	// web app before they are inserted into compose.
+	SignatureHtml *string `json:"signatureHtml"`
+	SignatureText *string `json:"signatureText"`
 }
 
 type CreateApiKeyRequest struct {

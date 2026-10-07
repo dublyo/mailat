@@ -28,7 +28,7 @@ func TestTransactionalAttachmentsAndUnifiedSent(t *testing.T) {
 	svc := &TransactionalService{db: db, cfg: &config.Config{EmailProvider: "ses", DisableAppLimits: true}, emailProvider: fake, attachments: storage}
 	content := []byte{0, 1, 2, 3, 255, 10, 13}
 	req := &model.SendEmailRequest{From: "alias@automated.test", To: []string{"to@external.test"}, Bcc: []string{"hidden@external.test"}, Subject: "Attachment", Text: "hello", IdempotencyKey: "attachment-key", Attachments: []model.AttachmentDTO{{Name: "picture.bin", Type: "application/octet-stream", Content: base64.StdEncoding.EncodeToString(content), CID: "image-1", Disposition: "inline"}}}
-	result, err := svc.SendEmailForUser(ctx, org, user, req)
+	result, err := svc.SendEmailForUser(ctx, org, SendActor{UserID: user, Admin: true}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestTransactionalAttachmentsAndUnifiedSent(t *testing.T) {
 	if payload.MessageUUID != result.ID || !bytes.Equal(payload.Attachments[0].Data, content) {
 		t.Fatal("durable attachment payload changed")
 	}
-	again, err := svc.SendEmailForUser(ctx, org, user, req)
+	again, err := svc.SendEmailForUser(ctx, org, SendActor{UserID: user, Admin: true}, req)
 	if err != nil || again.ID != result.ID {
 		t.Fatal("replay", again, err)
 	}
@@ -86,7 +86,7 @@ func TestBatchPartialRetryConcurrencyAndChangedPayload(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r, e := svc.BatchSendEmailForUser(ctx, org, user, &req)
+			r, e := svc.BatchSendEmailForUser(ctx, org, SendActor{UserID: user, Admin: true}, &req)
 			if e != nil {
 				errs <- e
 				return
@@ -124,11 +124,11 @@ func TestBatchPartialRetryConcurrencyAndChangedPayload(t *testing.T) {
 		t.Fatalf("duplicate send: %d", calls)
 	}
 	req.Emails[0].Text = "changed"
-	if _, err := svc.BatchSendEmailForUser(ctx, org, user, &req); !errors.Is(err, ErrSubmissionConflict) {
+	if _, err := svc.BatchSendEmailForUser(ctx, org, SendActor{UserID: user, Admin: true}, &req); !errors.Is(err, ErrSubmissionConflict) {
 		t.Fatal("changed batch must conflict", err)
 	}
 	req.IdempotencyKey = ""
-	if _, err := svc.BatchSendEmailForUser(ctx, org, user, &req); err == nil {
+	if _, err := svc.BatchSendEmailForUser(ctx, org, SendActor{UserID: user, Admin: true}, &req); err == nil {
 		t.Fatal("missing batch key allowed")
 	}
 }

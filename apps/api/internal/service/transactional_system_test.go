@@ -184,7 +184,7 @@ func TestSendAutomatedGuards(t *testing.T) {
 	if _, err := db.Exec(`UPDATE identities SET can_send=true WHERE id=$1`, identity); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SendEmailForUser(ctx, org, user, &model.SendEmailRequest{From: "owner@guards.test", To: []string{"c@elsewhere.test"}, Subject: "s", Text: "t", IdempotencyKey: "mailat:ar:1:x"}); err == nil {
+	if _, err := svc.SendEmailForUser(ctx, org, SendActor{UserID: user, Admin: true}, &model.SendEmailRequest{From: "owner@guards.test", To: []string{"c@elsewhere.test"}, Subject: "s", Text: "t", IdempotencyKey: "mailat:ar:1:x"}); err == nil {
 		t.Fatal("reserved transactional key accepted")
 	}
 }

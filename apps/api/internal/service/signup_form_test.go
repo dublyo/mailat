@@ -18,8 +18,8 @@ type signupCapture struct {
 	fail     bool
 }
 
-func (c *signupCapture) SendEmailForUser(_ context.Context, org, user int64, r *model.SendEmailRequest) (*model.SendEmailResponse, error) {
-	if org != 1 || user != 1 {
+func (c *signupCapture) SendEmailForUser(_ context.Context, org int64, actor SendActor, r *model.SendEmailRequest) (*model.SendEmailResponse, error) {
+	if org != 1 || actor != (SendActor{UserID: 1}) {
 		return nil, errors.New("wrong sender")
 	}
 	if c.fail {

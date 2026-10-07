@@ -80,9 +80,17 @@ func NewTransactionalService(db *sql.DB, cfg *config.Config, redisClient *redis.
 	return svc
 }
 
+// SendActor is who submits a transactional send. Admin (an owner or admin, or
+// a system send) may use any free address on the domain; everyone else follows
+// the send-as rule (senderAllowed). UserID 0 is an org-level system send.
+type SendActor struct {
+	UserID int64
+	Admin  bool
+}
+
 // SendEmail sends a single transactional email
 func (s *TransactionalService) SendEmail(ctx context.Context, orgID int64, req *model.SendEmailRequest) (*model.SendEmailResponse, error) {
-	return s.SendEmailForUser(ctx, orgID, 0, req)
+	return s.SendEmailForUser(ctx, orgID, SendActor{Admin: true}, req)
 }
 
 // AlertDigestSender adapts SendEmailForUser for the worker's daily alert digest.
@@ -90,7 +98,8 @@ func (s *TransactionalService) SendEmail(ctx context.Context, orgID int64, req *
 // digest) is reported as worker.ErrDigestAlreadySent instead of a failure.
 func (s *TransactionalService) AlertDigestSender() worker.DigestSender {
 	return func(ctx context.Context, orgID, userID int64, req *model.SendEmailRequest) (*model.SendEmailResponse, error) {
-		resp, err := s.SendEmailForUser(ctx, orgID, userID, req)
+		// A system send to the org's own admins.
+		resp, err := s.SendEmailForUser(ctx, orgID, SendActor{UserID: userID, Admin: true}, req)
 		if errors.Is(err, ErrSubmissionConflict) {
 			return nil, worker.ErrDigestAlreadySent
 		}
@@ -99,7 +108,8 @@ func (s *TransactionalService) AlertDigestSender() worker.DigestSender {
 }
 
 // SendEmailForUser adds the actor boundary for HTTP users and user-bound API keys.
-func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID, userID int64, req *model.SendEmailRequest) (*model.SendEmailResponse, error) {
+func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID int64, actor SendActor, req *model.SendEmailRequest) (*model.SendEmailResponse, error) {
+	userID := actor.UserID
 	if s.emailProvider == nil {
 		return nil, fmt.Errorf("email provider is not configured; sending has not been attempted")
 	}
@@ -128,19 +138,12 @@ func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID, user
 	normalizedFrom := strings.ToLower(fromAddress.Address)
 	domainName := extractDomain(normalizedFrom)
 	if userID > 0 {
-		var foreign bool
-		if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE LOWER(email)=$1 AND NOT (kind='personal' AND user_id=$2))`, normalizedFrom, userID).Scan(&foreign); err != nil {
+		foreign, err := foreignSender(ctx, s.db, userID, 0, normalizedFrom)
+		if err != nil {
 			return nil, err
 		}
 		if foreign {
-			return nil, &provider.MailValidationError{Message: "that From address belongs to another user"}
-		}
-		var ownsDomain bool
-		if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities i JOIN domains d ON d.id=i.domain_id WHERE i.user_id=$1 AND i.kind='personal' AND i.can_send=true AND d.org_id=$2 AND LOWER(d.name)=$3)`, userID, orgID, domainName).Scan(&ownsDomain); err != nil {
-			return nil, err
-		}
-		if !ownsDomain {
-			return nil, &provider.MailValidationError{Message: "no authorized sending identity for this domain"}
+			return nil, errForeignSender
 		}
 	}
 
@@ -160,25 +163,17 @@ func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID, user
 		return nil, &provider.MailValidationError{Message: "sender domain is not active"}
 	}
 
-	// Aliases share an authorized identity's mailbox; never create an ownerless Sent row.
-	var identityID, ownerID int64
-	var senderName, bucket string
-	err = s.db.QueryRowContext(ctx, `SELECT i.id,i.user_id,COALESCE(i.display_name,''),COALESCE(NULLIF(d.attachment_s3_bucket,''),NULLIF(d.receiving_s3_bucket,''),'')
- FROM identities i JOIN domains d ON d.id=i.domain_id JOIN users u ON u.id=i.user_id
- WHERE i.domain_id=$1 AND u.org_id=$2 AND i.kind='personal' AND i.can_send=true AND ($3::bigint=0 OR i.user_id=$3)
- ORDER BY (lower(i.email)=$4) DESC,i.id LIMIT 1`, domainID, orgID, userID, normalizedFrom).Scan(&identityID, &ownerID, &senderName, &bucket)
-	if err == sql.ErrNoRows {
-		return nil, &provider.MailValidationError{Message: "no authorized sending identity for this domain"}
-	}
-	if err != nil {
-		return nil, err
-	}
 	var disabled bool
-	if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE lower(email)=$1 AND can_send=false)`, normalizedFrom).Scan(&disabled); err != nil {
+	if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE lower(email)=$1 AND can_send=false)
+	 OR EXISTS(SELECT 1 FROM identity_send_aliases a JOIN identities i ON i.id=a.identity_id WHERE a.address=$1 AND NOT i.can_send)`, normalizedFrom).Scan(&disabled); err != nil {
 		return nil, err
 	}
 	if disabled {
 		return nil, &provider.MailValidationError{Message: "sending is disabled for this identity"}
+	}
+	identityID, ownerID, bucket, err := s.chooseSendIdentity(ctx, orgID, domainID, actor, normalizedFrom)
+	if err != nil {
+		return nil, err
 	}
 
 	if req.IdempotencyKey != "" {
@@ -284,9 +279,10 @@ func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID, user
 
 // BatchSendEmail sends multiple emails in batch
 func (s *TransactionalService) BatchSendEmail(ctx context.Context, orgID int64, req *model.BatchSendRequest) (*model.BatchSendResponse, error) {
-	return s.BatchSendEmailForUser(ctx, orgID, 0, req)
+	return s.BatchSendEmailForUser(ctx, orgID, SendActor{Admin: true}, req)
 }
-func (s *TransactionalService) BatchSendEmailForUser(ctx context.Context, orgID, userID int64, req *model.BatchSendRequest) (*model.BatchSendResponse, error) {
+func (s *TransactionalService) BatchSendEmailForUser(ctx context.Context, orgID int64, actor SendActor, req *model.BatchSendRequest) (*model.BatchSendResponse, error) {
+	userID := actor.UserID
 	if len(req.Emails) == 0 || len(req.Emails) > 100 {
 		return nil, &provider.MailValidationError{Message: "batch must contain between 1 and 100 emails"}
 	}
@@ -303,11 +299,11 @@ func (s *TransactionalService) BatchSendEmailForUser(ctx context.Context, orgID,
 		return nil, err
 	}
 	var stored string
-	var actor int64
-	if err = s.db.QueryRowContext(ctx, `SELECT request_hash,COALESCE(user_id,0) FROM email_batch_submissions WHERE org_id=$1 AND submission_key=$2`, orgID, req.IdempotencyKey).Scan(&stored, &actor); err != nil {
+	var storedUser int64
+	if err = s.db.QueryRowContext(ctx, `SELECT request_hash,COALESCE(user_id,0) FROM email_batch_submissions WHERE org_id=$1 AND submission_key=$2`, orgID, req.IdempotencyKey).Scan(&stored, &storedUser); err != nil {
 		return nil, err
 	}
-	if stored != hash || actor != userID {
+	if stored != hash || storedUser != userID {
 		return nil, ErrSubmissionConflict
 	}
 	batchSum := sha256.Sum256([]byte(req.IdempotencyKey))
@@ -322,7 +318,7 @@ func (s *TransactionalService) BatchSendEmailForUser(ctx context.Context, orgID,
 			results[i] = model.BatchEmailResult{Index: i, Status: "failed", Error: err.Error()}
 			continue
 		}
-		resp, err := s.SendEmailForUser(ctx, orgID, userID, &emailReq)
+		resp, err := s.SendEmailForUser(ctx, orgID, actor, &emailReq)
 		if err != nil {
 			failureStatus := "unknown"
 			var validation *provider.MailValidationError
@@ -790,4 +786,52 @@ func transactionalItemError(err error) string {
 		return err.Error()
 	}
 	return "Mail service is temporarily unavailable; retry unchanged content with the same idempotency key"
+}
+
+// chooseSendIdentity picks the personal can_send identity whose mailbox owns
+// the Sent copy of a send from addr: the exact identity, then the base identity
+// of a +tag, then the send-as alias owner, then (admins, or a wildcard switch)
+// any other. A non-admin actor needs an identity of their own that
+// senderAllowed accepts; an org-level system send (UserID 0) uses any user's.
+func (s *TransactionalService) chooseSendIdentity(ctx context.Context, orgID, domainID int64, actor SendActor, addr string) (identityID, ownerID int64, bucket string, err error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT i.id,i.user_id,i.email,i.kind,i.wildcard_sender,COALESCE(NULLIF(d.attachment_s3_bucket,''),NULLIF(d.receiving_s3_bucket,''),'')
+ FROM identities i JOIN domains d ON d.id=i.domain_id JOIN users u ON u.id=i.user_id
+ WHERE i.domain_id=$1 AND u.org_id=$2 AND i.kind='personal' AND i.can_send=true AND ($3::bigint=0 OR i.user_id=$3)
+ ORDER BY (lower(i.email)=$4) DESC,(lower(i.email)=$5) DESC,EXISTS(SELECT 1 FROM identity_send_aliases a WHERE a.identity_id=i.id AND a.address=$4) DESC,i.id`,
+		domainID, orgID, actor.UserID, addr, baseAddress(addr))
+	if err != nil {
+		return 0, 0, "", err
+	}
+	type candidate struct {
+		id, owner           int64
+		email, kind, bucket string
+		wildcard            bool
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err = rows.Scan(&c.id, &c.owner, &c.email, &c.kind, &c.wildcard, &c.bucket); err != nil {
+			rows.Close()
+			return 0, 0, "", err
+		}
+		candidates = append(candidates, c)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return 0, 0, "", err
+	}
+	if len(candidates) == 0 {
+		return 0, 0, "", &provider.MailValidationError{Message: "no authorized sending identity for this domain"}
+	}
+	admin := actor.Admin || actor.UserID == 0
+	for _, c := range candidates {
+		ok, err := senderAllowed(ctx, s.db, c.id, c.email, c.kind, c.wildcard, addr, admin)
+		if err != nil {
+			return 0, 0, "", err
+		}
+		if ok {
+			return c.id, c.owner, c.bucket, nil
+		}
+	}
+	return 0, 0, "", errMemberAlias
 }

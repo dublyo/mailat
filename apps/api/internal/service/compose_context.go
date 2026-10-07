@@ -36,8 +36,9 @@ func (s *ComposeService) mailboxReplyContext(ctx context.Context, userID int64, 
 	}
 	// This check also prevents replying as an explicitly reserved address of another user.
 	sender, err := s.authorizeMailboxSender(ctx, userID, original.IdentityID, alias)
-	if err == errMemberAlias {
-		// A member replying to catch-all mail answers from the identity address.
+	if err == errMemberAlias || err == errForeignSender {
+		// Catch-all mail (or mail to another user's send-as alias) is answered
+		// from the identity address.
 		sender, err = s.authorizeMailboxSender(ctx, userID, original.IdentityID, ownAddress)
 	}
 	if err != nil {
@@ -66,7 +67,8 @@ func (s *ComposeService) mailboxReplyContext(ctx context.Context, userID int64, 
 	for _, a := range original.EnvelopeRecipients {
 		exclude[strings.ToLower(a)] = true
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT lower(email) FROM identities WHERE user_id=$1 AND kind='personal'`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT lower(email) FROM identities WHERE user_id=$1 AND kind='personal'
+	 UNION SELECT a.address FROM identity_send_aliases a JOIN identities i ON i.id=a.identity_id WHERE i.user_id=$1 AND i.kind='personal'`, userID)
 	if err != nil {
 		return nil, err
 	}

@@ -232,7 +232,7 @@ func TestTransactionalIdempotencyScopeAndContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.From, req.IdempotencyKey = "reserved@one.test", "reserved-address-attempt"
-	if _, err = svc.SendEmailForUser(context.Background(), org, user, req); err == nil {
+	if _, err = svc.SendEmailForUser(context.Background(), org, SendActor{UserID: user, Admin: true}, req); err == nil {
 		t.Fatal("other user's explicit address allowed")
 	}
 	compose := &ComposeService{db: db}
@@ -240,7 +240,7 @@ func TestTransactionalIdempotencyScopeAndContent(t *testing.T) {
 		t.Fatal("compose allowed another user's explicit address")
 	}
 	req.From, req.IdempotencyKey = "alias@one.test", "owned-domain-alias"
-	alias, err := svc.SendEmailForUser(context.Background(), org, user, req)
+	alias, err := svc.SendEmailForUser(context.Background(), org, SendActor{UserID: user, Admin: true}, req)
 	if err != nil {
 		t.Fatal("owned-domain alias rejected", err)
 	}
@@ -248,12 +248,12 @@ func TestTransactionalIdempotencyScopeAndContent(t *testing.T) {
 	if _, err = compose.authorizeMailboxSender(context.Background(), user, identity, req.From); err != nil {
 		t.Fatal("compose rejected owned-domain alias", err)
 	}
-	if _, err = svc.SendEmailForUser(context.Background(), org, colleague, &model.SendEmailRequest{From: "owner@one.test", To: []string{"recipient@example.net"}, Subject: "test", Text: "hello", IdempotencyKey: "shared-client-key"}); err == nil {
+	if _, err = svc.SendEmailForUser(context.Background(), org, SendActor{UserID: colleague}, &model.SendEmailRequest{From: "owner@one.test", To: []string{"recipient@example.net"}, Subject: "test", Text: "hello", IdempotencyKey: "shared-client-key"}); err == nil {
 		t.Fatal("idempotency replay bypassed actor authorization")
 	}
 	future := time.Now().Add(time.Hour).Format(time.RFC3339)
 	req.ScheduledFor, req.IdempotencyKey = &future, "scheduled-without-queue"
-	if _, err = svc.SendEmailForUser(context.Background(), org, user, req); err == nil {
+	if _, err = svc.SendEmailForUser(context.Background(), org, SendActor{UserID: user, Admin: true}, req); err == nil {
 		t.Fatal("scheduled message accepted without queue")
 	}
 	var scheduledRows int
