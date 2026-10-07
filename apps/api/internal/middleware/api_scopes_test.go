@@ -16,6 +16,14 @@ func TestAPIKeyScopeMatrixFailsClosed(t *testing.T) {
 		{"POST", "/api/v1/automations/a/enroll", "automations:enroll"}, {"POST", "/api/v1/automations/a/enrollments/e/cancel", "automations:enroll"}, {"POST", "/api/v1/automations/a/enrollments/e/retry", "automations:enroll"},
 		{"POST", "/api/v1/automations", ""}, {"PUT", "/api/v1/automations/a", ""}, {"DELETE", "/api/v1/automations/a", ""}, {"POST", "/api/v1/automations/a/validate", ""}, {"POST", "/api/v1/automations/a/activate", ""}, {"POST", "/api/v1/automations/a/pause", ""}, {"POST", "/api/v1/automations/a/archive", ""}, {"GET", "/api/v1/automations/a/enroll", ""},
 		{"PUT", "/api/v1/shared-mailboxes/1/members/u", ""}, {"POST", "/api/v1/shared-mailboxes/1/members", ""},
+		// M5 routes are human-session only: no API key scope may reach them.
+		{"GET", "/api/v1/org/members", ""}, {"PUT", "/api/v1/org/members/u", ""}, {"DELETE", "/api/v1/org/members/u", ""},
+		{"GET", "/api/v1/org/invites", ""}, {"POST", "/api/v1/org/invites", ""}, {"POST", "/api/v1/org/invites/u/resend", ""}, {"DELETE", "/api/v1/org/invites/u", ""},
+		{"GET", "/api/v1/org/identities", ""}, {"PUT", "/api/v1/org/identities/u/owner", ""},
+		{"GET", "/api/v1/forwards", ""}, {"POST", "/api/v1/forwards", ""}, {"PUT", "/api/v1/forwards/u", ""}, {"POST", "/api/v1/forwards/u/resend-verification", ""}, {"DELETE", "/api/v1/forwards/u", ""}, {"POST", "/api/v1/forwards/verify", ""},
+		{"POST", "/api/v1/auth/invites/lookup", ""}, {"POST", "/api/v1/auth/invites/accept", ""},
+		{"GET", "/api/v1/push/vapid-key", ""}, {"POST", "/api/v1/push/subscribe", ""}, {"POST", "/api/v1/push/unsubscribe", ""}, {"GET", "/api/v1/push/subscriptions", ""}, {"PUT", "/api/v1/push/subscriptions/u/preferences", ""},
+		{"GET", "/api/v1/shared-mailboxes", ""}, {"GET", "/api/v1/shared-mailboxes/1", ""}, {"POST", "/api/v1/shared-mailboxes", ""}, {"DELETE", "/api/v1/shared-mailboxes/1", ""}, {"GET", "/api/v1/shared-mailboxes/1/members", ""}, {"DELETE", "/api/v1/shared-mailboxes/1/members/u", ""},
 		{"POST", "/api/v1/campaigns/c/unknown", ""}, {"PUT", "/api/v1/campaigns/c/send", ""}, {"DELETE", "/api/v1/campaign-settings", ""}, {"GET", "/api/v1/campaigns/c/test", ""},
 	}
 	for _, tt := range tests {
