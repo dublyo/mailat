@@ -54,18 +54,19 @@ const storesBuild = await build({
     builder.onResolve({ filter: /^@\/lib\/api$/ }, () => ({ path: 'api', namespace: 'fixture' }))
     builder.onResolve({ filter: /^\.\/(receivedInbox|inbox|settings|domains)$/ }, () => ({ path: 'stores', namespace: 'fixture' }))
     builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: args.path === 'api'
-      ? 'export const { api, authApi } = globalThis.__inviteFixture'
+      ? 'export const { api, authApi, pushApi } = globalThis.__inviteFixture'
       : 'export const useReceivedInboxStore = () => ({ reset() { globalThis.__inviteFixture.resets++ } }); export const useInboxStore = () => ({ closeCompose() {} }); export const useDomainsStore = () => ({ reset() {} }); export const useSettingsStore = () => ({ clearLocalSettings() {} })', loader: 'js' }))
   } }],
 })
 
-test('setSession signs in the invited user and signs out another account first', () => {
+test('setSession signs in the invited user and signs out another account first', async () => {
   const state = { token: 'other-account', revoked: [] }
-  globalThis.__inviteFixture = { resets: 0, api: { getToken: () => state.token, setToken: value => { state.token = value } }, authApi: { logout: async t => { state.revoked.push(t) } } }
+  globalThis.__inviteFixture = { resets: 0, api: { getToken: () => state.token, setToken: value => { state.token = value } }, authApi: { logout: async t => { state.revoked.push(t) } }, pushApi: { unsubscribe: async () => {} } }
   const { useAuthStore } = evaluate(storesBuild.outputFiles[0].text)
   setActivePinia(createPinia())
   const auth = useAuthStore()
   auth.setSession('invite-session', { id: 9, email: 'new@acme.test', role: 'member' })
+  await new Promise(resolve => setTimeout(resolve, 0))
   assert.deepEqual(state.revoked, ['other-account'])
   assert.equal(globalThis.__inviteFixture.resets, 1)
   assert.equal(state.token, 'invite-session')

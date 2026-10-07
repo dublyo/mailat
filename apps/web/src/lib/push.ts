@@ -62,3 +62,32 @@ export function deviceLabel(userAgent = typeof navigator === 'undefined' ? '' : 
   const os = /Android/.test(userAgent) ? 'Android' : /iPhone|iPad/.test(userAgent) ? 'iOS' : /Mac OS X/.test(userAgent) ? 'macOS' : /Windows/.test(userAgent) ? 'Windows' : /Linux/.test(userAgent) ? 'Linux' : ''
   return os ? `${browser} on ${os}` : browser
 }
+
+type DeviceSubscription = { endpoint: string; unsubscribe(): Promise<boolean> }
+type DevicePushContainer = { getRegistration(): Promise<{ pushManager?: { getSubscription(): Promise<DeviceSubscription | null> } } | undefined> }
+
+/**
+ * Ends web push in this browser at sign-out. The server is told first (while
+ * the session still works), then the browser drops the subscription itself,
+ * which stops delivery even when the server call fails. Without this, the next
+ * person using this browser would see the previous account's new-mail
+ * notifications, and could not enable push for themselves.
+ */
+export async function endDevicePush(
+  unsubscribeOnServer: ((endpoint: string) => Promise<unknown>) | null,
+  container: DevicePushContainer | undefined = typeof navigator !== 'undefined' && 'serviceWorker' in navigator ? navigator.serviceWorker : undefined,
+): Promise<boolean> {
+  if (!container) return false
+  const registration = await container.getRegistration()
+  const subscription = await registration?.pushManager?.getSubscription()
+  if (!subscription) return false
+  if (unsubscribeOnServer) {
+    try {
+      await unsubscribeOnServer(subscription.endpoint)
+    } catch {
+      // The browser unsubscribe below still stops delivery; the server drops
+      // the dead endpoint on its next push.
+    }
+  }
+  return subscription.unsubscribe()
+}

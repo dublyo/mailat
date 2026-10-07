@@ -24,7 +24,7 @@ const storesBuild = await build({
     builder.onResolve({ filter: /^@\/lib\/api$/ }, () => ({ path: 'api', namespace: 'fixture' }))
     builder.onResolve({ filter: /^\.\/(receivedInbox|inbox|settings)$/ }, () => ({ path: 'other-stores', namespace: 'fixture' }))
     builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: args.path === 'api'
-      ? 'export const { api, authApi, domainApi, identityApi, receivedInboxApi } = globalThis.__authFixture'
+      ? 'export const { api, authApi, pushApi, domainApi, identityApi, receivedInboxApi } = globalThis.__authFixture'
       : 'export const useReceivedInboxStore = () => ({ reset() {} }); export const useInboxStore = () => ({ closeCompose() {} }); export const useSettingsStore = () => ({ clearLocalSettings(options) { globalThis.__settingsCleared = (globalThis.__settingsCleared || 0) + 1; globalThis.__settingsClearedWith = options } })', loader: 'js' }))
   } }],
 })
@@ -41,7 +41,7 @@ function storesFixture() {
   const state = { token: 'first-account' }
   const endpoints = {
     api: { getToken: () => state.token, setToken: value => { state.token = value } },
-    authApi: { logout: async () => {} }, domainApi: { list: async () => [] }, identityApi: { list: async () => [] }, receivedInboxApi: {},
+    authApi: { logout: async () => {} }, pushApi: { unsubscribe: async () => {} }, domainApi: { list: async () => [] }, identityApi: { list: async () => [] }, receivedInboxApi: {},
   }
   globalThis.__authFixture = endpoints
   const { useAuthStore, useDomainsStore } = evaluate(storesBuild.outputFiles[0].text)
@@ -183,13 +183,41 @@ test('invalid two-factor code stays on the verification form', async () => {
   assert.equal(window.location.href, href)
 })
 
-test('logout requests server revocation using the captured credential', () => {
+test('logout requests server revocation using the captured credential', async () => {
   const { auth, endpoints, state } = storesFixture()
   let captured
   endpoints.authApi.logout = async token => { captured = token }
   auth.logout()
-  assert.equal(captured, 'first-account')
   assert.equal(state.token, null)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(captured, 'first-account')
+})
+
+test('logout ends push in this browser with the session, before revoking it', async () => {
+  const { auth, endpoints, state } = storesFixture()
+  const calls = []
+  const subscription = { endpoint: 'https://push.example/device', unsubscribe: async () => { calls.push('browser-unsubscribe'); return true } }
+  const container = { getRegistration: async () => ({ pushManager: { getSubscription: async () => subscription } }) }
+  Object.defineProperty(globalThis, 'navigator', { value: { serviceWorker: container }, configurable: true })
+  try {
+    endpoints.pushApi.unsubscribe = async (endpoint, token) => { calls.push(`server-unsubscribe ${endpoint} ${token}`) }
+    endpoints.authApi.logout = async token => { calls.push(`logout ${token}`) }
+    auth.logout()
+    assert.equal(state.token, null, 'local sign-out is immediate')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.deepEqual(calls, ['server-unsubscribe https://push.example/device first-account', 'browser-unsubscribe', 'logout first-account'])
+
+    // Offline: the server call fails, the browser still drops the subscription.
+    calls.length = 0
+    state.token = 'second-account'
+    endpoints.pushApi.unsubscribe = async () => { throw new Error('offline') }
+    endpoints.authApi.logout = async () => { calls.push('logout'); throw new Error('offline') }
+    auth.logout()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.deepEqual(calls, ['browser-unsubscribe', 'logout'])
+  } finally {
+    delete globalThis.navigator
+  }
 })
 
 test('disconnect discards an in-flight stream ticket after logout', async () => {

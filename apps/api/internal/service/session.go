@@ -168,11 +168,23 @@ func (s *SessionService) RevokeSession(ctx context.Context, userID int64, sessio
 	return nil
 }
 
-// RevokeAllSessions revokes all sessions for a user except the current one
+// pauseAllPush stops new-mail pushes to every device of the user. Push
+// subscriptions belong to the user, not to a session, so signing out
+// everywhere must also stop them, or a browser signed out elsewhere keeps
+// showing the user's senders and subjects. A device still signed in turns
+// push back on from its settings.
+const pauseAllPush = `UPDATE push_subscriptions SET active=false WHERE user_id=$1 AND active`
+
+// RevokeAllSessions revokes all sessions for a user except the current one,
+// and pauses push on all of the user's devices.
 func (s *SessionService) RevokeAllSessions(ctx context.Context, userID int64, exceptToken string) (int, error) {
 	exceptHash := hashToken(exceptToken)
-
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to revoke sessions")
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 		UPDATE user_sessions
 		SET active = false, revoked_at = NOW()
 		WHERE user_id = $1 AND active = true AND token_hash != $2
@@ -180,19 +192,35 @@ func (s *SessionService) RevokeAllSessions(ctx context.Context, userID int64, ex
 	if err != nil {
 		return 0, fmt.Errorf("failed to revoke sessions")
 	}
-
+	if _, err = tx.ExecContext(ctx, pauseAllPush, userID); err != nil {
+		return 0, fmt.Errorf("failed to revoke sessions")
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to revoke sessions")
+	}
 	rowsAffected, _ := result.RowsAffected()
 	return int(rowsAffected), nil
 }
 
 // RevokeAllUserSessions revokes ALL sessions for a user (including current)
+// and pauses push on all of the user's devices.
 func (s *SessionService) RevokeAllUserSessions(ctx context.Context, userID int64) error {
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `
 		UPDATE user_sessions
 		SET active = false, revoked_at = NOW()
 		WHERE user_id = $1 AND active = true
-	`, userID)
-	return err
+	`, userID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, pauseAllPush, userID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CleanupExpiredSessions removes expired sessions

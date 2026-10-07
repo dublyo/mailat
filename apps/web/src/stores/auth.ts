@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { api, authApi, type User } from '@/lib/api'
+import { api, authApi, pushApi, type User } from '@/lib/api'
+import { endDevicePush } from '@/lib/push'
 import { useReceivedInboxStore } from './receivedInbox'
 import { useInboxStore } from './inbox'
 import { useDomainsStore } from './domains'
@@ -64,7 +65,13 @@ export const useAuthStore = defineStore('auth', () => {
   // browser-only mail rules for import; a user-initiated one clears them.
   function logout(options: { keepLegacyRules?: boolean } = {}) {
     const currentToken = api.getToken()
-    if (currentToken) void authApi.logout(currentToken).catch(() => { /* Local logout remains possible offline. */ })
+    // Push stops for this browser before the session is revoked, so the
+    // server call still authenticates; then the session itself is revoked.
+    void endDevicePush(currentToken ? endpoint => pushApi.unsubscribe(endpoint, currentToken) : null)
+      .catch(() => { /* No service worker, or push unavailable in this browser. */ })
+      .finally(() => {
+        if (currentToken) void authApi.logout(currentToken).catch(() => { /* Local logout remains possible offline. */ })
+      })
     challengeToken.value = null
     useReceivedInboxStore().reset()
     useInboxStore().closeCompose()

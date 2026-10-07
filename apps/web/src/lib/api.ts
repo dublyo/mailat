@@ -1796,7 +1796,8 @@ export interface PushSubscriptionInfo {
 export const pushApi = {
   vapidKey: () => api.get<{ enabled: boolean; publicKey: string }>('/api/v1/push/vapid-key'),
   subscribe: (data: { endpoint: string; p256dhKey: string; authKey: string; deviceName?: string }) => api.post<PushSubscriptionInfo>('/api/v1/push/subscribe', data),
-  unsubscribe: (endpoint: string) => api.post('/api/v1/push/unsubscribe', { endpoint }),
+  // token: the session to use, for a sign-out that has already cleared it.
+  unsubscribe: (endpoint: string, token?: string) => api.post('/api/v1/push/unsubscribe', { endpoint }, token ? { Authorization: `Bearer ${token}` } : undefined),
   list: () => api.get<PushSubscriptionInfo[] | null>('/api/v1/push/subscriptions'),
   setNewEmail: (uuid: string, notifyNewEmail: boolean) => api.put(`/api/v1/push/subscriptions/${encodeURIComponent(uuid)}/preferences`, { notifyNewEmail }),
 }
