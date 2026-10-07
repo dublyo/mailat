@@ -29,7 +29,7 @@ const (
 
 // mxRefreshMinAge is how old a cached answer must be before a forced refresh
 // queries DNS again, so a Re-check loop cannot hammer the resolver.
-var mxRefreshMinAge = 10 * time.Second
+var mxRefreshMinAge = 2 * time.Second
 
 // Receiving MX states. Published is only reported after a lookup found the
 // SES inbound host as the preferred exchanger; a failed lookup is unknown.
@@ -184,6 +184,13 @@ func (s *DomainService) lookupMX(ctx context.Context, name string, refresh bool)
 	// The shared query outlives one caller's cancellation, bounded by the timeout.
 	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mxLookupTimeout)
 	defer cancel()
+	// Waiters are always released, even if the resolver panics.
+	defer func() {
+		c.mu.Lock()
+		delete(c.inflight, name)
+		c.mu.Unlock()
+		close(call.done)
+	}()
 	// Fully qualified, so resolv.conf search domains never apply.
 	call.records, call.err = resolver.LookupMX(lookupCtx, strings.TrimSuffix(name, ".")+".")
 	// A definite answer (records or "no such record") is cached; transient
@@ -194,10 +201,6 @@ func (s *DomainService) lookupMX(ctx context.Context, name string, refresh bool)
 	} else {
 		c.forget(name)
 	}
-	c.mu.Lock()
-	delete(c.inflight, name)
-	c.mu.Unlock()
-	close(call.done)
 	return call.records, call.err
 }
 

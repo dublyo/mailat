@@ -333,3 +333,24 @@ func TestCloudflareReceivingMXOptIn(t *testing.T) {
 		})
 	}
 }
+
+type panicMXResolver struct{}
+
+func (panicMXResolver) LookupMX(context.Context, string) ([]*net.MX, error) { panic("resolver bug") }
+
+// A panicking resolver must not leave the in-flight entry behind, or every
+// later check for that domain would wait until its own context ends.
+func TestLookupMXReleasesInflightOnPanic(t *testing.T) {
+	svc := &DomainService{mxResolver: panicMXResolver{}}
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = svc.lookupMX(context.Background(), "example.test", true)
+	}()
+	svc.mxResolver = &fakeMXResolver{records: []*net.MX{{Host: "inbound-smtp.us-east-2.amazonaws.com.", Pref: 10}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	records, err := svc.lookupMX(ctx, "example.test", true)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("lookup after a panic: records=%v err=%v", records, err)
+	}
+}
