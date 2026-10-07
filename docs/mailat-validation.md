@@ -100,3 +100,25 @@ Record final canonical tests after all agents' edits, desktop/mobile browser acc
 - **36 frontend tests and the TypeScript/Vite production build passed**, including legacy DNS filtering, SMTP compatibility, and five distinct Cloudflare result states. A local production-build browser smoke confirmed that legacy root MX/SPF and enforcing DMARC records were absent from the SES preview, bounce MX/SPF remained visible, and receiving options opened without creating infrastructure. No browser warnings/errors were reported.
 - The user explicitly chose to preserve the tested `vayb.dev` apex MX. No live DNS mutation is part of this follow-up.
 - Final backend verification: `go test -race -count=1 ./...` passed with disposable PostgreSQL 16. Focused provider/service suites also passed. Fake Cloudflare cases covered existing MX/SPF/CNAME conflicts, duplicate SPF, proxied DKIM, failed reads, later-page conflicts, and the service boundary ensuring either MAIL FROM conflict blocks both pair members. Both exact disposable clusters were stopped/removed; the existing local PostgreSQL service was left untouched.
+
+## Release status record: M2–M5.1 and M6 docs, October 7, 2026
+
+Recorded by the M6 handoff agent. Only facts checked on 2026-10-07 are listed; nothing here deployed, pushed or sent mail.
+
+**Pushed and built.** `origin/main` is `f696e552028e6e53117a35fca46a02afde5dbab3` (M5.1). GitHub Actions run 37617787008 for that commit completed successfully. Anonymous GHCR manifest requests for `ghcr.io/dublyo/mailat-api:sha-f696e552028e6e53117a35fca46a02afde5dbab3` and the matching `mailat-web` tag both returned HTTP 200. Earlier milestone runs: M5 37559582969 and M4 37529503767 succeeded; M3 run 37510982737 failed and the next push (run 37511808158) succeeded.
+
+**Live instance (read-only, 2026-10-07T14:13Z).**
+
+- `GET https://mail.dublyo.com/api/v1/health`: `healthy`, PostgreSQL `ok`, Redis `ok`, version `f696e552028e6e53117a35fca46a02afde5dbab3`.
+- `GET /api/v1/openapi.json`: 279 operations, including the M5.1 `/api/v1/org/mailboxes/...` routes; `info.version` is still `2026-10-04` because the date-based contract version is an unpushed M6 change.
+- The web root's `last-modified` (12:10:15 GMT) matches the `mailat-web` build time for f696e55. This is an inference, not a digest comparison.
+- Not verified by this record: who performed the rollout from `18b8dcc` to `f696e55`, the pre-upgrade backup, the `mailat_schema_migrations` ledger (015–017 expected once), browser workflows, signup/campaign/forward mail behaviour, and response headers on `/subscribe/*`.
+
+**Local M6 tree.** Local `main` at `da71cd4` (14 M6 commits ahead of `origin/main`, clean tree, `scripts/` and `examples/` untracked):
+
+- `go build ./...`, `go vet ./...` and `go run ./cmd/openapi --check` ("OpenAPI matches routes and DTOs") passed.
+- `go test -race -count=1 ./...` with a disposable local PostgreSQL (`MAILAT_TEST_DATABASE_URL`) passed in every package that has tests.
+- `apps/web`: `npm test` 190 passed, 0 failed; `npm run build` (vue-tsc and Vite) passed.
+- Docker image builds, the non-root nginx smoke and Caddy validation were not run locally (the Docker daemon was off); CI is the build proof once pushed.
+
+**Still required before an R1 record can be written.** Owner approval, push and green CI for the M6 head, `sha-<full>` images, the backup and isolated rehearsal, the stack 5 tag change, ledger and row-count verification, the post-deploy checklist and a 30-minute watch (runbook in `MAILAT-AI-HANDOFF-2026-10-07.md`, section 10.1, outside this repository).
