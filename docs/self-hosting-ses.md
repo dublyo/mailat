@@ -47,11 +47,30 @@ Use a region that currently supports SES receiving; consult [AWS's region docume
 
 Add an owned domain in Mailat, publish the displayed verification/DKIM DNS records, and verify it. Create identities on that domain. SES identities can omit an IMAP password. Mailat requires an active, SES-verified domain and a sending-enabled identity owned by the authenticated user. A `fromEmail` alias must stay on that identity's domain and cannot use another user's explicit identity address.
 
-SES DNS onboarding configures sending by default and preserves the domain's existing inbox provider. It does not automatically add or change the root-domain receiving MX. The MX shown on `bounce.<domain>` is SES's custom MAIL FROM record; it does not move ordinary `person@<domain>` inbox delivery. Automatic Cloudflare setup also skips legacy stored root MX and root SPF records. Required DKIM/ownership/MAIL FROM records are inspected before creation: identical records are preserved, conflicts are reported without updates or deletion, and a failed preflight prevents creation.
+SES DNS onboarding configures sending by default and preserves the domain's existing inbox provider. It does not automatically add or change the root-domain receiving MX. The MX shown on `bounce.<domain>` is SES's custom MAIL FROM record; it does not move ordinary `person@<domain>` inbox delivery. Automatic Cloudflare setup also skips legacy stored root MX and root SPF records; it adds the root receiving MX only after receiving is enabled for the domain (see [Receiving MX for mailboxes](#receiving-mx-for-mailboxes)). Required DKIM/ownership/MAIL FROM records are inspected before creation: identical records are preserved, conflicts are reported without updates or deletion, and a failed preflight prevents creation.
 
 DMARC setup checks for an existing or inherited policy before proposing a new record. One valid existing policy is preserved, including its reporting addresses and alignment/subdomain settings, whether its policy is `none`, `quarantine`, or `reject`. When no policy applies, automatic Cloudflare setup can add `v=DMARC1; p=quarantine;` after a fresh server-side check. It never invents a reporting mailbox. Multiple or invalid policies, unresolved delegation, and DNS/provider read failures require review and prevent automatic creation. Quarantine applies to every sender using that From domain, so other mail providers must also authenticate with aligned SPF or DKIM.
 
 Manual DNS users can check DMARC and copy a missing-policy suggestion separately. The bulk DNS download continues to exclude DMARC, root MX, and root SPF: a BIND import cannot conditionally create a record only while it is absent and could otherwise introduce a duplicate policy. Review the current DMARC status before publishing any manually copied record. See [the DMARC setup specification](mailat-dmarc-spec.md) for behavior and edge cases.
+
+### Receiving MX for mailboxes
+
+Sending works without a root MX record; receiving mail, and therefore mailboxes, need one. Every domain card on the Domains screen has a **Receiving (MX)** row that shows the exact record and its live status:
+
+| Field | Value |
+| --- | --- |
+| Type | `MX` |
+| Name | `@` (the domain root) |
+| Mail server | `inbound-smtp.<region>.amazonaws.com` (the receiving region, for example `inbound-smtp.us-east-2.amazonaws.com`) |
+| Priority | `10` |
+
+The status is **Off** until an owner or admin clicks **Enable receiving** and confirms; Mailat never publishes or changes a root MX when a domain is created. After that it reads the public DNS: **On – MX missing** (no root MX; senders such as Gmail bounce mail to the domain's mailboxes), **Published** (the SES inbound host is the preferred MX), **Points elsewhere** (another provider's MX is in place, so mail goes there) or **Unknown** (the lookup failed). Lookups are cached for a minute; **Re-check** looks again. The same status is available as `GET /api/v1/domains/:uuid/receiving` (any organization member, or an API key with `domains:read`).
+
+When the status is **On – MX missing** and the domain is on Cloudflare, **Add MX to Cloudflare** takes the same API token as Set up sending (used once, not stored) and adds only this record (`POST /api/v1/domains/:uuid/dns/cloudflare` with `"scope": "receiving-mx"`). It is written only while receiving is enabled and the zone has no other root MX; if one exists it is reported as a conflict and nothing changes. The full Cloudflare setup adds the same record under the same rules once receiving is on. Otherwise publish the record at your DNS provider.
+
+The Mailboxes page and the New mailbox form say which of these blocks mail (receiving off, no MX, MX elsewhere) and link to the domain card; a mailbox's Overview shows **Receives mail: No — domain has no MX** when the record is missing.
+
+### Enabling receiving
 
 Enable receiving for the domain through the Domains screen. The first domain of an organization creates a private bucket (`mailat-<org id>-<random>`) and an SNS topic (`mailat-incoming-<org id>-<random>`); later domains reuse them. Mailat then adds a rule named `receive-<domain with dots replaced by dashes>` to the region's **currently active** receipt rule set, whatever its name. Only when no rule set is active does it create `mailat-receiving` and activate it. It never deactivates another rule set. The hazard is the rule name: setup first deletes any rule with the same `receive-…` name in the active set, then recreates it, so a rule another tool created with that name is replaced. The rule matches the whole domain, so check the active rule set for other rules that act on the same recipients before enabling it. Publish the generated MX record using your region's receiving endpoint. Do not replace an existing provider's MX records unless intentionally moving inbound delivery.
 
@@ -200,7 +219,7 @@ A shared mailbox is a shared identity, such as `support@your-domain`. Each membe
 
 A mailbox user is a login that owns exactly one address and sees only its own mail, the way a Migadu mailbox works. Example: an owner gives `ibrahim@vayb.dev` its own login, and Ibrahim gets an inbox, compose and his own settings, but no domains, team, campaigns, contacts, health pages or API keys. Mailat is web and SES only: there is no IMAP, POP3, SMTP submission or ManageSieve for mailbox users or anyone else.
 
-**Who manages them.** Owners and admins open Domains, then **Mailboxes** on a domain card. The domain must be `active` and SES-verified. A mailbox user does not use a seat (`max_users`), but its address counts toward `max_identities`. If receiving is off for the domain, the mailbox is still created and the page warns that it won't get mail until receiving is set up. Mailbox users cannot be changed into members or admins (or back); remove the mailbox and invite the person instead.
+**Who manages them.** Owners and admins open Domains, then **Mailboxes** on a domain card. The domain must be `active` and SES-verified. A mailbox user does not use a seat (`max_users`), but its address counts toward `max_identities`. If receiving is off for the domain, or its root MX is missing or points elsewhere, the mailbox is still created and the page says which of these stops mail, with a link to fix it on the domain card (see [Receiving MX for mailboxes](#receiving-mx-for-mailboxes)). Mailbox users cannot be changed into members or admins (or back); remove the mailbox and invite the person instead.
 
 **Invite or password.** The New mailbox form gives two ways to hand over access:
 

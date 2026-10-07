@@ -2,6 +2,20 @@
 
 Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web` tagged `sha-<full commit SHA>`; there are no version tags. Upgrade notes, backups and rollback are in [docs/self-hosting-ses.md](docs/self-hosting-ses.md).
 
+## Receiving MX visibility
+
+Not yet deployed; no new migrations. OpenAPI `contractVersion` is `2026-10-08`.
+
+### Added
+
+- Every domain card shows a **Receiving (MX)** row: the exact root MX (`MX @ inbound-smtp.<region>.amazonaws.com`, priority 10) with copy buttons and its live status (Off, On – MX missing, Published, Points elsewhere, Unknown), plus Re-check, Enable receiving (behind the existing confirm text) and Add MX to Cloudflare. Receiving stays opt-in per domain.
+- `GET /api/v1/domains/:uuid/receiving` (members, `domains:read`): `enabled`, `mxRecord`, `mxStatus` (`not_enabled`, `missing`, `published`, `conflict`, `unknown`) and `existingMx`, from a live lookup with a 3-second timeout and a one-minute cache (`refresh=true` bypasses it).
+- Mailbox pages say why mail will not arrive (receiving off, no MX, MX elsewhere) with a **Fix receiving** link; the New mailbox form warns inline; mailbox Overview shows **Receives mail**.
+
+### Changed
+
+- Cloudflare DNS setup adds the root receiving MX only while receiving is enabled and the zone has no other root MX (otherwise a conflict, nothing changed). `"scope": "receiving-mx"` adds just that record.
+
 ## M6: docs, hygiene and release
 
 Pushed through `c017fd8`; no new migrations. Not yet on a release-verified deployment.

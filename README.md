@@ -40,6 +40,8 @@ Owners and admins can turn any address on an SES-verified domain into its own lo
 - **Invite user to set own password**: Mailat emails a 72-hour, single-use setup link to the person's outside address. Mail to the new address is kept for them in the meantime.
 - **Set initial password**: the login works at once; hand over the address and password through a secure channel.
 
+Mailboxes only get mail once the domain receives it. Sending works without it, but receiving needs one root MX record: Type `MX`, Name `@`, Mail server `inbound-smtp.<region>.amazonaws.com`, Priority `10`. Each domain card shows that record and whether it is live (**Receiving (MX)**: Off, On – MX missing, Published, Points elsewhere, Unknown). Click **Enable receiving**, then publish the record yourself or use **Add MX to Cloudflare**. Mailat never adds or changes a root MX on its own. See [Receiving MX for mailboxes](docs/self-hosting-ses.md#receiving-mx-for-mailboxes).
+
 A mailbox user (role `mailbox`) sees only their own mail: inbox, compose, their signature, filters, vacation replies, forwarding, security and shared mailboxes they were added to. Every other page and API route is closed to them (403), and they cannot use API keys. Mailbox users don't take a seat.
 
 - **Sending:** a mailbox user (or member) can send as their address, any `+tag` of it, send-as aliases an admin granted, and, if the admin turned on Wildcard sender for that mailbox, any unused address on the domain. Owners and admins can use any unused address. No one can send as another person's address or alias.
