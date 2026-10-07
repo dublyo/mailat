@@ -3,12 +3,13 @@ import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
 
 const require = createRequire(import.meta.url)
 const { setActivePinia, createPinia } = require('pinia')
 function evaluate(code) { const module = { exports: {} }; new Function('require', 'module', 'exports', code)(require, module, module.exports); return module.exports }
 const lib = evaluate((await build({ entryPoints: [fileURLToPath(new URL('../src/lib/invite.ts', import.meta.url))], bundle: true, write: false, platform: 'node', format: 'cjs' })).outputFiles[0].text)
-const { inviteTokenFromHash, forwardVerificationFromHash, clearFragment, completeInvite } = lib
+const { inviteTokenFromHash, forwardVerificationFromHash, forwardConfirmation, clearFragment, completeInvite } = lib
 
 const token = 'Q2hhbmdlTWVJbnZpdGVUb2tlbl9fMDEyMzQ1Njc4OWFi'
 const forwardId = '0d6c1c1e-8b7a-4b8e-9e2f-6a1f2b3c4d5e'
@@ -73,4 +74,27 @@ test('setSession signs in the invited user and signs out another account first',
   assert.equal(auth.isAuthenticated, true)
   assert.equal(auth.isInitialized, true)
   assert.equal(auth.user.role, 'member')
+})
+
+test('opening a forward link confirms nothing until a click, and sends the token once', async () => {
+  const calls = []
+  let cleared = 0
+  const link = forwardConfirmation(`#id=${forwardId}&token=${token}`, { verify: async (uuid, t) => { calls.push([uuid, t]) }, clearHash: () => { cleared++ } })
+  assert.equal(link.valid, true)
+  assert.equal(cleared, 1, 'the token leaves the address bar on open')
+  assert.deepEqual(calls, [], 'a scanner that only opens the page activates nothing')
+  await Promise.all([link.confirm(), link.confirm()])
+  assert.deepEqual(calls, [[forwardId, token]])
+
+  const broken = forwardConfirmation('#id=nope', { verify: async () => { calls.push('bad') }, clearHash: () => { cleared++ } })
+  assert.equal(broken.valid, false)
+  await assert.rejects(broken.confirm())
+  assert.equal(calls.length, 1)
+})
+
+test('the forward confirmation page verifies from a button, not on load', () => {
+  const source = readFileSync(new URL('../src/views/VerifyForward.vue', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /onMounted/)
+  assert.match(source, /@click="confirm"/)
+  assert.match(source, /forwardConfirmation\(window\.location\.hash/)
 })

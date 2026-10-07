@@ -1,26 +1,26 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref } from 'vue'
 import { forwardsApi } from '@/lib/api'
-import { forwardVerificationFromHash, clearFragment } from '@/lib/invite'
+import { forwardConfirmation, clearFragment } from '@/lib/invite'
 
 // Opened by the forward's destination, who usually has no Mailat account.
-const link = forwardVerificationFromHash(window.location.hash)
-const state = ref<'working' | 'verified' | 'failed'>(link ? 'working' : 'failed')
-const message = ref(link ? '' : 'Open the complete confirmation link from the email.')
+// The token leaves the address bar at once but is only sent on a click, so a
+// mail scanner or link preview opening this page confirms nothing.
+const link = forwardConfirmation(window.location.hash, { verify: forwardsApi.verify, clearHash: () => clearFragment() })
+const state = ref<'ready' | 'working' | 'verified' | 'failed'>(link.valid ? 'ready' : 'failed')
+const message = ref(link.valid ? '' : 'Open the complete confirmation link from the email.')
 
-onMounted(async () => {
-  if (!link) return
+async function confirm() {
+  if (state.value !== 'ready') return
+  state.value = 'working'
   try {
-    await forwardsApi.verify(link.uuid, link.token)
+    await link.confirm()
     state.value = 'verified'
   } catch (e) {
     state.value = 'failed'
     message.value = e instanceof Error ? e.message : 'This confirmation link is invalid or has expired.'
-  } finally {
-    // The token is single use either way; keep it out of history.
-    clearFragment()
   }
-})
+}
 </script>
 
 <template>
@@ -30,7 +30,14 @@ onMounted(async () => {
         <img src="/logo.jpg" alt="Mailat" class="w-12 h-12 rounded-lg object-contain" />
         <span class="text-2xl font-medium text-gmail-gray">Mailat</span>
       </div>
-      <p v-if="state === 'working'" role="status" class="text-gmail-gray">Confirming…</p>
+      <template v-if="state === 'ready' || state === 'working'">
+        <h1 class="text-2xl font-normal mb-2">Confirm forwarding</h1>
+        <p class="text-gmail-gray">The email that brought you here names the Mailat address that wants to forward its incoming mail to you. Confirm only if you expect that mail.</p>
+        <button type="button" class="mt-6 px-5 py-2 rounded-lg bg-gmail-blue text-white font-medium disabled:opacity-60" :disabled="state === 'working'" @click="confirm">
+          {{ state === 'working' ? 'Confirming…' : 'Confirm forwarding' }}
+        </button>
+        <p class="mt-4 text-sm text-gmail-gray">If you did not expect this, close this page. Nothing is forwarded unless you confirm.</p>
+      </template>
       <template v-else-if="state === 'verified'">
         <h1 class="text-2xl font-normal mb-2">Forwarding confirmed</h1>
         <p role="status" class="text-gmail-gray">Mail will now be forwarded to this address. You can close this page.</p>

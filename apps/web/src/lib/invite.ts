@@ -23,6 +23,29 @@ export function forwardVerificationFromHash(hash: string): { uuid: string; token
   return UUID.test(uuid) && TOKEN.test(token) ? { uuid, token } : null
 }
 
+/**
+ * Reads a forward confirmation link and removes it from the address bar at
+ * once. Nothing is confirmed until confirm() runs from a person's click: mail
+ * scanners and link previews that open the page must not start forwarding
+ * without the destination's consent. confirm() sends the token at most once.
+ */
+export function forwardConfirmation(
+  hash: string,
+  deps: { verify: (uuid: string, token: string) => Promise<unknown>; clearHash: () => void },
+) {
+  const link = forwardVerificationFromHash(hash)
+  if (hash) deps.clearHash()
+  let sent: Promise<unknown> | null = null
+  return {
+    valid: link !== null,
+    confirm() {
+      if (!link) return Promise.reject(new Error('Open the complete confirmation link from the email.'))
+      sent ??= deps.verify(link.uuid, link.token)
+      return sent
+    },
+  }
+}
+
 /** Removes the fragment so the token does not stay in the address bar or history. */
 export function clearFragment(win: Pick<Window, 'location' | 'history'> = window) {
   win.history.replaceState(win.history.state, '', win.location.pathname + win.location.search)

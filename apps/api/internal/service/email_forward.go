@@ -266,7 +266,7 @@ func (s *AutoReplyService) sendForwardVerification(ctx context.Context, tx *sql.
 	}
 	link := strings.TrimRight(s.cfg.WebUrl, "/") + "/forwards/verify#id=" + forwardUUID + "&token=" + token
 	text := fmt.Sprintf("%s asked to forward its incoming mail to this address through Mailat.\n\n"+
-		"To confirm, open this link within 48 hours:\n%s\n\n"+
+		"To confirm, open this link within 48 hours and choose Confirm forwarding:\n%s\n\n"+
 		"If you did not expect this, ignore this email. Nothing is forwarded unless you confirm.\n", identityEmail, link)
 	htmlBody := fmt.Sprintf(`<p>%s asked to forward its incoming mail to this address through Mailat.</p>`+
 		`<p><a href="%s">Confirm forwarding</a> (the link works for 48 hours).</p>`+
