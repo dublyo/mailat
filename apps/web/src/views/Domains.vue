@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { Plus, Globe, CheckCircle, XCircle, RefreshCw, MoreVertical, Copy, Cloud, Server, Shield, X, Loader2, ChevronDown, ChevronUp, Mail, AlertCircle, Check, Zap, ExternalLink, Key, Inbox, Pencil, Trash2, Star, Download } from 'lucide-vue-next'
+import { Plus, Globe, CheckCircle, XCircle, RefreshCw, MoreVertical, Copy, Cloud, Server, Shield, X, Loader2, ChevronDown, ChevronUp, Mail, AlertCircle, Check, Zap, ExternalLink, Key, Inbox, Pencil, Trash2, Star, Download, Users } from 'lucide-vue-next'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import Badge from '@/components/common/Badge.vue'
@@ -17,6 +17,8 @@ const authStore = useAuthStore()
 // Domain, receiving and identity management is for owners and admins; the
 // server enforces it, so members simply do not see those actions.
 const canManage = computed(() => isOrgAdmin(authStore.user))
+// Mailboxes need an active domain that SES has verified for sending.
+const mailboxesReady = (domain: { status: string; sesVerified: boolean }) => domain.status === 'active' && domain.sesVerified
 
 // Modal state
 const showAddDomainModal = ref(false)
@@ -567,6 +569,16 @@ async function handleSetupReceiving(domain: any) {
                       <Inbox v-else class="w-4 h-4" />
                       Receiving options
                     </Button>
+                    <span v-if="canManage" :title="mailboxesReady(domain) ? 'Logins that see only their own mail' : 'Verify the domain with SES first'">
+                      <router-link v-if="mailboxesReady(domain)" :to="`/domains/${domain.uuid}/mailboxes`" class="inline-flex items-center justify-center gap-2 font-medium rounded-lg px-3 py-1.5 text-sm bg-white text-gmail-gray border border-gmail-border hover:bg-gmail-hover">
+                        <Users class="w-4 h-4" />
+                        Mailboxes
+                      </router-link>
+                      <Button v-else variant="secondary" size="sm" disabled>
+                        <Users class="w-4 h-4" />
+                        Mailboxes
+                      </Button>
+                    </span>
                     <Badge v-if="domain.receivingEnabled" variant="success" size="sm">
                       <Inbox class="w-3 h-3 mr-1" />
                       Receiving prepared

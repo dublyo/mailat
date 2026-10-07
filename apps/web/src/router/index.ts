@@ -102,6 +102,18 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: '/domains/:uuid/mailboxes',
+      name: 'domain-mailboxes',
+      component: () => import('@/views/DomainMailboxes.vue'),
+      meta: { requiresAuth: true, admin: true }
+    },
+    {
+      path: '/domains/:uuid/mailboxes/:userUuid',
+      name: 'mailbox-detail',
+      component: () => import('@/views/MailboxDetail.vue'),
+      meta: { requiresAuth: true, admin: true }
+    },
+    {
       path: '/health',
       name: 'health',
       component: () => import('@/views/Health.vue'),

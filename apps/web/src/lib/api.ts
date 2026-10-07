@@ -1605,7 +1605,8 @@ export interface OrgMember {
   email: string
   name: string
   role: UserRole
-  status: 'active' | 'disabled'
+  /** pending and suspended are mailbox users; disabled means removed. */
+  status: 'active' | 'pending' | 'suspended' | 'disabled'
   lastLoginAt: string | null
   createdAt: string
 }
@@ -1632,18 +1633,24 @@ export interface OrgIdentity {
   canSend: boolean
   canReceive: boolean
   isCatchAll: boolean
+  /** The live primary identity of a mailbox user; managed on the Mailboxes page. */
+  mailboxPrimary?: boolean
 }
 
 export interface InviteLookup {
   orgName: string
   email: string
-  role: 'admin' | 'member'
+  role: 'admin' | 'member' | 'mailbox'
   inviterName: string
   expiresAt: string
+  purpose?: 'join' | 'mailbox_setup' | 'password_reset'
+  /** The mailbox user's name, for mailbox_setup. */
+  name?: string
 }
 
 export const orgApi = {
-  members: () => api.get<OrgMember[]>('/api/v1/org/members'),
+  // Mailbox users are left out unless asked for.
+  members: (opts: { includeMailboxes?: boolean } = {}) => api.get<OrgMember[]>(`/api/v1/org/members${opts.includeMailboxes ? '?includeMailboxes=true' : ''}`),
   changeRole: (uuid: string, role: 'admin' | 'member') => api.put<OrgMember>(`/api/v1/org/members/${encodeURIComponent(uuid)}`, { role }),
   // Without a transfer target the member's personal identities are disabled.
   removeMember: (uuid: string, transferIdentitiesTo?: string) =>
@@ -1659,7 +1666,85 @@ export const orgApi = {
 // Public: the token comes from the /invite#token= link.
 export const invitesApi = {
   lookup: (token: string) => api.post<InviteLookup>('/api/v1/auth/invites/lookup', { token }),
-  accept: (data: { token: string; name: string; password: string }) => api.post<{ token: string; user: User }>('/api/v1/auth/invites/accept', data),
+  // signedIn is false after a password reset of an account with two-factor sign-in.
+  accept: (data: { token: string; name?: string; password: string }) => api.post<{ token?: string; user?: User; signedIn: boolean }>('/api/v1/auth/invites/accept', data),
+}
+
+// ============ Mailbox users (owner/admin) ============
+
+export type MailboxStatus = 'active' | 'invited' | 'invite_expired' | 'suspended' | 'removed'
+
+export interface MailboxAccount {
+  userUuid: string
+  identityUuid: string
+  address: string
+  name: string
+  status: MailboxStatus
+  maySend: boolean
+  mayReceive: boolean
+  wildcardSender: boolean
+  aliasCount: number
+  isCatchAll: boolean
+  lastLoginAt: string | null
+  createdAt: string
+}
+
+export interface MailboxDomainInfo { uuid: string; name: string; sesVerified: boolean; receivingEnabled: boolean }
+
+export interface DomainMailboxes {
+  domain: MailboxDomainInfo
+  catchAll: { email: string; ownerEmail: string; isMailbox: boolean } | null
+  mailboxes: MailboxAccount[]
+}
+
+export interface MailboxLink {
+  uuid: string
+  purpose: 'mailbox_setup' | 'password_reset'
+  status: 'pending' | 'expired' | 'accepted' | 'revoked'
+  expiresAt: string
+  sendCount: number
+}
+
+export interface MailboxDetail {
+  mailbox: MailboxAccount
+  domain: MailboxDomainInfo
+  overview: {
+    maySend: boolean; mayReceive: boolean; wildcardSender: boolean; isCatchAll: boolean
+    forwardsActive: boolean; autoReplyActive: boolean; twoFactor: boolean; recoveryEmail: string
+  }
+  aliases: { uuid: string; address: string }[]
+  invite: MailboxLink | null
+}
+
+export type MailboxAccess =
+  | { mode: 'invite'; inviteEmail: string; senderIdentityUuid?: string }
+  | { mode: 'password'; password: string }
+
+export interface MailboxImportRow { line: number; address: string; result: 'ok' | 'created' | 'error'; message?: string }
+
+const mailboxPath = (userUuid: string) => `/api/v1/org/mailboxes/${encodeURIComponent(userUuid)}`
+
+export const mailboxAdminApi = {
+  list: (domainUuid: string, removed = false) =>
+    api.get<DomainMailboxes>(`/api/v1/org/domains/${encodeURIComponent(domainUuid)}/mailboxes${removed ? '?removed=true' : ''}`),
+  create: (domainUuid: string, data: { localPart: string; name: string; access: MailboxAccess; maySend?: boolean; mayReceive?: boolean }) =>
+    api.post<{ mailbox: MailboxAccount; warnings: string[] }>(`/api/v1/org/domains/${encodeURIComponent(domainUuid)}/mailboxes`, data),
+  // The CSV is sent as the raw body; it may hold passwords.
+  importCsv: (domainUuid: string, csv: string, dryRun: boolean) =>
+    api.post<{ dryRun: boolean; rows: MailboxImportRow[] }>(`/api/v1/org/domains/${encodeURIComponent(domainUuid)}/mailboxes/import?dryRun=${dryRun}`, csv, { 'Content-Type': 'text/csv' }),
+  get: (userUuid: string) => api.get<MailboxDetail>(mailboxPath(userUuid)),
+  update: (userUuid: string, data: { name?: string; maySend?: boolean; mayReceive?: boolean; wildcardSender?: boolean; recoveryEmail?: string }) =>
+    api.put<MailboxAccount>(mailboxPath(userUuid), data),
+  addAlias: (userUuid: string, localPart: string) => api.post<{ uuid: string; address: string }>(`${mailboxPath(userUuid)}/aliases`, { localPart }),
+  deleteAlias: (userUuid: string, aliasUuid: string) => api.delete(`${mailboxPath(userUuid)}/aliases/${encodeURIComponent(aliasUuid)}`),
+  setPassword: (userUuid: string, password: string) => api.post<{ sessionsRevoked: number }>(`${mailboxPath(userUuid)}/password`, { mode: 'set', password }),
+  sendResetLink: (userUuid: string, email?: string) => api.post<{ invite: MailboxLink }>(`${mailboxPath(userUuid)}/password`, { mode: 'link', email: email || undefined }),
+  resetTwoFactor: (userUuid: string) => api.post<MailboxAccount>(`${mailboxPath(userUuid)}/2fa/reset`),
+  resendInvite: (userUuid: string) => api.post<{ invite: MailboxLink }>(`${mailboxPath(userUuid)}/invite/resend`),
+  suspend: (userUuid: string) => api.post<MailboxAccount>(`${mailboxPath(userUuid)}/suspend`),
+  reactivate: (userUuid: string) => api.post<MailboxAccount>(`${mailboxPath(userUuid)}/reactivate`),
+  remove: (userUuid: string, transferIdentitiesTo?: string) =>
+    api.delete<{ removed: boolean; identitiesTransferred: number; identitiesDisabled: number }>(mailboxPath(userUuid), transferIdentitiesTo ? { transferIdentitiesTo } : {}),
 }
 
 // ============ Forwards and auto-replies ============

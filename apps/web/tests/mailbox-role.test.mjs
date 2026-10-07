@@ -66,6 +66,16 @@ test('admin-only pages are blocked for members, staff pages are not', async () =
   }
 })
 
+test('mailbox admin pages are for owners and admins only', async () => {
+  const uuid = '0d6c1c1e-8b7a-4b8e-9e2f-6a1f2b3c4d5e'
+  for (const path of [`/domains/${uuid}/mailboxes`, `/domains/${uuid}/mailboxes/${uuid}`]) {
+    assert.equal(await navigate(path, mailbox), '/received', path)
+    assert.equal(await navigate(path, member), '/received', path)
+    assert.equal(await navigate(path, admin), path, path)
+    assert.equal(await navigate(path, owner), path, path)
+  }
+})
+
 test('public and guest routes keep their behaviour', async () => {
   assert.equal(await navigate('/invite', mailbox), '/invite')
   assert.equal(await navigate('/login', null), '/login')
