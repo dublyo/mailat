@@ -17,7 +17,7 @@ ENV VITE_API_URL=${VITE_API_URL}
 RUN npm run build
 
 # Production stage
-FROM nginx:1.30.5-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
+FROM nginx:1.31.0-alpine@sha256:2f07d83bf561b506400dc183b1b2003803e39efbd22451f848adaba14d28c7c7
 
 # nginx config: the image's entrypoint renders /etc/nginx/templates/*.template
 # into /etc/nginx/conf.d at start. Only MAILAT_* variables are substituted.
