@@ -305,6 +305,59 @@ func releaseIdentities(ctx context.Context, tx *sql.Tx, previousOwner int64, ids
 	return err
 }
 
+// releaseSharedMemberships locks the removed user's shared mailboxes and
+// membership rows in ascending identity order, the order ingest takes its
+// membership locks in, so the two never deadlock. Where the user is the only
+// active reader of a linked mailbox, the org owner becomes a reader and
+// manager, so the mailbox keeps receiving instead of silently dropping mail.
+// It returns the UUIDs of the mailboxes handed over.
+func releaseSharedMemberships(ctx context.Context, tx *sql.Tx, userID, owner int64) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT sm.id,sm.uuid::text,sm.identity_id IS NOT NULL AND m.can_read FROM shared_mailboxes sm
+		JOIN shared_mailbox_members m ON m.shared_mailbox_id=sm.id WHERE m.user_id=$1
+		ORDER BY sm.identity_id NULLS LAST, sm.id FOR UPDATE OF sm, m`, userID)
+	if err != nil {
+		return nil, err
+	}
+	type mailbox struct {
+		id     int64
+		uuid   string
+		reader bool
+	}
+	var held []mailbox
+	for rows.Next() {
+		var mb mailbox
+		if err = rows.Scan(&mb.id, &mb.uuid, &mb.reader); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		held = append(held, mb)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	handedOver := []string{}
+	for _, mb := range held {
+		if !mb.reader {
+			continue
+		}
+		var others bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM shared_mailbox_members m JOIN users u ON u.id=m.user_id
+			WHERE m.shared_mailbox_id=$1 AND m.user_id<>$2 AND m.can_read AND u.status='active')`, mb.id, userID).Scan(&others); err != nil {
+			return nil, err
+		}
+		if others {
+			continue
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO shared_mailbox_members(shared_mailbox_id,user_id,can_read,can_send,can_manage) VALUES($1,$2,true,false,true)
+			ON CONFLICT (shared_mailbox_id,user_id) DO UPDATE SET can_read=true,can_manage=true`, mb.id, owner); err != nil {
+			return nil, err
+		}
+		handedOver = append(handedOver, mb.uuid)
+	}
+	return handedOver, nil
+}
+
 // RemoveMember disables a user and hands over what they held. The owner can
 // remove anyone but themselves; an admin can remove members only. Old mail keeps
 // its owner and becomes invisible, never readable by anyone else.
@@ -369,6 +422,10 @@ func (s *OrgMemberService) RemoveMember(ctx context.Context, a OrgActor, userUUI
 	}
 	// 3. Shared memberships go first, then that user's copies, so an ingest
 	// holding the membership lock finishes before its copy is deleted.
+	handedOver, err := releaseSharedMemberships(ctx, tx, id, owner)
+	if err != nil {
+		return nil, err
+	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM shared_mailbox_members WHERE user_id=$1`, id); err != nil {
 		return nil, err
 	}
@@ -422,7 +479,8 @@ func (s *OrgMemberService) RemoveMember(ctx context.Context, a OrgActor, userUUI
 		return nil, err
 	}
 	if err = auditTx(ctx, tx, a, "member_remove", "user", userUUID, "Removed member", map[string]any{
-		"transferredTo": transferTo, "identitiesTransferred": result.IdentitiesTransferred, "identitiesDisabled": result.IdentitiesDisabled}); err != nil {
+		"transferredTo": transferTo, "identitiesTransferred": result.IdentitiesTransferred, "identitiesDisabled": result.IdentitiesDisabled,
+		"sharedMailboxesHandedOver": handedOver}); err != nil {
 		return nil, err
 	}
 	return result, tx.Commit()

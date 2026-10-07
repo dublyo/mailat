@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dublyo/mailat/api/internal/config"
 	"github.com/dublyo/mailat/api/internal/model"
@@ -478,3 +479,136 @@ func TestChangeRoleAndTransferIdentity(t *testing.T) {
 }
 
 func itoa(v int64) string { return fmt.Sprint(v) }
+
+// sharedMailbox creates a shared identity and mailbox on acme.test with the
+// given members (user id -> can_read), inserted in that order.
+func (f *orgFixture) sharedMailbox(t *testing.T, email string, members [][2]any) (mailboxID, identityID int64) {
+	t.Helper()
+	if err := f.db.QueryRow(`INSERT INTO identities(user_id,domain_id,email,kind,can_send,updated_at) VALUES($1,50,$2,'shared',true,now()) RETURNING id`, f.owner.UserID, email).Scan(&identityID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.QueryRow(`INSERT INTO shared_mailboxes(org_id,name,email,identity_id,updated_at) VALUES($1,$2,$2,$3,now()) RETURNING id`, f.org, email, identityID).Scan(&mailboxID); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range members {
+		if _, err := f.db.Exec(`INSERT INTO shared_mailbox_members(shared_mailbox_id,user_id,can_read,can_send) VALUES($1,$2,$3,true)`, mailboxID, m[0], m[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return mailboxID, identityID
+}
+
+func (f *orgFixture) ingestShared(t *testing.T, sesID, rcpt string) {
+	t.Helper()
+	if _, err := f.db.Exec(`UPDATE domains SET receiving_enabled=true WHERE id=50`); err != nil {
+		t.Fatal(err)
+	}
+	storage := &fakeIncomingStorage{raw: []byte("From: Sender <sender@example.test>\r\nTo: " + rcpt + "\r\nMessage-ID: <" + sesID + "@example.test>\r\nSubject: Hello\r\n\r\nbody")}
+	svc := &ReceivingService{db: f.db, storage: storage}
+	auth := &ReceivingAuthorization{OrgID: f.org, TopicARN: "arn:aws:sns:us-east-1:123456789012:acme", Bucket: "acme-bucket", Region: "us-east-1"}
+	n := &model.SESNotification{NotificationType: "Received", Mail: model.SESMail{MessageId: sesID}, Receipt: &model.SESReceipt{Timestamp: "2026-10-07T00:00:00Z", Recipients: []string{rcpt},
+		Action: model.SESAction{Type: "S3", BucketName: auth.Bucket, ObjectKey: "incoming/acme.test/" + sesID}}}
+	if err := svc.ProcessIncomingEmail(context.Background(), auth, n); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRemoveSoleSharedReaderKeepsMailboxReceiving(t *testing.T) {
+	f := newOrgFixture(t)
+	ctx := context.Background()
+	m := f.member.UserID
+	var disabled int64
+	if err := f.db.QueryRow(`INSERT INTO users(org_id,email,password_hash,role,status,updated_at) VALUES($1,'gone@acme.test','unused','member','disabled',now()) RETURNING id`, f.org).Scan(&disabled); err != nil {
+		t.Fatal(err)
+	}
+	// The member is the only active reader of support@ (a disabled reader does
+	// not count); sales@ has another reader; send-only membership on ops@.
+	support, _ := f.sharedMailbox(t, "support@acme.test", [][2]any{{m, true}, {disabled, true}})
+	sales, _ := f.sharedMailbox(t, "sales@acme.test", [][2]any{{m, true}, {f.admin.UserID, true}})
+	ops, _ := f.sharedMailbox(t, "ops@acme.test", [][2]any{{m, false}, {f.admin.UserID, true}})
+
+	if _, err := f.svc.RemoveMember(ctx, f.admin, f.memberUUID, ""); err != nil {
+		t.Fatal(err)
+	}
+	var read, send, manage bool
+	if err := f.db.QueryRow(`SELECT can_read,can_send,can_manage FROM shared_mailbox_members WHERE shared_mailbox_id=$1 AND user_id=$2`, support, f.owner.UserID).Scan(&read, &send, &manage); err != nil {
+		t.Fatal("support@ was left without a reader:", err)
+	}
+	if !read || send || !manage {
+		t.Fatal("owner membership", read, send, manage)
+	}
+	for _, mb := range []int64{sales, ops} {
+		if n := f.count(t, `SELECT count(*) FROM shared_mailbox_members WHERE shared_mailbox_id=$1 AND user_id=$2`, mb, f.owner.UserID); n != 0 {
+			t.Fatalf("owner added to mailbox %d that still had a reader", mb)
+		}
+	}
+	if n := f.count(t, `SELECT count(*) FROM audit_logs WHERE action='member_remove' AND resource_id=$1 AND new_values::text LIKE '%sharedMailboxesHandedOver%'`, f.memberUUID); n != 1 {
+		t.Fatal("handover not audited")
+	}
+
+	// Mail to support@ is still stored for a reader instead of being dropped.
+	f.ingestShared(t, "after-removal", "support@acme.test")
+	if n := f.count(t, `SELECT count(*) FROM received_emails WHERE ses_message_id='after-removal' AND mailbox_owner_id=$1`, f.owner.UserID); n != 1 {
+		t.Fatalf("mail to support@ after removal stored %d copies for the owner", n)
+	}
+}
+
+// Ingest locks membership rows in ascending identity order; removal must take
+// them in the same order, or the two deadlock.
+func TestRemoveMemberLocksSharedMembershipsInIngestOrder(t *testing.T) {
+	f := newOrgFixture(t)
+	ctx := context.Background()
+	m := f.member.UserID
+	// Mailbox A has the lower identity id, so ingest locks it first, but B's
+	// membership row is written first, so heap order puts it before A's.
+	mbA, identityA := f.sharedMailbox(t, "a@acme.test", nil)
+	mbB, identityB := f.sharedMailbox(t, "b@acme.test", nil)
+	if identityA >= identityB {
+		t.Fatal("identity ids out of order")
+	}
+	for _, mb := range []int64{mbB, mbA} {
+		if _, err := f.db.Exec(`INSERT INTO shared_mailbox_members(shared_mailbox_id,user_id,can_read,can_send) VALUES($1,$2,true,true),($1,$3,true,false)`, mb, m, f.admin.UserID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lockMembers := func(tx *sql.Tx, identity int64) error {
+		_, err := tx.Exec(`SELECT m.user_id FROM shared_mailbox_members m JOIN shared_mailboxes sm ON sm.id=m.shared_mailbox_id
+			WHERE sm.identity_id=$1 AND m.can_read ORDER BY m.user_id FOR SHARE OF m`, identity)
+		return err
+	}
+	ingest, err := f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingest.Rollback()
+	if _, err = ingest.Exec(`SET LOCAL lock_timeout='5s'`); err != nil {
+		t.Fatal(err)
+	}
+	if err = lockMembers(ingest, identityA); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.svc.RemoveMember(ctx, f.admin, f.memberUUID, "")
+		done <- err
+	}()
+	// Wait until the removal blocks on the first mailbox.
+	for i := 0; ; i++ {
+		if f.count(t, `SELECT count(*) FROM pg_locks WHERE NOT granted`) > 0 {
+			break
+		}
+		if i > 500 {
+			t.Fatal("removal never waited for the ingest lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err = lockMembers(ingest, identityB); err != nil {
+		t.Fatal("ingest could not lock the second mailbox:", err)
+	}
+	if err = ingest.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-done; err != nil {
+		t.Fatal("removal:", err)
+	}
+}
