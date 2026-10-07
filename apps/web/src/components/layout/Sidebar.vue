@@ -8,25 +8,31 @@ import {
 } from 'lucide-vue-next'
 import { useReceivedInboxStore } from '@/stores/receivedInbox'
 import { useDomainsStore } from '@/stores/domains'
+import { useAuthStore } from '@/stores/auth'
+import { visibleFor, type Audience } from '@/lib/roles'
 
 const route = useRoute()
 const router = useRouter()
 const receivedInboxStore = useReceivedInboxStore()
 const domainsStore = useDomainsStore()
+const authStore = useAuthStore()
 // Shared mailboxes the user reads; each opens the inbox filtered to it.
 const sharedIdentities = computed(() => domainsStore.identities.filter(i => i.shared && i.canRead !== false))
 const isSharedActive = (id: string | number) => ['/received', '/inbox'].includes(route.path) && String(route.query.identity || '') === String(id)
 onMounted(() => { if (!domainsStore.identities.length) void domainsStore.fetchIdentities() })
 
-const mainNavItems = [
-  { id: 'inbox', label: 'Inbox', icon: Inbox, route: '/received', folder: 'inbox' },
-  { id: 'dmarc-reports', label: 'DMARC Reports', icon: FileText, route: '/received?folder=dmarc-reports', folder: 'dmarc-reports' },
-  { id: 'all', label: 'All Mail', icon: Mail, route: '/received?folder=all', folder: 'all' },
-  { id: 'starred', label: 'Starred', icon: Star, route: '/received?folder=starred', folder: 'starred' },
-  { id: 'sent', label: 'Sent', icon: Send, route: '/received?folder=sent', folder: 'sent' },
-  { id: 'drafts', label: 'Drafts', icon: FileText, route: '/received?folder=drafts', folder: 'drafts' },
-  { id: 'outbox', label: 'Outbox', icon: Send, route: '/received?folder=outbox', folder: 'outbox' },
+type NavItem = { id: string; label: string; icon: typeof Inbox; route: string; folder?: string; audience?: Audience }
+
+const allMainNavItems: NavItem[] = [
+  { id: 'inbox', label: 'Inbox', icon: Inbox, route: '/received', folder: 'inbox', audience: 'all' },
+  { id: 'dmarc-reports', label: 'DMARC Reports', icon: FileText, route: '/received?folder=dmarc-reports', folder: 'dmarc-reports', audience: 'staff' },
+  { id: 'all', label: 'All Mail', icon: Mail, route: '/received?folder=all', folder: 'all', audience: 'all' },
+  { id: 'starred', label: 'Starred', icon: Star, route: '/received?folder=starred', folder: 'starred', audience: 'all' },
+  { id: 'sent', label: 'Sent', icon: Send, route: '/received?folder=sent', folder: 'sent', audience: 'all' },
+  { id: 'drafts', label: 'Drafts', icon: FileText, route: '/received?folder=drafts', folder: 'drafts', audience: 'all' },
+  { id: 'outbox', label: 'Outbox', icon: Send, route: '/received?folder=outbox', folder: 'outbox', audience: 'all' },
 ]
+const mainNavItems = computed(() => visibleFor(allMainNavItems, authStore.user))
 
 const moreNavItems = [
   { id: 'archive', label: 'Archive', icon: Archive, route: '/received?folder=archive', folder: 'archive' },
@@ -34,15 +40,17 @@ const moreNavItems = [
   { id: 'trash', label: 'Trash', icon: Trash2, route: '/received?folder=trash', folder: 'trash' },
 ]
 
-const appNavItems = [
-  { id: 'campaigns', label: 'Campaigns', icon: Mail, route: '/campaigns' },
-  { id: 'automations', label: 'Automations', icon: Zap, route: '/automations' },
-  { id: 'contacts', label: 'Contacts', icon: Users, route: '/contacts' },
-  { id: 'forms', label: 'Signup forms', icon: FileText, route: '/forms' },
-  { id: 'domains', label: 'Domains', icon: Globe, route: '/domains' },
-  { id: 'health', label: 'Health', icon: Activity, route: '/health' },
-  { id: 'api', label: 'API', icon: BarChart3, route: '/api-docs' },
+// Mailbox users see mail only; Health is org-wide and admin-only.
+const allAppNavItems: NavItem[] = [
+  { id: 'campaigns', label: 'Campaigns', icon: Mail, route: '/campaigns', audience: 'staff' },
+  { id: 'automations', label: 'Automations', icon: Zap, route: '/automations', audience: 'staff' },
+  { id: 'contacts', label: 'Contacts', icon: Users, route: '/contacts', audience: 'staff' },
+  { id: 'forms', label: 'Signup forms', icon: FileText, route: '/forms', audience: 'staff' },
+  { id: 'domains', label: 'Domains', icon: Globe, route: '/domains', audience: 'staff' },
+  { id: 'health', label: 'Health', icon: Activity, route: '/health', audience: 'admin' },
+  { id: 'api', label: 'API', icon: BarChart3, route: '/api-docs', audience: 'staff' },
 ]
+const appNavItems = computed(() => visibleFor(allAppNavItems, authStore.user))
 
 const isActive = (itemRoute: string, folder?: string) => {
   // For received inbox, check both path and folder query param
@@ -150,10 +158,10 @@ const emit = defineEmits<{
       </template>
 
       <!-- Divider -->
-      <div class="my-4 border-t border-gmail-border" />
+      <div v-if="appNavItems.length" class="my-4 border-t border-gmail-border" />
 
       <!-- App navigation -->
-      <ul class="space-y-0.5">
+      <ul v-if="appNavItems.length" class="space-y-0.5">
         <li v-for="item in appNavItems" :key="item.id">
           <button
             @click="navigateTo(item)"

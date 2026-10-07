@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { deniedRedirect } from '@/lib/roles'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -32,13 +33,13 @@ const router = createRouter({
       path: '/inbox',
       name: 'inbox',
       component: () => import('@/views/ReceivedInbox.vue'),
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, mailbox: true }
     },
     {
       path: '/inbox/:folder',
       name: 'inbox-folder',
       component: () => import('@/views/ReceivedInbox.vue'),
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, mailbox: true }
     },
     {
       path: '/jmap-inbox',
@@ -50,13 +51,13 @@ const router = createRouter({
       path: '/received',
       name: 'received-inbox',
       component: () => import('@/views/ReceivedInbox.vue'),
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, mailbox: true }
     },
     {
       path: '/received/:folder',
       name: 'received-inbox-folder',
       component: () => import('@/views/ReceivedInbox.vue'),
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, mailbox: true }
     },
     {
       path: '/campaigns',
@@ -104,13 +105,13 @@ const router = createRouter({
       path: '/health',
       name: 'health',
       component: () => import('@/views/Health.vue'),
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, admin: true }
     },
     {
       path: '/settings',
       name: 'settings',
       component: () => import('@/views/Settings.vue'),
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, mailbox: true }
     },
     {
       path: '/api-docs',
@@ -143,7 +144,11 @@ router.beforeEach(async (to, _from, next) => {
   } else if (isGuestRoute && authStore.isAuthenticated) {
     next({ name: 'inbox' })
   } else {
-    next()
+    // Fail-closed: mailbox users open only pages marked `mailbox`; `admin`
+    // pages need an owner or admin. This also covers a login ?redirect=.
+    const denied = requiresAuth ? deniedRedirect(to.meta, authStore.user) : null
+    if (denied && denied !== to.path) next(denied)
+    else next()
   }
 })
 

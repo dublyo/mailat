@@ -12,10 +12,13 @@ import TeamSettings from '@/components/settings/TeamSettings.vue'
 import SharedMailboxesSettings from '@/components/settings/SharedMailboxesSettings.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
-import { webhookApi, oauthApi, isOrgAdmin, type OAuthConnection, type TwoFactorSetup, type Webhook as WebhookType, type WebhookDelivery, type WebhookAttempt } from '@/lib/api'
+import { useDomainsStore } from '@/stores/domains'
+import { settingsTabVisible } from '@/lib/roles'
+import { webhookApi, oauthApi, isStaff, type OAuthConnection, type TwoFactorSetup, type Webhook as WebhookType, type WebhookDelivery, type WebhookAttempt } from '@/lib/api'
 
 const authStore = useAuthStore()
 const settingsStore = useSettingsStore()
+const domainsStore = useDomainsStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -38,7 +41,7 @@ function formatDate(dateStr: string): string {
 
 type SettingsTab = 'general' | 'security' | 'notifications' | 'appearance' | 'filters' | 'vacation' | 'shared' | 'team' | 'integrations'
 
-const allTabs: { id: SettingsTab; label: string; icon: typeof User; adminOnly?: boolean }[] = [
+const allTabs: { id: SettingsTab; label: string; icon: typeof User }[] = [
   { id: 'general', label: 'General', icon: User },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -46,11 +49,12 @@ const allTabs: { id: SettingsTab; label: string; icon: typeof User; adminOnly?: 
   { id: 'filters', label: 'Filters & Rules', icon: Filter },
   { id: 'vacation', label: 'Vacation & forwarding', icon: Plane },
   { id: 'shared', label: 'Shared mailboxes', icon: Inbox },
-  { id: 'team', label: 'Team', icon: Users, adminOnly: true },
+  { id: 'team', label: 'Team', icon: Users },
   { id: 'integrations', label: 'Integrations', icon: Webhook },
 ]
-// The server enforces roles; hiding Team only avoids showing a 403.
-const tabs = computed(() => allTabs.filter(tab => !tab.adminOnly || isOrgAdmin(authStore.user)))
+// The server enforces roles; hiding tabs only avoids showing a 403.
+const hasSharedMemberships = computed(() => domainsStore.identities.some(i => i.shared))
+const tabs = computed(() => allTabs.filter(tab => settingsTabVisible(tab.id, authStore.user, hasSharedMemberships.value)))
 const requestedTab = route.query.tab as SettingsTab
 const activeTab = ref<SettingsTab>(tabs.value.some(tab => tab.id === requestedTab) ? requestedTab : 'general')
 
@@ -273,6 +277,8 @@ onMounted(async () => {
   settingsStore.fetchSessions()
   settingsStore.fetch2FAStatus()
   settingsStore.fetchTrustedSenders()
+  // Webhooks and sign-in providers are not available to mailbox users.
+  if (!isStaff(authStore.user)) return
   fetchWebhooks()
   fetchDeliveries()
   const ticket = route.query.oauthLink

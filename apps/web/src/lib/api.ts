@@ -109,9 +109,9 @@ export interface User {
   createdAt: string
 }
 
-export type UserRole = 'owner' | 'admin' | 'member'
-
-export const isOrgAdmin = (user: Pick<User, 'role'> | null | undefined) => user?.role === 'owner' || user?.role === 'admin'
+import type { UserRole } from './roles'
+export type { UserRole } from './roles'
+export { isOrgAdmin, isMailboxUser, isStaff } from './roles'
 
 export interface Email {
   id: string

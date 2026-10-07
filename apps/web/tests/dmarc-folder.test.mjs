@@ -21,6 +21,7 @@ for (const [name, file] of Object.entries({ sidebar: 'components/layout/Sidebar.
     stdin: { contents: compiled.content, resolveDir: webRoot, loader: 'ts' },
     bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external',
     plugins: [{ name: 'folder-ui-fixture', setup(builder) {
+      builder.onResolve({ filter: /^@\/lib\/roles$/ }, () => ({ path: `${webRoot}/src/lib/roles.ts` }))
       builder.onResolve({ filter: /^(@\/|vue-router$|lucide-vue-next$)/ }, args => ({ path: args.path, namespace: 'fixture' }))
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ loader: 'js', contents:
         args.path === 'lucide-vue-next' ? icons.map(name => `export const ${name} = () => null`).join(';') :
@@ -29,6 +30,7 @@ for (const [name, file] of Object.entries({ sidebar: 'components/layout/Sidebar.
         args.path.endsWith('/receivedInbox') ? 'export const useReceivedInboxStore = () => globalThis.__folderFixture.mailbox' :
         args.path.endsWith('/inbox') ? 'export const useInboxStore = () => globalThis.__folderFixture.composer' :
         args.path.endsWith('/domains') ? 'export const useDomainsStore = () => globalThis.__folderFixture.domains' :
+        args.path.endsWith('/auth') ? "export const useAuthStore = () => globalThis.__folderFixture.auth ?? { user: { role: 'owner' } }" :
         args.path.endsWith('/compose') ? 'export const escapeHtml = value => value' :
         args.path.endsWith('/settings') ? 'export const useSettingsStore = () => globalThis.__folderFixture.settings' :
         args.path.endsWith('/mailHtml') ? 'export const renderMessageDocument = html => ({ doc: html, remoteCount: 0 })' :
