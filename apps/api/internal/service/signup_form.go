@@ -275,6 +275,15 @@ func signupDigest(raw string) string {
 	h := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(h[:])
 }
+// signupFormRateKey keys the per-form limit on the canonical lowercase UUID.
+// PostgreSQL matches uuid columns in any case or brace form, so keying on the
+// raw path value would give each spelling of one form its own budget.
+func signupFormRateKey(id string) string {
+	if parsed, err := uuid.Parse(id); err == nil {
+		id = parsed.String()
+	}
+	return "form:" + id
+}
 func (s *SignupFormService) rate(ctx context.Context, key string, limit int) error {
 	// Database windows, not in-memory counters, apply equally on all API replicas.
 	m := hmac.New(sha256.New, []byte(s.cfg.JWTSecret))
@@ -372,7 +381,7 @@ func (s *SignupFormService) Submit(ctx context.Context, id, ip, ua string, r *mo
 	if err = s.rate(ctx, fmt.Sprintf("email:%d:%s", f.OrgID, email), 3); err != nil {
 		return nil, err
 	}
-	if err = s.rate(ctx, "form:"+id, 1000); err != nil {
+	if err = s.rate(ctx, signupFormRateKey(id), 1000); err != nil {
 		return nil, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
