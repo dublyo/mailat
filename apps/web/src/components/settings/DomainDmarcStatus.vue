@@ -32,6 +32,19 @@ const label = computed(() => {
     default: return 'Could not check DMARC'
   }
 })
+// Mailat never writes rua=, so the default policy (and many existing ones) send
+// no aggregate reports. Shown only for a successful check, never for errors.
+const needsReportingNote = computed(() => {
+  if (isChecking.value || error.value || !status.value) return false
+  const hasRua = (value: string) => /(^|;)\s*rua\s*=/i.test(value)
+  // A provider-confirmed policy awaiting DNS propagation is judged by its own value.
+  if (pendingConfirmation.value && providerPolicy.value) return !hasRua(providerPolicy.value.value)
+  if (status.value.status === 'absent') return true
+  if (status.value.status !== 'existing' && status.value.status !== 'inherited') return false
+  return !hasRua(status.value.value || '')
+})
+const defaultPolicyTag = 'p=quarantine'
+const ruaExample = 'rua=mailto:<address that delivers to Mailat>'
 const checkedAt = computed(() => {
   const date = new Date(status.value?.checkedAt || '')
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleString()
@@ -112,6 +125,9 @@ onBeforeUnmount(() => {
       </div>
       <p v-if="status.status === 'existing' || status.status === 'inherited'" class="mt-3 text-xs text-gray-600">Mailat keeps this policy and its reporting settings unchanged. All sending providers share this policy; no second record is needed.</p>
       <p v-if="!pendingConfirmation && (status.status === 'conflict' || status.status === 'unknown' || (status.status === 'absent' && !status.canCreate))" class="mt-3 text-xs text-amber-700">Automatic creation is paused. Review the existing DNS settings or refresh after the lookup issue is resolved.</p>
+      <div v-if="needsReportingNote" data-testid="dmarc-rua-note" class="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+        <p class="text-xs text-gray-600"><span class="font-medium text-gray-700">DMARC reports:</span> the default policy Mailat adds (<code class="font-mono">{{ defaultPolicyTag }}</code>) has no reporting address, so no aggregate reports are sent. To see reports in <strong class="font-medium">DMARC Reports</strong>, enable receiving on a Mailat domain and add <code class="break-all font-mono">{{ ruaExample }}</code> to your DMARC record. A rua on a different domain also needs an authorization record at that domain.</p>
+      </div>
       <p v-if="checkedAt" class="mt-3 text-xs text-gray-500">Checked {{ checkedAt }}</p>
     </template>
     <div v-if="pendingConfirmation && providerPolicy" class="mt-3 rounded-lg bg-blue-50 p-3">

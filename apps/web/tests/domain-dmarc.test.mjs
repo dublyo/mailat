@@ -174,3 +174,58 @@ test('account changes cannot expose the previous account lookup result', async t
   assert.doesNotMatch(text(f.root), /private-old-policy/)
   assert.equal(f.copyButtons().length, 0)
 })
+
+// The rua note explains why DMARC Reports stays empty; it never offers a write.
+const ruaNote = f => all(f.root).some(n => n.props['data-testid'] === 'dmarc-rua-note')
+
+test('rua note: shown when no policy applies', async t => {
+  const f = fixture(t)
+  assert.equal(ruaNote(f), false)
+  f.calls[0].resolve(status()); await flush()
+  assert.equal(ruaNote(f), true)
+  assert.match(text(f.root), /no reporting address, so no aggregate reports are sent/)
+  assert.match(text(f.root), /rua=mailto:<address that delivers to Mailat>/)
+  assert.match(text(f.root), /authorization record at that domain/)
+  assert.equal(f.calls.length, 1)
+})
+
+test('rua note: shown for an existing or inherited policy without rua=', async t => {
+  const f = fixture(t)
+  f.calls[0].resolve(status({ status: 'existing', canCreate: false, verified: true, value: 'v=DMARC1; p=quarantine;', policy: 'quarantine' })); await flush()
+  assert.equal(ruaNote(f), true)
+  const refresh = f.refresh()
+  f.calls[1].resolve(status({ status: 'inherited', policyHostname: '_dmarc.parent.test', canCreate: false, verified: true, value: 'v=DMARC1; p=reject; ruf=mailto:forensic@parent.test', policy: 'reject' }))
+  await refresh; await flush()
+  assert.equal(ruaNote(f), true)
+})
+
+test('rua note: hidden when the policy already has rua=', async t => {
+  const f = fixture(t)
+  f.calls[0].resolve(status({ status: 'existing', canCreate: false, verified: true, value: 'v=DMARC1; p=none; RUA=mailto:reports@example.test', policy: 'none' })); await flush()
+  assert.equal(ruaNote(f), false)
+  const refresh = f.refresh()
+  f.calls[1].resolve(status({ status: 'inherited', policyHostname: '_dmarc.parent.test', canCreate: false, verified: true, value: 'v=DMARC1;p=reject;rua=mailto:d@parent.test', policy: 'reject' }))
+  await refresh; await flush()
+  assert.equal(ruaNote(f), false)
+})
+
+test('rua note: hidden for conflict, unknown, failed and in-progress checks', async t => {
+  const f = fixture(t)
+  f.calls[0].resolve(status({ status: 'conflict', reason: 'Multiple DMARC policies found.' })); await flush()
+  assert.equal(ruaNote(f), false)
+  let refresh = f.refresh(); await flush()
+  assert.equal(ruaNote(f), false)
+  f.calls[1].resolve(status({ status: 'unknown', reason: 'DNS lookup timed out.' })); await refresh; await flush()
+  assert.equal(ruaNote(f), false)
+  refresh = f.refresh()
+  f.calls[2].reject(new Error('DNS resolver unavailable')); await refresh; await flush()
+  assert.equal(ruaNote(f), false)
+})
+
+test('rua note: a provider-confirmed policy awaiting DNS is judged by its own value', async t => {
+  const f = fixture(t)
+  f.props.value = { ...f.props.value, knownConfigured: status({ status: 'existing', canCreate: false, policyHostname: '_dmarc.example.test', value: 'v=DMARC1; p=none; rua=mailto:r@example.test', policy: 'none' }) }
+  f.calls[0].resolve(status()); await flush()
+  assert.match(text(f.root), /awaiting DNS confirmation/)
+  assert.equal(ruaNote(f), false)
+})
