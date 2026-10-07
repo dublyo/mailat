@@ -937,8 +937,9 @@ func (s *OrgMemberService) LookupInvite(ctx context.Context, token string) (*Inv
 	return &InviteLookup{OrgName: r.orgName, Email: r.email, Role: r.role, InviterName: r.owner, ExpiresAt: r.expires}, nil
 }
 
-// AcceptInvite creates the invited user (or reactivates a removed one with all
-// previous credentials and second factors cleared) and signs them in.
+// AcceptInvite creates the invited user and signs them in. A removed user of
+// the org with the same address stays removed, under a placeholder address,
+// so the new account never inherits their mailbox.
 func (s *OrgMemberService) AcceptInvite(ctx context.Context, req *AcceptInviteRequest, ip string) (*model.AuthResponse, error) {
 	name := strings.TrimSpace(req.Name)
 	if n := utf8.RuneCountInString(name); n < 2 || n > 255 || strings.ContainsAny(name, "\r\n") {
@@ -976,27 +977,23 @@ func (s *OrgMemberService) AcceptInvite(ctx context.Context, req *AcceptInviteRe
 	err = tx.QueryRowContext(ctx, `SELECT id,org_id,status FROM users WHERE email=$1 FOR UPDATE`, inv.email).Scan(&userID, &userOrg, &status)
 	switch {
 	case err == sql.ErrNoRows:
-		err = tx.QueryRowContext(ctx, `INSERT INTO users(org_id,email,password_hash,name,role,status,email_verified,email_verified_at,updated_at)
-			VALUES($1,$2,$3,$4,$5,'active',true,now(),now()) RETURNING id`, inv.orgID, inv.email, string(hash), name, inv.role).Scan(&userID)
-		if err != nil {
-			return nil, err
-		}
 	case err != nil:
 		return nil, err
 	case userOrg != inv.orgID || status == "active":
 		return nil, ErrInviteInvalid
 	default:
-		// A removed user returns with nothing from their previous credentials.
-		if _, err = tx.ExecContext(ctx, `UPDATE users SET password_hash=$2,name=$3,role=$4,status='active',removed_at=NULL,auth_version=auth_version+1,
-			totp_enabled=false,totp_secret=NULL,totp_verified_at=NULL,totp_last_step=NULL,backup_codes=ARRAY[]::text[],email_verified=true,email_verified_at=COALESCE(email_verified_at,now()),updated_at=now() WHERE id=$1`,
-			userID, string(hash), name, inv.role); err != nil {
+		// A login address is often reassigned to someone new, so the removed
+		// account never comes back: it keeps its retained mail, identities and
+		// history under a placeholder address, readable by no one, and the
+		// invite creates a fresh account.
+		if _, err = tx.ExecContext(ctx, `UPDATE users SET email='removed+'||uuid::text||'@invalid',updated_at=now() WHERE id=$1`, userID); err != nil {
 			return nil, err
 		}
-		for _, q := range []string{`DELETE FROM webauthn_credentials WHERE user_id=$1`, `DELETE FROM oauth_connections WHERE user_id=$1`, `UPDATE user_sessions SET active=false,revoked_at=now() WHERE user_id=$1 AND active`} {
-			if _, err = tx.ExecContext(ctx, q, userID); err != nil {
-				return nil, err
-			}
-		}
+	}
+	err = tx.QueryRowContext(ctx, `INSERT INTO users(org_id,email,password_hash,name,role,status,email_verified,email_verified_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,'active',true,now(),now()) RETURNING id`, inv.orgID, inv.email, string(hash), name, inv.role).Scan(&userID)
+	if err != nil {
+		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE org_invites SET accepted_at=now(),accepted_user_id=$2 WHERE id=$1`, inv.id, userID); err != nil {
 		return nil, err

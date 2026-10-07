@@ -411,21 +411,49 @@ func TestRemoveWithoutTransferDisablesIdentitiesAndReinviteResets(t *testing.T) 
 	if _, err = f.svc.CreateInvite(ctx, f.owner, &CreateInviteRequest{Email: "member@acme.test", Role: "admin"}); err != nil {
 		t.Fatal("removed user cannot be re-invited:", err)
 	}
+	// The removed account keeps mail no one may read.
+	if _, err = f.db.Exec(`INSERT INTO received_emails(org_id,domain_id,identity_id,message_id,from_email,subject,ses_message_id,updated_at)
+		SELECT $1,50,id,'old','a@sender.test','Old mail','ses-old',now() FROM identities WHERE email='m1@acme.test'`, f.org); err != nil {
+		t.Fatal(err)
+	}
 	back, err := f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: f.lastToken(t), Name: "Returning", Password: "brand-new-password"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if back.User.ID != m || back.User.Role != "admin" || back.User.Status != "active" {
+	// Whoever accepts gets a fresh account, never the removed one and its mailbox.
+	if back.User.ID == m || back.User.Email != "member@acme.test" || back.User.Role != "admin" || back.User.Status != "active" {
 		t.Fatalf("%+v", back.User)
 	}
-	var totp bool
-	var version int64
-	var codes int
-	if err = f.db.QueryRow(`SELECT totp_enabled,auth_version,cardinality(backup_codes) FROM users WHERE id=$1`, m).Scan(&totp, &version, &codes); err != nil || totp || version != 2 || codes != 0 {
-		t.Fatal("credentials not reset:", totp, version, codes, err)
+	var oldEmail, oldStatus string
+	if err = f.db.QueryRow(`SELECT email,status FROM users WHERE id=$1`, m).Scan(&oldEmail, &oldStatus); err != nil || oldStatus != "disabled" || !strings.HasPrefix(oldEmail, "removed+") || !strings.HasSuffix(oldEmail, "@invalid") {
+		t.Fatal("removed account changed:", oldEmail, oldStatus, err)
 	}
-	if n := f.count(t, `SELECT count(*) FROM webauthn_credentials WHERE user_id=$1`, m); n != 0 {
-		t.Fatal("security keys survived a re-invite")
+	if got := listSubjects(t, &InboxService{db: f.db}, back.User.ID); len(got) != 0 {
+		t.Fatalf("new account sees the removed account's mail: %v", got)
+	}
+	if n := f.count(t, `SELECT count(*) FROM received_emails WHERE mailbox_owner_id=$1`, m); n != 1 {
+		t.Fatal("retained mail lost", n)
+	}
+	if n := f.count(t, `SELECT count(*) FROM identities WHERE user_id=$1`, back.User.ID); n != 0 {
+		t.Fatal("new account inherited identities", n)
+	}
+	var totp bool
+	var codes int
+	if err = f.db.QueryRow(`SELECT totp_enabled,cardinality(COALESCE(backup_codes,'{}')) FROM users WHERE id=$1`, back.User.ID).Scan(&totp, &codes); err != nil || totp || codes != 0 {
+		t.Fatal("new account has second factors:", totp, codes, err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM webauthn_credentials WHERE user_id=$1`, back.User.ID); n != 0 {
+		t.Fatal("security keys carried over")
+	}
+	// The address can be removed and invited again.
+	if _, err = f.svc.RemoveMember(ctx, f.owner, back.User.UUID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.svc.CreateInvite(ctx, f.owner, &CreateInviteRequest{Email: "member@acme.test", Role: "member"}); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: f.lastToken(t), Name: "Third", Password: "another-new-password"}, ""); err != nil || again.User.ID == back.User.ID {
+		t.Fatal(again, err)
 	}
 }
 
