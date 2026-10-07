@@ -289,6 +289,10 @@ func (s *SessionService) ChangePassword(ctx context.Context, userID int64, curre
 	if _, err = tx.ExecContext(ctx, `DELETE FROM auth_challenges WHERE user_id=$1`, userID); err != nil {
 		return fmt.Errorf("unable to revoke verification challenges")
 	}
+	// An admin-sent reset link is pointless once the user chose a password.
+	if _, err = tx.ExecContext(ctx, `UPDATE org_invites SET revoked_at=now() WHERE user_id=$1 AND purpose='password_reset' AND accepted_at IS NULL AND revoked_at IS NULL`, userID); err != nil {
+		return fmt.Errorf("unable to revoke reset links")
+	}
 	return tx.Commit()
 }
 

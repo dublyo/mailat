@@ -374,7 +374,7 @@ func TestRemoveMemberHandsOverEverything(t *testing.T) {
 	}
 	_, err = f.svc.RemoveMember(ctx, f.admin, f.memberUUID, "")
 	wantStatus(t, err, http.StatusNotFound)
-	members, err := f.svc.ListMembers(ctx, f.org)
+	members, err := f.svc.ListMembers(ctx, f.org, false)
 	if err != nil || len(members) != 3 || members[0].Role != "owner" || members[2].Status != "disabled" {
 		t.Fatalf("%+v %v", members, err)
 	}

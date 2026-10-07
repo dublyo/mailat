@@ -63,13 +63,14 @@ func decodeBody(r *ghttp.Request, v any) bool {
 }
 
 // ListMembers lists the organization's users, including removed (disabled) ones.
+// Mailbox users are included only with ?includeMailboxes=true.
 // GET /api/v1/org/members
 func (c *OrgController) ListMembers(r *ghttp.Request) {
 	a, ok := orgActor(r)
 	if !ok {
 		return
 	}
-	members, err := c.orgService.ListMembers(r.Context(), a.OrgID)
+	members, err := c.orgService.ListMembers(r.Context(), a.OrgID, r.Get("includeMailboxes").Bool())
 	if err != nil {
 		writeOrgError(r, err)
 		return
@@ -226,8 +227,9 @@ func (c *OrgController) TransferIdentity(r *ghttp.Request) {
 	response.Success(r, identity)
 }
 
-// LookupInvite shows the organization, email and role behind an invite token.
-// Every unusable token gets the same 404. Limited per client IP.
+// LookupInvite shows the organization, email, role and purpose behind an
+// invite token (plus the name for a mailbox setup link). Every unusable token
+// gets the same 404. Limited per client IP.
 // POST /api/v1/auth/invites/lookup
 func (c *OrgController) LookupInvite(r *ghttp.Request) {
 	if rateLimited(r, c.limiter, service.RuleInviteLookupIP, middleware.ClientIP(r)) {
@@ -246,9 +248,11 @@ func (c *OrgController) LookupInvite(r *ghttp.Request) {
 	response.Success(r, invite)
 }
 
-// AcceptInvite creates the invited account (name 2-255 characters, password
-// 8-72 bytes) and signs it in. Every unusable token gets the same 400; 409
-// when the organization has no free seat. Limited per client IP.
+// AcceptInvite completes an invite, mailbox setup or password-reset link
+// (password 8-72 bytes; name 2-255 characters unless the link resets a
+// password) and signs the user in, or answers signedIn:false when the account
+// has a second factor. Every unusable token gets the same 400; 409 when the
+// organization has no free seat. Limited per client IP.
 // POST /api/v1/auth/invites/accept
 func (c *OrgController) AcceptInvite(r *ghttp.Request) {
 	if rateLimited(r, c.limiter, service.RuleInviteAcceptIP, middleware.ClientIP(r)) {

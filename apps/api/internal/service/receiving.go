@@ -260,12 +260,16 @@ func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *Recei
 		var ident recipientIdentity
 		// A shared identity's user_id is only its steward, whose status never
 		// stops delivery; shared identities are never catch-alls (CHECK).
+		// Order: exact identity, the base identity of local+tag, the owner of a
+		// send-as alias, then the catch-all.
 		err = s.db.QueryRowContext(ctx, `SELECT i.id,i.domain_id,d.org_id,i.user_id,i.kind,i.email,d.name
    FROM identities i JOIN domains d ON d.id=i.domain_id JOIN users u ON u.id=i.user_id
    WHERE d.org_id=$1 AND d.name=$2 AND d.status='active' AND d.receiving_enabled=true AND i.can_receive=true
-   AND (i.kind='shared' OR (i.kind='personal' AND u.status='active'))
-   AND (lower(i.email)=$3 OR i.is_catch_all=true)
-   ORDER BY (lower(i.email)=$3) DESC,i.id LIMIT 1`, auth.OrgID, domain, address).Scan(&ident.ID, &ident.DomainID, &ident.OrgID, &ident.UserID, &ident.Kind, &ident.Email, &ident.Domain)
+   AND (i.kind='shared' OR (i.kind='personal' AND `+deliverableOwnerSQL+`))
+   AND (lower(i.email)=$3 OR lower(i.email)=$4 OR i.is_catch_all=true
+     OR EXISTS(SELECT 1 FROM identity_send_aliases a WHERE a.identity_id=i.id AND a.address=$3))
+   ORDER BY CASE WHEN lower(i.email)=$3 THEN 0 WHEN lower(i.email)=$4 THEN 1 WHEN NOT i.is_catch_all THEN 2 ELSE 3 END,i.id LIMIT 1`,
+			auth.OrgID, domain, address, plusBaseAddress(address)).Scan(&ident.ID, &ident.DomainID, &ident.OrgID, &ident.UserID, &ident.Kind, &ident.Email, &ident.Domain)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -488,7 +492,7 @@ func mailboxOwners(ctx context.Context, tx *sql.Tx, ident *recipientIdentity) ([
 	if ident.Kind != "shared" {
 		var owner int64
 		err := tx.QueryRowContext(ctx, `SELECT i.user_id FROM identities i JOIN users u ON u.id=i.user_id
-   WHERE i.id=$1 AND i.kind='personal' AND i.can_receive AND u.status='active' FOR SHARE OF i`, ident.ID).Scan(&owner)
+   WHERE i.id=$1 AND i.kind='personal' AND i.can_receive AND `+deliverableOwnerSQL+` FOR SHARE OF i`, ident.ID).Scan(&owner)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errIngestRouteChanged
 		}
@@ -516,6 +520,21 @@ func mailboxOwners(ctx context.Context, tx *sql.Tx, ident *recipientIdentity) ([
 	}
 	return owners, rows.Err()
 }
+
+// deliverableOwnerSQL (alias u) is whose personal identities receive mail: active
+// users, plus mailbox users who are still pending setup or suspended, so their
+// mail accumulates instead of falling to the catch-all.
+const deliverableOwnerSQL = "(u.status='active' OR (u.role='mailbox' AND u.status IN ('pending','suspended')))"
+
+// plusBaseAddress returns local@domain for local+tag@domain, else the address.
+func plusBaseAddress(address string) string {
+	at := strings.LastIndex(address, "@")
+	if plus := strings.IndexByte(address, '+'); plus > 0 && at > plus {
+		return address[:plus] + address[at:]
+	}
+	return address
+}
+
 func containsString(values []string, target string) bool {
 	for _, v := range values {
 		if v == target {

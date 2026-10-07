@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
@@ -602,19 +603,35 @@ func (s *DomainService) verifyCNAMERecord(hostname, expectedValue string) (bool,
 
 // DeleteDomain removes a domain and its records
 func (s *DomainService) DeleteDomain(ctx context.Context, orgID int64, domainUUID string) error {
-	result, err := s.db.ExecContext(ctx, `
-		DELETE FROM domains WHERE uuid = $1 AND org_id = $2
-	`, domainUUID, orgID)
+	if _, err := uuid.Parse(domainUUID); err != nil {
+		return ErrDomainNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// The domain lock keeps a mailbox from being created while it is deleted;
+	// deleting it would cascade the mailbox logins' identities away.
+	var id int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM domains WHERE uuid=$1 AND org_id=$2 FOR UPDATE`, domainUUID, orgID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return ErrDomainNotFound
+	}
 	if err != nil {
 		return fmt.Errorf("failed to delete domain: %w", err)
 	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return ErrDomainNotFound
+	var mailboxes int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM mailbox_accounts WHERE domain_id=$1 AND removed_at IS NULL`, id).Scan(&mailboxes); err != nil {
+		return err
 	}
-
-	return nil
+	if mailboxes > 0 {
+		return orgError(http.StatusConflict, fmt.Sprintf("Remove the %d mailboxes on this domain first", mailboxes))
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM domains WHERE id=$1`, id); err != nil {
+		return fmt.Errorf("failed to delete domain: %w", err)
+	}
+	return tx.Commit()
 }
 
 // InitiateSESVerification registers an existing domain with AWS SES

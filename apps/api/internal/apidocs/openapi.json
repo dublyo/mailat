@@ -4617,6 +4617,7 @@
       "service.AcceptInviteRequest": {
         "properties": {
           "name": {
+            "description": "Required unless the link resets a password.",
             "type": "string"
           },
           "password": {
@@ -4628,9 +4629,27 @@
         },
         "required": [
           "token",
-          "name",
           "password"
         ],
+        "type": "object"
+      },
+      "service.AcceptInviteResult": {
+        "properties": {
+          "signedIn": {
+            "type": "boolean"
+          },
+          "token": {
+            "type": "string"
+          },
+          "user": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/model.User"
+              }
+            ],
+            "nullable": true
+          }
+        },
         "type": "object"
       },
       "service.AddMemberInput": {
@@ -5774,7 +5793,15 @@
           "inviterName": {
             "type": "string"
           },
+          "name": {
+            "description": "the mailbox user's name, for mailbox_setup",
+            "type": "string"
+          },
           "orgName": {
+            "type": "string"
+          },
+          "purpose": {
+            "description": "join, mailbox_setup or password_reset",
             "type": "string"
           },
           "role": {
@@ -5909,6 +5936,9 @@
             "description": "personal or shared",
             "type": "string"
           },
+          "mailboxPrimary": {
+            "type": "boolean"
+          },
           "ownerEmail": {
             "type": "string"
           },
@@ -5980,7 +6010,7 @@
             "type": "string"
           },
           "status": {
-            "description": "active or disabled (removed)",
+            "description": "active, pending, suspended or disabled (removed)",
             "type": "string"
           },
           "uuid": {
@@ -9651,7 +9681,7 @@
     },
     "/api/v1/auth/invites/accept": {
       "post": {
-        "description": "AcceptInvite creates the invited account (name 2-255 characters, password\n8-72 bytes) and signs it in. Every unusable token gets the same 400; 409\nwhen the organization has no free seat. Limited per client IP.\nPOST /api/v1/auth/invites/accept",
+        "description": "AcceptInvite completes an invite, mailbox setup or password-reset link\n(password 8-72 bytes; name 2-255 characters unless the link resets a\npassword) and signs the user in, or answers signedIn:false when the account\nhas a second factor. Every unusable token gets the same 400; 409 when the\norganization has no free seat. Limited per client IP.\nPOST /api/v1/auth/invites/accept",
         "operationId": "post_api_v1_auth_invites_accept",
         "requestBody": {
           "content": {
@@ -9676,7 +9706,7 @@
                     "data": {
                       "allOf": [
                         {
-                          "$ref": "#/components/schemas/model.AuthResponse"
+                          "$ref": "#/components/schemas/service.AcceptInviteResult"
                         }
                       ],
                       "nullable": true
@@ -9905,7 +9935,7 @@
     },
     "/api/v1/auth/invites/lookup": {
       "post": {
-        "description": "LookupInvite shows the organization, email and role behind an invite token.\nEvery unusable token gets the same 404. Limited per client IP.\nPOST /api/v1/auth/invites/lookup",
+        "description": "LookupInvite shows the organization, email, role and purpose behind an\ninvite token (plus the name for a mailbox setup link). Every unusable token\ngets the same 404. Limited per client IP.\nPOST /api/v1/auth/invites/lookup",
         "operationId": "post_api_v1_auth_invites_lookup",
         "requestBody": {
           "content": {
@@ -29160,7 +29190,7 @@
     },
     "/api/v1/domains/{uuid}": {
       "delete": {
-        "description": "Delete removes a domain\nDELETE /api/v1/domains/:uuid",
+        "description": "Delete removes a domain. 409 while live mailboxes remain on it.\nDELETE /api/v1/domains/:uuid",
         "operationId": "delete_api_v1_domains_uuid",
         "parameters": [
           {
@@ -37947,7 +37977,7 @@
     },
     "/api/v1/identities/{uuid}": {
       "delete": {
-        "description": "Delete removes a personal identity of the organization and its received\nmail. Owner or admin only.\nDELETE /api/v1/identities/:uuid",
+        "description": "Delete removes a personal identity of the organization and its received\nmail. Owner or admin only. 409 for a mailbox's primary identity (remove the\nmailbox instead).\nDELETE /api/v1/identities/:uuid",
         "operationId": "delete_api_v1_identities_uuid",
         "parameters": [
           {
@@ -55418,8 +55448,17 @@
     },
     "/api/v1/org/members": {
       "get": {
-        "description": "ListMembers lists the organization's users, including removed (disabled) ones.\nGET /api/v1/org/members",
+        "description": "ListMembers lists the organization's users, including removed (disabled) ones.\nMailbox users are included only with ?includeMailboxes=true.\nGET /api/v1/org/members",
         "operationId": "get_api_v1_org_members",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "includeMailboxes",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {

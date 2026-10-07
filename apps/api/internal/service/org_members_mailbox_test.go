@@ -73,13 +73,20 @@ func TestJoinInviteNeverReplacesMailboxLogin(t *testing.T) {
 	_, err = f.svc.ResendInvite(ctx, f.owner, linkUUID)
 	wantStatus(t, err, http.StatusNotFound)
 	wantStatus(t, f.svc.RevokeInvite(ctx, f.owner, linkUUID), http.StatusNotFound)
-	if _, err = f.svc.LookupInvite(ctx, setupToken); !errors.Is(err, ErrInviteInvalid) {
-		t.Fatalf("lookup: %v", err)
-	}
-	if _, err = f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: setupToken, Name: "Box Two", Password: "long-enough-password"}, "192.0.2.1"); !errors.Is(err, ErrInviteInvalid) {
-		t.Fatalf("accept: %v", err)
-	}
 	if n := f.count(t, `SELECT count(*) FROM org_invites WHERE uuid=$1 AND revoked_at IS NULL AND accepted_at IS NULL`, linkUUID); n != 1 {
-		t.Fatal("mailbox link was changed")
+		t.Fatal("mailbox link was changed by the generic routes")
+	}
+	// Its own flow: lookup shows the purpose and name, accept activates the
+	// pending login in place (no new user, no seat).
+	look, err := f.svc.LookupInvite(ctx, setupToken)
+	if err != nil || look.Purpose != "mailbox_setup" || look.Name != "Box Two" || look.Email != "box2@acme.test" {
+		t.Fatalf("lookup: %+v %v", look, err)
+	}
+	res, err := f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: setupToken, Name: "Box Two", Password: "long-enough-password"}, "192.0.2.1")
+	if err != nil || !res.SignedIn || res.User.ID != box2 {
+		t.Fatalf("accept: %+v %v", res, err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM users WHERE id=$1 AND status='active' AND role='mailbox'`, box2); n != 1 {
+		t.Fatal("mailbox login not activated")
 	}
 }

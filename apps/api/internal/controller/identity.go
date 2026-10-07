@@ -173,7 +173,8 @@ func (c *IdentityController) UpdatePassword(r *ghttp.Request) {
 }
 
 // Delete removes a personal identity of the organization and its received
-// mail. Owner or admin only.
+// mail. Owner or admin only. 409 for a mailbox's primary identity (remove the
+// mailbox instead).
 // DELETE /api/v1/identities/:uuid
 func (c *IdentityController) Delete(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -191,6 +192,11 @@ func (c *IdentityController) Delete(r *ghttp.Request) {
 	err := c.identityService.DeleteIdentity(r.Context(), claims.UserID, identityUUID)
 	if errors.Is(err, service.ErrIdentityNotFound) {
 		response.NotFound(r, "Identity not found")
+		return
+	}
+	var orgErr *service.OrgError
+	if errors.As(err, &orgErr) {
+		writeOrgError(r, err)
 		return
 	}
 	if err != nil {

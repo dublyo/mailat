@@ -157,3 +157,33 @@ func TestWorkerRecoversDurableAttachmentPayloadOnce(t *testing.T) {
 		t.Fatalf("durable attachment changed: %+v", fake.last)
 	}
 }
+
+// Invite, setup and reset mails carry a live link token: once the send is
+// final no body or payload copy is kept. Ordinary sends keep theirs.
+func TestEmailWorkerScrubsInviteBodies(t *testing.T) {
+	db := testutil.Database(t)
+	ctx := context.Background()
+	var org int64
+	if err := db.QueryRow(`INSERT INTO organizations(name,slug,updated_at) VALUES('Worker','worker',now()) RETURNING id`).Scan(&org); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"invite", ""} {
+		var id int64
+		if err := db.QueryRow(`INSERT INTO transactional_emails(org_id,message_id,from_address,to_addresses,subject,html_body,text_body,send_payload,system_kind,status,updated_at)
+			VALUES($1,gen_random_uuid()::text,'from@example.test','to@example.test','s','<a href="#token=x">x</a>','#token=x','{}',NULLIF($2,''),'queued',now()) RETURNING id`, org, kind).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		handler := &EmailHandler{db: db, cfg: &config.Config{}, emailProvider: &guardTestProvider{}}
+		payload := NewEmailSendPayload(id, org, "from@example.test", []string{"to@example.test"}, "s", "", "#token=x", "<id@example.test>")
+		if err := handler.ProcessEmail(ctx, payload); err != nil {
+			t.Fatal(err)
+		}
+		var kept bool
+		if err := db.QueryRow(`SELECT html_body IS NOT NULL AND text_body IS NOT NULL AND send_payload IS NOT NULL FROM transactional_emails WHERE id=$1 AND status='sent'`, id).Scan(&kept); err != nil {
+			t.Fatal(err)
+		}
+		if kept != (kind == "") {
+			t.Fatalf("kind %q: bodies kept=%v", kind, kept)
+		}
+	}
+}

@@ -185,6 +185,21 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 	if _, err = tx.ExecContext(ctx, `SELECT id FROM domains WHERE id=$1 FOR UPDATE`, domainID); err != nil {
 		return nil, err
 	}
+	// A mailbox user only has addresses on their mailbox domain, and an
+	// address is either an identity or a send-as alias, never both.
+	var ownerRole string
+	var mailboxDomain sql.NullInt64
+	var isAlias bool
+	if err = tx.QueryRowContext(ctx, `SELECT u.role,ma.domain_id,EXISTS(SELECT 1 FROM identity_send_aliases WHERE address=$2)
+		FROM users u LEFT JOIN mailbox_accounts ma ON ma.user_id=u.id AND ma.removed_at IS NULL WHERE u.id=$1`, ownerID, strings.ToLower(req.Email)).Scan(&ownerRole, &mailboxDomain, &isAlias); err != nil {
+		return nil, err
+	}
+	if ownerRole == "mailbox" && (!mailboxDomain.Valid || mailboxDomain.Int64 != domainID) {
+		return nil, fmt.Errorf("a mailbox user can only have addresses on their mailbox domain")
+	}
+	if isAlias {
+		return nil, fmt.Errorf("that address is a send-as alias; remove the alias first")
+	}
 	if !s.cfg.DisableAppLimits {
 		var limit, count int
 		if err = tx.QueryRowContext(ctx, `SELECT max_identities FROM organizations WHERE id=$1 FOR UPDATE`, userOrgID).Scan(&limit); err != nil {
@@ -225,6 +240,10 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 	)
 	if colorNull.Valid {
 		identity.Color = colorNull.String
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+		return nil, fmt.Errorf("identity already exists")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create identity: %w", err)
@@ -551,6 +570,14 @@ func (s *IdentityService) DeleteIdentity(ctx context.Context, userID int64, iden
 	}
 	if err != nil {
 		return fmt.Errorf("failed to load identity: %w", err)
+	}
+	// Deleting it would leave the mailbox login with no mailbox.
+	var mailboxPrimary bool
+	if err = tx.QueryRowContext(ctx, `SELECT `+liveMailboxIdentitySQL, id).Scan(&mailboxPrimary); err != nil {
+		return err
+	}
+	if mailboxPrimary {
+		return orgError(http.StatusConflict, "Remove the mailbox instead")
 	}
 	if err = queueMailStorageCleanup(ctx, tx, `e.identity_id=$1`, id); err != nil {
 		return fmt.Errorf("failed to queue storage cleanup: %w", err)

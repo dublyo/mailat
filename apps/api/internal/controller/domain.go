@@ -202,7 +202,7 @@ func (c *DomainController) Verify(r *ghttp.Request) {
 	})
 }
 
-// Delete removes a domain
+// Delete removes a domain. 409 while live mailboxes remain on it.
 // DELETE /api/v1/domains/:uuid
 func (c *DomainController) Delete(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
@@ -218,6 +218,11 @@ func (c *DomainController) Delete(r *ghttp.Request) {
 	}
 
 	err := c.domainService.DeleteDomain(r.Context(), claims.OrgID, domainUUID)
+	var orgErr *service.OrgError
+	if errors.As(err, &orgErr) {
+		writeOrgError(r, err)
+		return
+	}
 	if err != nil {
 		domainReadError(r, err)
 		return

@@ -285,6 +285,9 @@ func lockManaged(ctx context.Context, tx *sql.Tx, a OrgActor, mailboxID int) (mb
 	return mbUUID, identityID, nil
 }
 
+// Mailbox users may read and send from shared mailboxes but never manage them.
+var errMailboxCannotManage = orgError(http.StatusBadRequest, "Mailbox accounts cannot manage shared mailboxes")
+
 func validPermissions(canRead, canSend bool) error {
 	if !canRead && !canSend {
 		return orgError(http.StatusBadRequest, "A member needs read or send access")
@@ -314,12 +317,16 @@ func (s *SharedMailboxService) AddMember(ctx context.Context, a OrgActor, mailbo
 		return nil, orgError(http.StatusConflict, "This shared mailbox is not active; recreate it first")
 	}
 	var userID int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE uuid=$1 AND org_id=$2 AND status='active'`, input.UserUUID, a.OrgID).Scan(&userID)
+	var role string
+	err = tx.QueryRowContext(ctx, `SELECT id,role FROM users WHERE uuid=$1 AND org_id=$2 AND status='active'`, input.UserUUID, a.OrgID).Scan(&userID, &role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, orgError(http.StatusBadRequest, "userUuid must be an active member of this organization")
 	}
 	if err != nil {
 		return nil, err
+	}
+	if role == "mailbox" && input.CanManage {
+		return nil, errMailboxCannotManage
 	}
 	var count int
 	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM shared_mailbox_members WHERE shared_mailbox_id=$1`, mailboxID).Scan(&count); err != nil {
@@ -386,6 +393,15 @@ func (s *SharedMailboxService) UpdateMember(ctx context.Context, a OrgActor, mai
 	mbUUID, identityID, userID, wasReader, err := lockMember(ctx, tx, a, mailboxID, userUUID)
 	if err != nil {
 		return nil, err
+	}
+	if input.CanManage {
+		var mailboxUser bool
+		if err = tx.QueryRowContext(ctx, `SELECT role='mailbox' FROM users WHERE id=$1`, userID).Scan(&mailboxUser); err != nil {
+			return nil, err
+		}
+		if mailboxUser {
+			return nil, errMailboxCannotManage
+		}
 	}
 	if identityID.Valid && wasReader && !input.CanRead {
 		n, err := otherReaders(ctx, tx, mailboxID, userID)

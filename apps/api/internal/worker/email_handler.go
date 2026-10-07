@@ -249,6 +249,11 @@ func (h *EmailHandler) finishEmailTx(ctx context.Context, tx *sql.Tx, id int64, 
 	if _, err = tx.ExecContext(ctx, `DELETE FROM send_attachment_refs WHERE transactional_email_id=$1`, id); err != nil {
 		return err
 	}
+	// Invite, mailbox setup and reset mails carry a live sign-up token; keep
+	// no copy of the body once the send is final.
+	if _, err = tx.ExecContext(ctx, `UPDATE transactional_emails SET html_body=NULL,text_body=NULL,send_payload=NULL WHERE id=$1 AND system_kind='invite'`, id); err != nil {
+		return err
+	}
 	data := map[string]any{"status": current, "messageUuid": messageUUID, "providerMessageId": providerID}
 	if payload != nil {
 		data["messageId"] = payload.MessageID

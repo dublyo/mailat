@@ -32,6 +32,8 @@ const (
 	inviteResendCooldown  = 60 * time.Second
 	inviteMaxSends        = 5
 	inviteMaxFailures     = 10
+	// Mailbox setup and password-reset links (owner decision: 72 h).
+	mailboxLinkTTL = 72 * time.Hour
 )
 
 // OrgError carries the HTTP status a controller should answer with.
@@ -59,7 +61,7 @@ type OrgMember struct {
 	Email       string     `json:"email"`
 	Name        string     `json:"name"`
 	Role        string     `json:"role"`
-	Status      string     `json:"status"` // active or disabled (removed)
+	Status      string     `json:"status"` // active, pending, suspended or disabled (removed)
 	LastLoginAt *time.Time `json:"lastLoginAt"`
 	CreatedAt   time.Time  `json:"createdAt"`
 }
@@ -81,6 +83,16 @@ type InviteLookup struct {
 	Role        string    `json:"role"`
 	InviterName string    `json:"inviterName"`
 	ExpiresAt   time.Time `json:"expiresAt"`
+	Purpose     string    `json:"purpose"`        // join, mailbox_setup or password_reset
+	Name        string    `json:"name,omitempty"` // the mailbox user's name, for mailbox_setup
+}
+
+// AcceptInviteResult signs the user in, except after a password reset of an
+// account with a second factor: then SignedIn is false and the user logs in.
+type AcceptInviteResult struct {
+	Token    string      `json:"token,omitempty"`
+	User     *model.User `json:"user,omitempty"`
+	SignedIn bool        `json:"signedIn"`
 }
 
 type OrgIdentity struct {
@@ -92,6 +104,8 @@ type OrgIdentity struct {
 	CanSend    bool   `json:"canSend"`
 	CanReceive bool   `json:"canReceive"`
 	IsCatchAll bool   `json:"isCatchAll"`
+	// The live primary identity of a mailbox user; managed on the Mailboxes page.
+	MailboxPrimary bool `json:"mailboxPrimary"`
 }
 
 type RemoveMemberResult struct {
@@ -112,7 +126,7 @@ type InviteTokenRequest struct {
 
 type AcceptInviteRequest struct {
 	Token    string `json:"token" v:"required"`
-	Name     string `json:"name" v:"required|length:2,255"`
+	Name     string `json:"name" v:"length:2,255"` // Required unless the link resets a password.
 	Password string `json:"password" v:"required|length:8,72"`
 }
 
@@ -178,15 +192,16 @@ func auditTx(ctx context.Context, tx *sql.Tx, a OrgActor, action, resource, reso
 }
 
 // checkSeats counts active users plus open, unexpired invites (except one being
-// accepted or resent) against max_users. The caller holds the org row lock.
+// accepted or resent) against max_users. Mailbox users and their links use no
+// seat. The caller holds the org row lock.
 func (s *OrgMemberService) checkSeats(ctx context.Context, tx *sql.Tx, orgID, excludeInvite int64) error {
 	if s.cfg.DisableAppLimits {
 		return nil
 	}
 	var limit, used int
 	err := tx.QueryRowContext(ctx, `SELECT o.max_users,
-		(SELECT count(*) FROM users WHERE org_id=o.id AND status='active') +
-		(SELECT count(*) FROM org_invites WHERE org_id=o.id AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>now() AND id<>$2)
+		(SELECT count(*) FROM users WHERE org_id=o.id AND status='active' AND role<>'mailbox') +
+		(SELECT count(*) FROM org_invites WHERE org_id=o.id AND role<>'mailbox' AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>now() AND id<>$2)
 		FROM organizations o WHERE o.id=$1`, orgID, excludeInvite).Scan(&limit, &used)
 	if err != nil {
 		return err
@@ -211,9 +226,10 @@ func newInviteToken() (string, error) {
 }
 
 // ListMembers returns every user of the organization, including removed ones.
-func (s *OrgMemberService) ListMembers(ctx context.Context, orgID int64) ([]*OrgMember, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT uuid::text,email,COALESCE(name,''),role,status,last_login_at,created_at FROM users WHERE org_id=$1
-		ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, status, lower(email)`, orgID)
+// Mailbox users are left out unless includeMailboxes is set.
+func (s *OrgMemberService) ListMembers(ctx context.Context, orgID int64, includeMailboxes bool) ([]*OrgMember, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT uuid::text,email,COALESCE(name,''),role,status,last_login_at,created_at FROM users WHERE org_id=$1 AND ($2 OR role<>'mailbox')
+		ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'member' THEN 2 ELSE 3 END, status, lower(email)`, orgID, includeMailboxes)
 	if err != nil {
 		return nil, err
 	}
@@ -264,11 +280,14 @@ func (s *OrgMemberService) ChangeRole(ctx context.Context, a OrgActor, userUUID,
 	var id int64
 	var current, status string
 	err = tx.QueryRowContext(ctx, `SELECT id,role,status FROM users WHERE uuid=$1 AND org_id=$2 FOR UPDATE`, userUUID, a.OrgID).Scan(&id, &current, &status)
-	if err == sql.ErrNoRows || (err == nil && status != "active") {
+	if err == sql.ErrNoRows || (err == nil && status != "active" && current != "mailbox") {
 		return nil, orgError(http.StatusNotFound, "Member not found")
 	}
 	if err != nil {
 		return nil, err
+	}
+	if current == "mailbox" {
+		return nil, orgError(http.StatusConflict, "A mailbox account's role cannot be changed")
 	}
 	if current == "owner" || id == a.UserID {
 		return nil, orgError(http.StatusConflict, "The owner's role cannot be changed")
@@ -421,7 +440,8 @@ func (s *OrgMemberService) RemoveMember(ctx context.Context, a OrgActor, userUUI
 	// key checks (received_emails, mailbox_changes, counters). FOR UPDATE would
 	// block those while removal waits on the identity lock: a deadlock.
 	err = tx.QueryRowContext(ctx, `SELECT id,role,status FROM users WHERE uuid=$1 AND org_id=$2 FOR NO KEY UPDATE`, userUUID, a.OrgID).Scan(&id, &role, &status)
-	if err == sql.ErrNoRows || (err == nil && status != "active") {
+	// A mailbox can also be removed while pending setup or suspended.
+	if err == sql.ErrNoRows || (err == nil && status != "active" && (role != "mailbox" || (status != "pending" && status != "suspended"))) {
 		return nil, orgError(http.StatusNotFound, "Member not found")
 	}
 	if err != nil {
@@ -432,7 +452,7 @@ func (s *OrgMemberService) RemoveMember(ctx context.Context, a OrgActor, userUUI
 		return nil, orgError(http.StatusConflict, "You cannot remove yourself")
 	case role == "owner":
 		return nil, orgError(http.StatusConflict, "The owner cannot be removed")
-	case a.Role != "owner" && role != "member":
+	case a.Role != "owner" && role != "member" && role != "mailbox":
 		return nil, orgError(http.StatusForbidden, "Only the owner can remove an admin")
 	}
 	var target int64
@@ -443,6 +463,15 @@ func (s *OrgMemberService) RemoveMember(ctx context.Context, a OrgActor, userUUI
 		}
 		if err != nil {
 			return nil, err
+		}
+		// A mailbox user only holds identities on their own mailbox domain.
+		var offDomain bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM mailbox_accounts ma JOIN identities i ON i.user_id=$1 AND i.kind='personal'
+			WHERE ma.user_id=$2 AND ma.removed_at IS NULL AND i.domain_id<>ma.domain_id)`, id, target).Scan(&offDomain); err != nil {
+			return nil, err
+		}
+		if offDomain {
+			return nil, orgError(http.StatusBadRequest, "A mailbox user can only receive identities on their mailbox domain")
 		}
 	}
 	var owner int64
@@ -526,6 +555,24 @@ func (s *OrgMemberService) RemoveMember(ctx context.Context, a OrgActor, userUUI
 	if _, err = tx.ExecContext(ctx, `UPDATE auto_replies SET active=false,updated_at=now() WHERE user_id=$1 AND cardinality(COALESCE(identity_ids,'{}'))=0 AND active`, id); err != nil {
 		return nil, err
 	}
+	// 7. Send-as grants end with the account; setup and reset links stop
+	// working; the mailbox is marked removed (its row stays for history).
+	for _, q := range []string{
+		`DELETE FROM identity_send_aliases WHERE identity_id=ANY($1)`,
+		`UPDATE identities SET wildcard_sender=false WHERE id=ANY($1) AND wildcard_sender`,
+	} {
+		if _, err = tx.ExecContext(ctx, q, pq.Array(ids)); err != nil {
+			return nil, err
+		}
+	}
+	for _, q := range []string{
+		`UPDATE org_invites SET revoked_at=now() WHERE user_id=$1 AND accepted_at IS NULL AND revoked_at IS NULL`,
+		`UPDATE mailbox_accounts SET removed_at=now(),updated_at=now() WHERE user_id=$1 AND removed_at IS NULL`,
+	} {
+		if _, err = tx.ExecContext(ctx, q, id); err != nil {
+			return nil, err
+		}
+	}
 	// The owner learns about each handover from the alerts list (and its digest).
 	if len(handedOver) > 0 {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO alerts(org_id,type,severity,title,message,data)
@@ -544,10 +591,17 @@ func (s *OrgMemberService) RemoveMember(ctx context.Context, a OrgActor, userUUI
 	return result, tx.Commit()
 }
 
+const orgIdentityColumns = `i.uuid::text,i.email,i.kind,u.uuid::text,u.email,COALESCE(i.can_send,false),COALESCE(i.can_receive,false),i.is_catch_all,
+	EXISTS(SELECT 1 FROM mailbox_accounts ma WHERE ma.identity_id=i.id AND ma.user_id=i.user_id AND ma.removed_at IS NULL)`
+
+// liveMailboxIdentitySQL ($1 = identity id) is true for the primary identity
+// of a mailbox that is not removed.
+const liveMailboxIdentitySQL = `EXISTS(SELECT 1 FROM mailbox_accounts WHERE identity_id=$1 AND removed_at IS NULL)`
+
 // ListOrgIdentities lists every identity of the organization with its owner,
 // for administration. It exposes no mail.
 func (s *OrgMemberService) ListOrgIdentities(ctx context.Context, orgID int64) ([]*OrgIdentity, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT i.uuid::text,i.email,i.kind,u.uuid::text,u.email,COALESCE(i.can_send,false),COALESCE(i.can_receive,false),i.is_catch_all
+	rows, err := s.db.QueryContext(ctx, `SELECT `+orgIdentityColumns+`
 		FROM identities i JOIN domains d ON d.id=i.domain_id JOIN users u ON u.id=i.user_id
 		WHERE d.org_id=$1 ORDER BY lower(i.email)`, orgID)
 	if err != nil {
@@ -557,7 +611,7 @@ func (s *OrgMemberService) ListOrgIdentities(ctx context.Context, orgID int64) (
 	out := []*OrgIdentity{}
 	for rows.Next() {
 		var i OrgIdentity
-		if err = rows.Scan(&i.UUID, &i.Email, &i.Kind, &i.OwnerUUID, &i.OwnerEmail, &i.CanSend, &i.CanReceive, &i.IsCatchAll); err != nil {
+		if err = rows.Scan(&i.UUID, &i.Email, &i.Kind, &i.OwnerUUID, &i.OwnerEmail, &i.CanSend, &i.CanReceive, &i.IsCatchAll, &i.MailboxPrimary); err != nil {
 			return nil, err
 		}
 		out = append(out, &i)
@@ -599,6 +653,17 @@ func (s *OrgMemberService) TransferIdentity(ctx context.Context, a OrgActor, ide
 	if kind != "personal" {
 		return nil, orgError(http.StatusBadRequest, "Shared mailbox identities are managed through their members")
 	}
+	var mailboxPrimary, offDomain bool
+	if err = tx.QueryRowContext(ctx, `SELECT `+liveMailboxIdentitySQL+`,
+		EXISTS(SELECT 1 FROM mailbox_accounts ma JOIN identities i ON i.id=$1 WHERE ma.user_id=$2 AND ma.removed_at IS NULL AND ma.domain_id<>i.domain_id)`, id, target).Scan(&mailboxPrimary, &offDomain); err != nil {
+		return nil, err
+	}
+	if mailboxPrimary {
+		return nil, orgError(http.StatusConflict, "Remove the mailbox (with transfer) instead")
+	}
+	if offDomain {
+		return nil, orgError(http.StatusBadRequest, "A mailbox user can only receive identities on their mailbox domain")
+	}
 	if previous != target {
 		if _, err = tx.ExecContext(ctx, `UPDATE identities SET user_id=$2,is_default=false,updated_at=now() WHERE id=$1`, id, target); err != nil {
 			return nil, err
@@ -611,8 +676,8 @@ func (s *OrgMemberService) TransferIdentity(ctx context.Context, a OrgActor, ide
 		}
 	}
 	var out OrgIdentity
-	err = tx.QueryRowContext(ctx, `SELECT i.uuid::text,i.email,i.kind,u.uuid::text,u.email,COALESCE(i.can_send,false),COALESCE(i.can_receive,false),i.is_catch_all
-		FROM identities i JOIN users u ON u.id=i.user_id WHERE i.id=$1`, id).Scan(&out.UUID, &out.Email, &out.Kind, &out.OwnerUUID, &out.OwnerEmail, &out.CanSend, &out.CanReceive, &out.IsCatchAll)
+	err = tx.QueryRowContext(ctx, `SELECT `+orgIdentityColumns+`
+		FROM identities i JOIN users u ON u.id=i.user_id WHERE i.id=$1`, id).Scan(&out.UUID, &out.Email, &out.Kind, &out.OwnerUUID, &out.OwnerEmail, &out.CanSend, &out.CanReceive, &out.IsCatchAll, &out.MailboxPrimary)
 	if err != nil {
 		return nil, err
 	}
@@ -678,19 +743,16 @@ func inviteSender(ctx context.Context, tx *sql.Tx, a OrgActor, chosen string) (i
 	return id, err
 }
 
-// sendInvite queues the invite mail in tx. The token travels in the URL
-// fragment, so it never reaches server logs or a Referer header.
+// sendInvite queues the invite, setup or reset mail in tx, to delivery_email
+// when set. The token travels in the URL fragment, so it never reaches server
+// logs or a Referer header.
 func (s *OrgMemberService) sendInvite(ctx context.Context, tx *sql.Tx, a OrgActor, inviteID int64, token string) (*worker.EmailSendPayload, error) {
-	if s.sender == nil {
-		return nil, orgError(http.StatusConflict, "Email sending is not configured")
-	}
-	var inviteUUID, email, role, orgName, inviter string
+	var inviteUUID, email, to, role, purpose, orgName, inviter string
 	var senderID sql.NullInt64
 	var sends int
-	var expires time.Time
-	err := tx.QueryRowContext(ctx, `SELECT i.uuid::text,i.email,i.role,o.name,COALESCE(NULLIF(u.name,''),u.email,''),i.sender_identity_id,i.send_count,i.expires_at
+	err := tx.QueryRowContext(ctx, `SELECT i.uuid::text,i.email,COALESCE(i.delivery_email,i.email),i.role,i.purpose,o.name,COALESCE(NULLIF(u.name,''),u.email,''),i.sender_identity_id,i.send_count
 		FROM org_invites i JOIN organizations o ON o.id=i.org_id LEFT JOIN users u ON u.id=i.invited_by WHERE i.id=$1`, inviteID).
-		Scan(&inviteUUID, &email, &role, &orgName, &inviter, &senderID, &sends, &expires)
+		Scan(&inviteUUID, &email, &to, &role, &purpose, &orgName, &inviter, &senderID, &sends)
 	if err != nil {
 		return nil, err
 	}
@@ -698,16 +760,49 @@ func (s *OrgMemberService) sendInvite(ctx context.Context, tx *sql.Tx, a OrgActo
 		return nil, orgError(http.StatusConflict, "Add a sending identity first")
 	}
 	link := strings.TrimRight(s.cfg.WebUrl, "/") + "/invite#token=" + token
-	days := int(s.inviteTTL().Hours()+23) / 24
-	text := fmt.Sprintf("%s invited you to join %s on Mailat as %s.\n\nTo accept, open this link within %d days and choose a password:\n%s\n\nIf you did not expect this, ignore this email.\n",
-		inviter, orgName, article(role), days, link)
-	htmlBody := fmt.Sprintf(`<p>%s invited you to join <strong>%s</strong> on Mailat as %s.</p><p><a href="%s">Accept the invite</a> (the link works for %d days).</p><p>If you did not expect this, ignore this email.</p>`,
-		html.EscapeString(inviter), html.EscapeString(orgName), article(role), html.EscapeString(link), days)
+	ttl := s.inviteTTL()
+	if purpose != "join" {
+		ttl = mailboxLinkTTL
+	}
+	days := int(ttl.Hours()+23) / 24
+	var subject, text, htmlBody string
+	key := fmt.Sprintf("mailat:inv:%s:%d", inviteUUID, sends)
+	switch purpose {
+	case "mailbox_setup":
+		subject = "Set up your mailbox " + email
+		text = fmt.Sprintf("%s created the mailbox %s for you in %s on Mailat.\n\nTo set up your mailbox, open this link within %d days and choose a password:\n%s\n\nIf you did not expect this, ignore this email.\n",
+			inviter, email, orgName, days, link)
+		htmlBody = fmt.Sprintf(`<p>%s created the mailbox <strong>%s</strong> for you in <strong>%s</strong> on Mailat.</p><p><a href="%s">Set up your mailbox</a> (the link works for %d days).</p><p>If you did not expect this, ignore this email.</p>`,
+			html.EscapeString(inviter), html.EscapeString(email), html.EscapeString(orgName), html.EscapeString(link), days)
+		key = fmt.Sprintf("mailat:inv:%s:%s:%d", purpose, inviteUUID, sends)
+	case "password_reset":
+		subject = "Reset your password for " + email
+		text = fmt.Sprintf("An administrator of %s on Mailat sent you a link to reset the password for %s.\n\nOpen this link within %d days and choose a new password:\n%s\n\nIf you did not expect this, contact your administrator.\n",
+			orgName, email, days, link)
+		htmlBody = fmt.Sprintf(`<p>An administrator of <strong>%s</strong> on Mailat sent you a link to reset the password for <strong>%s</strong>.</p><p><a href="%s">Choose a new password</a> (the link works for %d days).</p><p>If you did not expect this, contact your administrator.</p>`,
+			html.EscapeString(orgName), html.EscapeString(email), html.EscapeString(link), days)
+		key = fmt.Sprintf("mailat:inv:%s:%s:%d", purpose, inviteUUID, sends)
+	default:
+		subject = inviter + " invited you to " + orgName + " on Mailat"
+		text = fmt.Sprintf("%s invited you to join %s on Mailat as %s.\n\nTo accept, open this link within %d days and choose a password:\n%s\n\nIf you did not expect this, ignore this email.\n",
+			inviter, orgName, article(role), days, link)
+		htmlBody = fmt.Sprintf(`<p>%s invited you to join <strong>%s</strong> on Mailat as %s.</p><p><a href="%s">Accept the invite</a> (the link works for %d days).</p><p>If you did not expect this, ignore this email.</p>`,
+			html.EscapeString(inviter), html.EscapeString(orgName), article(role), html.EscapeString(link), days)
+	}
+	return s.sendSystemMail(ctx, tx, a, senderID.Int64, to, subject, text, htmlBody, inviteUUID, key)
+}
+
+// sendSystemMail queues one account mail (invite, link or notice) in tx. The
+// "invite" kind marks it for body scrubbing once the send is final.
+func (s *OrgMemberService) sendSystemMail(ctx context.Context, tx *sql.Tx, a OrgActor, senderID int64, to, subject, text, htmlBody, ref, key string) (*worker.EmailSendPayload, error) {
+	if s.sender == nil {
+		return nil, orgError(http.StatusConflict, "Email sending is not configured")
+	}
 	_, payload, err := s.sender.SendAutomated(ctx, tx, &AutomatedSend{
-		OrgID: a.OrgID, IdentityID: senderID.Int64, ActingUserID: a.UserID, To: email,
-		Subject: clipUTF8(inviter+" invited you to "+orgName+" on Mailat", 200), Text: text, HTML: htmlBody,
+		OrgID: a.OrgID, IdentityID: senderID, ActingUserID: a.UserID, To: to,
+		Subject: clipUTF8(subject, 200), Text: text, HTML: htmlBody,
 		Headers: map[string]string{"Auto-Submitted": "auto-generated", "X-Auto-Response-Suppress": "All"},
-		Kind:    "invite", Ref: inviteUUID, DedupeKey: fmt.Sprintf("mailat:inv:%s:%d", inviteUUID, sends),
+		Kind:    "invite", Ref: ref, DedupeKey: key,
 	})
 	if err != nil {
 		if errors.Is(err, ErrProviderNotConfigured) {
@@ -725,8 +820,11 @@ func (s *OrgMemberService) sendInvite(ctx context.Context, tx *sql.Tx, a OrgActo
 }
 
 func article(role string) string {
-	if role == "admin" {
+	switch role {
+	case "admin":
 		return "an admin"
+	case "mailbox":
+		return "a mailbox user"
 	}
 	return "a member"
 }
@@ -861,6 +959,9 @@ func (s *OrgMemberService) ResendInvite(ctx context.Context, a OrgActor, inviteU
 	if role == "admin" && a.Role != "owner" {
 		return nil, orgError(http.StatusForbidden, "Only the owner can resend an admin invite")
 	}
+	if err = resendSender(ctx, tx, a, id); err != nil {
+		return nil, err
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE org_invites SET token_hash=$2,expires_at=now()+make_interval(secs => $3),send_count=send_count+1,last_sent_at=now(),failed_attempts=0 WHERE id=$1`,
 		id, hashToken(token), s.inviteTTL().Seconds()); err != nil {
 		return nil, err
@@ -881,6 +982,24 @@ func (s *OrgMemberService) ResendInvite(ctx context.Context, a OrgActor, inviteU
 	}
 	s.dispatch(payload)
 	return invite, nil
+}
+
+// resendSender keeps the link's sender when the acting admin owns it and it
+// can still send; otherwise it switches to the acting admin's default sending
+// identity, so a resend never depends on the original (maybe removed) inviter.
+func resendSender(ctx context.Context, tx *sql.Tx, a OrgActor, inviteID int64) error {
+	var keep bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM org_invites v JOIN identities i ON i.id=v.sender_identity_id JOIN domains d ON d.id=i.domain_id
+		WHERE v.id=$1 AND i.user_id=$2 AND i.kind='personal' AND i.can_send AND d.status='active')`, inviteID, a.UserID).Scan(&keep)
+	if err != nil || keep {
+		return err
+	}
+	sender, err := inviteSender(ctx, tx, a, "")
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE org_invites SET sender_identity_id=$2 WHERE id=$1`, inviteID, sender)
+	return err
 }
 
 // RevokeInvite closes an open invite so its link stops working.
@@ -908,6 +1027,7 @@ func (s *OrgMemberService) RevokeInvite(ctx context.Context, a OrgActor, inviteU
 
 type inviteRow struct {
 	id, orgID      int64
+	userID         int64 // the mailbox user of a setup or reset link
 	email, role    string
 	hash, purpose  string
 	usable         bool
@@ -923,7 +1043,7 @@ func findInvite(ctx context.Context, q interface {
 		return nil, ErrInviteInvalid
 	}
 	hash := hashToken(token)
-	query := `SELECT i.id,i.org_id,i.email,i.role,i.token_hash,i.purpose,
+	query := `SELECT i.id,i.org_id,COALESCE(i.user_id,0),i.email,i.role,i.token_hash,i.purpose,
 		i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at>now() AND i.failed_attempts<$2,
 		i.expires_at,o.name,COALESCE(NULLIF(u.name,''),u.email,'')
 		FROM org_invites i JOIN organizations o ON o.id=i.org_id LEFT JOIN users u ON u.id=i.invited_by WHERE i.token_hash=$1`
@@ -931,37 +1051,65 @@ func findInvite(ctx context.Context, q interface {
 		query += ` FOR UPDATE OF i`
 	}
 	var r inviteRow
-	err := q.QueryRowContext(ctx, query, hash, inviteMaxFailures).Scan(&r.id, &r.orgID, &r.email, &r.role, &r.hash, &r.purpose, &r.usable, &r.expires, &r.orgName, &r.owner)
+	err := q.QueryRowContext(ctx, query, hash, inviteMaxFailures).Scan(&r.id, &r.orgID, &r.userID, &r.email, &r.role, &r.hash, &r.purpose, &r.usable, &r.expires, &r.orgName, &r.owner)
 	if err == sql.ErrNoRows {
 		return nil, ErrInviteInvalid
 	}
 	if err != nil {
 		return nil, err
 	}
-	// Only join invites are accepted until mailbox links have their own flow.
-	if subtle.ConstantTimeCompare([]byte(r.hash), []byte(hash)) != 1 || !r.usable || r.purpose != "join" {
+	if subtle.ConstantTimeCompare([]byte(r.hash), []byte(hash)) != 1 || !r.usable {
+		return nil, ErrInviteInvalid
+	}
+	if r.purpose != "join" && (r.role != "mailbox" || r.userID == 0) {
 		return nil, ErrInviteInvalid
 	}
 	return &r, nil
 }
 
-// LookupInvite shows the invite behind a token before it is accepted.
+// linkUserStatus is the status a mailbox link's user must still have: setup
+// links finish a pending mailbox, reset links serve an active one.
+func linkUserStatus(purpose string) string {
+	if purpose == "mailbox_setup" {
+		return "pending"
+	}
+	return "active"
+}
+
+// LookupInvite shows the invite behind a token before it is accepted. A
+// mailbox link whose user moved on (removed, suspended, already set up) is
+// invalid like any other unusable token.
 func (s *OrgMemberService) LookupInvite(ctx context.Context, token string) (*InviteLookup, error) {
 	r, err := findInvite(ctx, s.db, token, false)
 	if err != nil {
 		return nil, err
 	}
-	return &InviteLookup{OrgName: r.orgName, Email: r.email, Role: r.role, InviterName: r.owner, ExpiresAt: r.expires}, nil
+	out := &InviteLookup{OrgName: r.orgName, Email: r.email, Role: r.role, InviterName: r.owner, ExpiresAt: r.expires, Purpose: r.purpose}
+	if r.purpose == "join" {
+		return out, nil
+	}
+	var name string
+	err = s.db.QueryRowContext(ctx, `SELECT COALESCE(name,'') FROM users WHERE id=$1 AND org_id=$2 AND role='mailbox' AND status=$3`, r.userID, r.orgID, linkUserStatus(r.purpose)).Scan(&name)
+	if err == sql.ErrNoRows {
+		return nil, ErrInviteInvalid
+	}
+	if err != nil {
+		return nil, err
+	}
+	if r.purpose == "mailbox_setup" {
+		out.Name = name
+	} else {
+		out.InviterName = ""
+	}
+	return out, nil
 }
 
-// AcceptInvite creates the invited user and signs them in. A removed user of
-// the org with the same address stays removed, under a placeholder address,
-// so the new account never inherits their mailbox.
-func (s *OrgMemberService) AcceptInvite(ctx context.Context, req *AcceptInviteRequest, ip string) (*model.AuthResponse, error) {
-	name := strings.TrimSpace(req.Name)
-	if n := utf8.RuneCountInString(name); n < 2 || n > 255 || strings.ContainsAny(name, "\r\n") {
-		return nil, orgError(http.StatusBadRequest, "name must be 2 to 255 characters")
-	}
+// AcceptInvite completes a link. A join invite creates the invited user; a
+// removed user of the org with the same address stays removed, under a
+// placeholder address, so the new account never inherits their mailbox. A
+// mailbox setup link activates the pending mailbox user; a reset link sets a
+// new password. The user is signed in unless they have a second factor.
+func (s *OrgMemberService) AcceptInvite(ctx context.Context, req *AcceptInviteRequest, ip string) (*AcceptInviteResult, error) {
 	if len(req.Password) < 8 || len(req.Password) > 72 {
 		return nil, orgError(http.StatusBadRequest, "password must be 8 to 72 bytes long")
 	}
@@ -970,24 +1118,71 @@ func (s *OrgMemberService) AcceptInvite(ctx context.Context, req *AcceptInviteRe
 	if err != nil {
 		return nil, err
 	}
+	name := strings.TrimSpace(req.Name)
+	if pre.purpose != "password_reset" {
+		if n := utf8.RuneCountInString(name); n < 2 || n > 255 || strings.ContainsAny(name, "\r\n") {
+			return nil, orgError(http.StatusBadRequest, "name must be 2 to 255 characters")
+		}
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash password")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	var userID int64
+	if pre.purpose == "join" {
+		userID, err = s.acceptJoin(ctx, req.Token, pre, name, string(hash), ip)
+	} else {
+		userID, err = s.acceptMailboxLink(ctx, req.Token, pre, name, string(hash), ip)
+	}
 	if err != nil {
 		return nil, err
+	}
+	user, err := s.auth.GetUserByID(ctx, userID)
+	if err != nil {
+		return nil, s.accountGone(ctx, userID, err)
+	}
+	var totp bool
+	if err = s.db.QueryRowContext(ctx, `SELECT totp_enabled FROM users WHERE id=$1`, userID).Scan(&totp); err != nil {
+		return nil, err
+	}
+	if totp {
+		return &AcceptInviteResult{SignedIn: false}, nil
+	}
+	token, err := s.auth.IssueSessionForUser(ctx, user)
+	if err != nil {
+		return nil, s.accountGone(ctx, userID, err)
+	}
+	return &AcceptInviteResult{Token: token, User: user, SignedIn: true}, nil
+}
+
+// accountGone answers like an unusable link when the account was removed or
+// suspended right after the accept committed.
+func (s *OrgMemberService) accountGone(ctx context.Context, userID int64, cause error) error {
+	var active bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND status='active')`, userID).Scan(&active); err == nil && !active {
+		return ErrInviteInvalid
+	}
+	return cause
+}
+
+func (s *OrgMemberService) acceptJoin(ctx context.Context, token string, pre *inviteRow, name, hash, ip string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
 	}
 	defer tx.Rollback()
 	if err = lockOrg(ctx, tx, pre.orgID); err != nil {
-		return nil, err
+		return 0, err
 	}
-	inv, err := findInvite(ctx, tx, req.Token, true)
+	inv, err := findInvite(ctx, tx, token, true)
 	if err != nil {
-		return nil, err
+		return 0, err
+	}
+	if inv.purpose != "join" {
+		return 0, ErrInviteInvalid
 	}
 	if err = s.checkSeats(ctx, tx, inv.orgID, inv.id); err != nil {
-		return nil, err
+		return 0, err
 	}
 	var userID, userOrg int64
 	var status string
@@ -995,45 +1190,84 @@ func (s *OrgMemberService) AcceptInvite(ctx context.Context, req *AcceptInviteRe
 	switch {
 	case err == sql.ErrNoRows:
 	case err != nil:
-		return nil, err
+		return 0, err
 	case userOrg != inv.orgID || status != "disabled":
 		// Only a removed login may be replaced; a pending or suspended
 		// mailbox login keeps its mailbox.
-		return nil, ErrInviteInvalid
+		return 0, ErrInviteInvalid
 	default:
 		// A login address is often reassigned to someone new, so the removed
 		// account never comes back: it keeps its retained mail, identities and
 		// history under a placeholder address, readable by no one, and the
 		// invite creates a fresh account.
 		if _, err = tx.ExecContext(ctx, `UPDATE users SET email='removed+'||uuid::text||'@invalid',updated_at=now() WHERE id=$1`, userID); err != nil {
-			return nil, err
+			return 0, err
 		}
 	}
 	err = tx.QueryRowContext(ctx, `INSERT INTO users(org_id,email,password_hash,name,role,status,email_verified,email_verified_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,'active',true,now(),now()) RETURNING id`, inv.orgID, inv.email, string(hash), name, inv.role).Scan(&userID)
+		VALUES($1,$2,$3,$4,$5,'active',true,now(),now()) RETURNING id`, inv.orgID, inv.email, hash, name, inv.role).Scan(&userID)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE org_invites SET accepted_at=now(),accepted_user_id=$2 WHERE id=$1`, inv.id, userID); err != nil {
-		return nil, err
+	if err = s.markAccepted(ctx, tx, inv, userID, ip, "Accepted invite as "+inv.role); err != nil {
+		return 0, err
 	}
+	return userID, tx.Commit()
+}
+
+// acceptMailboxLink locks the mailbox user first, then the org and the link:
+// the user -> org order every mailbox lifecycle change uses, so an accept
+// racing a set-password, suspend or removal waits instead of deadlocking.
+func (s *OrgMemberService) acceptMailboxLink(ctx context.Context, token string, pre *inviteRow, name, hash, ip string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var status string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id=$1 AND org_id=$2 AND role='mailbox' FOR NO KEY UPDATE`, pre.userID, pre.orgID).Scan(&status)
+	if err == sql.ErrNoRows {
+		return 0, ErrInviteInvalid
+	}
+	if err != nil {
+		return 0, err
+	}
+	if err = lockOrg(ctx, tx, pre.orgID); err != nil {
+		return 0, err
+	}
+	inv, err := findInvite(ctx, tx, token, true)
+	if err != nil {
+		return 0, err
+	}
+	if inv.id != pre.id || inv.userID != pre.userID || status != linkUserStatus(inv.purpose) {
+		return 0, ErrInviteInvalid
+	}
+	if inv.purpose == "mailbox_setup" {
+		_, err = tx.ExecContext(ctx, `UPDATE users SET password_hash=$2,name=$3,status='active',email_verified=true,email_verified_at=now(),auth_version=auth_version+1,updated_at=now() WHERE id=$1`, inv.userID, hash, name)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE users SET password_hash=$2,auth_version=auth_version+1,updated_at=now() WHERE id=$1`, inv.userID, hash)
+	}
+	if err != nil {
+		return 0, err
+	}
+	for _, q := range []string{
+		`UPDATE user_sessions SET active=false,revoked_at=now() WHERE user_id=$1 AND active`,
+		`DELETE FROM auth_challenges WHERE user_id=$1`,
+	} {
+		if _, err = tx.ExecContext(ctx, q, inv.userID); err != nil {
+			return 0, err
+		}
+	}
+	if err = s.markAccepted(ctx, tx, inv, inv.userID, ip, "Accepted "+strings.ReplaceAll(inv.purpose, "_", " ")+" link"); err != nil {
+		return 0, err
+	}
+	return inv.userID, tx.Commit()
+}
+
+func (s *OrgMemberService) markAccepted(ctx context.Context, tx *sql.Tx, inv *inviteRow, userID int64, ip, description string) error {
 	var inviteUUID string
-	if err = tx.QueryRowContext(ctx, `SELECT uuid::text FROM org_invites WHERE id=$1`, inv.id).Scan(&inviteUUID); err != nil {
-		return nil, err
+	if err := tx.QueryRowContext(ctx, `UPDATE org_invites SET accepted_at=now(),accepted_user_id=$2 WHERE id=$1 RETURNING uuid::text`, inv.id, userID).Scan(&inviteUUID); err != nil {
+		return err
 	}
-	if err = auditTx(ctx, tx, OrgActor{UserID: userID, OrgID: inv.orgID, IP: ip}, "invite_accept", "invite", inviteUUID, "Accepted invite as "+inv.role, nil); err != nil {
-		return nil, err
-	}
-	if err = tx.Commit(); err != nil {
-		return nil, err
-	}
-	user, err := s.auth.GetUserByID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	token, err := s.auth.IssueSessionForUser(ctx, user)
-	if err != nil {
-		return nil, err
-	}
-	return &model.AuthResponse{Token: token, User: user}, nil
+	return auditTx(ctx, tx, OrgActor{UserID: userID, OrgID: inv.orgID, IP: ip}, "invite_accept", "invite", inviteUUID, description, map[string]any{"purpose": inv.purpose})
 }
