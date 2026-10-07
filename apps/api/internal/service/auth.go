@@ -114,7 +114,7 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 		return nil, fmt.Errorf("registration is closed — contact your admin for an invite")
 	}
 
-	// Create organization (matching Prisma schema) with configurable limits
+	// Create organization (columns per internal/database/migrations) with configurable limits
 	var orgID int64
 	orgUUID := uuid.New().String()
 	err = tx.QueryRowContext(ctx, `
@@ -131,7 +131,7 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 		return nil, fmt.Errorf("failed to create organization")
 	}
 
-	// Create user (matching Prisma schema)
+	// Create user (columns per internal/database/migrations)
 	var user model.User
 	userUUID := uuid.New().String()
 	err = tx.QueryRowContext(ctx, `

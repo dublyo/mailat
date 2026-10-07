@@ -220,7 +220,7 @@ func (s *IdentityService) CreateIdentity(ctx context.Context, userID int64, req 
 		}
 	}
 
-	// Create identity in our database (matching Prisma schema - no status column)
+	// Create identity in our database (columns per internal/database/migrations - no status column)
 	var identity model.Identity
 	var stalwartAcctID sql.NullString
 	var colorNull sql.NullString

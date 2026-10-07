@@ -160,7 +160,7 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 		}
 	}
 
-	// Create domain (matching Prisma schema with SES fields)
+	// Create domain with SES fields (columns per internal/database/migrations)
 	var domain model.Domain
 	domainUUID := uuid.New().String()
 	err = tx.QueryRowContext(ctx, `
