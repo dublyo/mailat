@@ -341,6 +341,51 @@ func TestSharedMailboxIngestFanOut(t *testing.T) {
 	}
 }
 
+func TestSharedMailboxRevokeReadDropsDeliveredCopies(t *testing.T) {
+	f := newSharedFixture(t)
+	ctx := context.Background()
+	mb := f.create(t, "team@one.test")
+	team := identityIDByUUID(t, f.db, mb.IdentityUUID)
+	f.add(t, mb, 2, true, false)
+	f.add(t, mb, 5, true, true)
+	if err := f.ingest(t, "ses-revoke-1", "team@one.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE received_emails SET raw_s3_bucket='test-bucket',raw_s3_key='incoming/one.test/ses-revoke-1' WHERE identity_id=$1`, team); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO received_emails(org_id,domain_id,identity_id,mailbox_owner_id,message_id,from_email,subject,direction,folder,send_status,updated_at)
+		SELECT 1,domain_id,id,5,'out-team-5','team@one.test','Sent by 5','outbound','sent','sent',NOW() FROM identities WHERE id=$1`, team); err != nil {
+		t.Fatal(err)
+	}
+
+	// Keeping send-only access removes the delivered copies, not sent mail.
+	if _, err := f.svc.UpdateMember(ctx, f.owner, mb.ID, f.uuids[5], &UpdateMemberInput{CanSend: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.owners(t, team, "ses-revoke-1"); fmt.Sprint(got) != "[1 2]" {
+		t.Fatalf("copies after revoking read: %v", got)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM received_emails WHERE identity_id=$1 AND mailbox_owner_id=5 AND direction='outbound'`, team); n != 1 {
+		t.Fatalf("sent copies kept %d", n)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM storage_cleanup_jobs WHERE object_key='incoming/one.test/ses-revoke-1'`); n != 1 {
+		t.Fatalf("storage cleanup jobs %d", n)
+	}
+	inbox := &InboxService{db: f.db}
+	if got := listSubjects(t, inbox, 5); len(got) != 1 || got[0] != "Sent by 5" {
+		t.Fatalf("member without read access lists %v", got)
+	}
+
+	// Changing other permissions of a reader keeps its copies.
+	if _, err := f.svc.UpdateMember(ctx, f.owner, mb.ID, f.uuids[2], &UpdateMemberInput{CanRead: true, CanSend: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.owners(t, team, "ses-revoke-1"); fmt.Sprint(got) != "[1 2]" {
+		t.Fatalf("copies after a reader update: %v", got)
+	}
+}
+
 func TestSharedMailboxRemovalWaitsForIngest(t *testing.T) {
 	f := newSharedFixture(t)
 	ctx := context.Background()

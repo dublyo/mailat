@@ -373,7 +373,7 @@ func otherReaders(ctx context.Context, tx *sql.Tx, mailboxID int, userID int64) 
 }
 
 // UpdateMember changes a member's permissions. A linked mailbox always keeps
-// at least one reader.
+// at least one reader; a member who loses read access loses its copies.
 func (s *SharedMailboxService) UpdateMember(ctx context.Context, a OrgActor, mailboxID int, userUUID string, input *UpdateMemberInput) (*SharedMailboxMember, error) {
 	if err := validPermissions(input.CanRead, input.CanSend); err != nil {
 		return nil, err
@@ -399,6 +399,18 @@ func (s *SharedMailboxService) UpdateMember(ctx context.Context, a OrgActor, mai
 	if _, err = tx.ExecContext(ctx, `UPDATE shared_mailbox_members SET can_read=$3,can_send=$4,can_manage=$5 WHERE shared_mailbox_id=$1 AND user_id=$2`,
 		mailboxID, userID, input.CanRead, input.CanSend, input.CanManage); err != nil {
 		return nil, err
+	}
+	// Losing read access removes the delivered copies, as removal does, but
+	// keeps the member's own sent mail. The UPDATE above waits for a
+	// concurrent ingest's FOR SHARE, so this DELETE sees its copies.
+	if identityID.Valid && wasReader && !input.CanRead {
+		copies := `e.identity_id=$1 AND e.mailbox_owner_id=$2 AND e.direction='inbound'`
+		if err = queueMailStorageCleanup(ctx, tx, copies, identityID.Int64, userID); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM received_emails e WHERE `+copies, identityID.Int64, userID); err != nil {
+			return nil, err
+		}
 	}
 	member, err := loadSharedMember(ctx, tx, mailboxID, userID)
 	if err != nil {
