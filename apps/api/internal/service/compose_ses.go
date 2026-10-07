@@ -117,9 +117,13 @@ func senderAllowed(ctx context.Context, q queryer, identityID int64, identityEma
 // alias owner, so aliases match exactly.
 func foreignSender(ctx context.Context, q queryer, userID, identityID int64, addr string) (bool, error) {
 	var foreign bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE lower(email)=ANY($4) AND id<>$3 AND NOT (kind='personal' AND user_id=$2))
+	// Mirror routing: an exact identity wins, so the +tag base address only
+	// decides ownership when no identity holds the exact address.
+	err := q.QueryRowContext(ctx, `SELECT CASE WHEN EXISTS(SELECT 1 FROM identities WHERE lower(email)=$1)
+	   THEN EXISTS(SELECT 1 FROM identities WHERE lower(email)=$1 AND id<>$3 AND NOT (kind='personal' AND user_id=$2))
+	   ELSE EXISTS(SELECT 1 FROM identities WHERE lower(email)=$4 AND id<>$3 AND NOT (kind='personal' AND user_id=$2)) END
 	 OR EXISTS(SELECT 1 FROM identity_send_aliases a JOIN identities i ON i.id=a.identity_id WHERE a.address=$1 AND i.id<>$3 AND NOT (i.kind='personal' AND i.user_id=$2))`,
-		addr, userID, identityID, pq.Array([]string{addr, baseAddress(addr)})).Scan(&foreign)
+		addr, userID, identityID, baseAddress(addr)).Scan(&foreign)
 	return foreign, err
 }
 

@@ -580,3 +580,37 @@ func TestPlusAddressesStayReserved(t *testing.T) {
 		t.Fatal("plain identity:", err)
 	}
 }
+
+// An identity created with '+' before plus-addresses were reserved still owns
+// its exact address: routing ranks the exact match first, so its owner may send
+// as it, while others are refused for both the exact and the base address.
+func TestForeignSenderPrefersExactIdentity(t *testing.T) {
+	f := newSharedFixture(t)
+	ctx := context.Background()
+	var base, tagged int64
+	if err := f.db.QueryRow(`INSERT INTO identities(user_id,domain_id,email,can_send,updated_at) VALUES(5,1,'sales@one.test',true,now()) RETURNING id`).Scan(&base); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.QueryRow(`INSERT INTO identities(user_id,domain_id,email,can_send,updated_at) VALUES(6,1,'sales+offer@one.test',true,now()) RETURNING id`).Scan(&tagged); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		user, identity int64
+		addr           string
+		foreign        bool
+	}{
+		{6, tagged, "sales+offer@one.test", false}, // legacy exact identity owner
+		{5, base, "sales+offer@one.test", true},    // exact identity belongs to user 6
+		{5, base, "sales+news@one.test", false},    // base owner's own +tag
+		{6, tagged, "sales+news@one.test", true},   // base address belongs to user 5
+	}
+	for _, c := range cases {
+		got, err := foreignSender(ctx, f.db, c.user, c.identity, c.addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != c.foreign {
+			t.Errorf("user %d sending as %s: foreign=%v, want %v", c.user, c.addr, got, c.foreign)
+		}
+	}
+}
