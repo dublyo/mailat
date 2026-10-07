@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -242,8 +243,16 @@ func TestOrganizationRolesAndPublicInvites(t *testing.T) {
 	}
 	for _, route := range [][2]string{{"/api/v1/auth/invites/lookup", "post"}, {"/api/v1/auth/invites/accept", "post"}} {
 		o := op(route[0], route[1])
-		if len(o["security"].([]interface{})) != 0 || o["x-api-key-scope"] != nil || o["x-mailat-required-role"] != nil {
+		if len(o["security"].([]interface{})) != 0 || o["x-api-key-scope"] != nil || o["x-mailat-role-required"] != nil {
 			t.Errorf("%s must be public", route[0])
+		}
+		if !strings.Contains(fmt.Sprint(o["responses"].(map[string]interface{})["429"]), "Too many attempts from this client") {
+			t.Errorf("%s must document its per-client attempt limit", route[0])
+		}
+	}
+	for _, route := range [][2]string{{"/api/v1/forwards", "post"}, {"/api/v1/forwards/{uuid}/resend-verification", "post"}, {"/api/v1/forwards/verify", "post"}} {
+		if !strings.Contains(fmt.Sprint(op(route[0], route[1])["responses"].(map[string]interface{})["429"]), "Retry-After") {
+			t.Errorf("%s must document its verification limit with Retry-After", route[0])
 		}
 	}
 	admin := [][2]string{
@@ -253,15 +262,15 @@ func TestOrganizationRolesAndPublicInvites(t *testing.T) {
 		{"/api/v1/org/members", "get"}, {"/api/v1/org/members/{uuid}", "delete"}, {"/api/v1/org/invites", "post"}, {"/api/v1/org/identities/{uuid}/owner", "put"},
 	}
 	for _, route := range admin {
-		if op(route[0], route[1])["x-mailat-required-role"] != "owner or admin" {
+		if fmt.Sprint(op(route[0], route[1])["x-mailat-role-required"]) != "[owner admin]" {
 			t.Errorf("%s %s missing the owner/admin role", route[1], route[0])
 		}
 	}
-	if op("/api/v1/org/members/{uuid}", "put")["x-mailat-required-role"] != "owner" {
+	if fmt.Sprint(op("/api/v1/org/members/{uuid}", "put")["x-mailat-role-required"]) != "[owner]" {
 		t.Error("role changes are owner only")
 	}
 	for _, route := range [][2]string{{"/api/v1/domains", "get"}, {"/api/v1/identities", "get"}, {"/api/v1/identities/{uuid}", "put"}, {"/api/v1/inbox/received", "get"}} {
-		if op(route[0], route[1])["x-mailat-required-role"] != nil {
+		if op(route[0], route[1])["x-mailat-role-required"] != nil {
 			t.Errorf("%s %s must stay open to members", route[1], route[0])
 		}
 	}

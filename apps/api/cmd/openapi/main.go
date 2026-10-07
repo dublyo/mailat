@@ -375,9 +375,9 @@ func main() {
 		annotateBackend(op, controller, path)
 		// Routes registered inside the router's admin groups need an organization role.
 		if group == "adminGroup" || group == "humanAdminGroup" {
-			op["x-mailat-required-role"] = "owner or admin"
+			op["x-mailat-role-required"] = []string{"owner", "admin"}
 			if verb == "PUT" && path == "/org/members/:uuid" {
-				op["x-mailat-required-role"] = "owner"
+				op["x-mailat-role-required"] = []string{"owner"}
 			}
 		}
 		params := []object{}
@@ -549,7 +549,7 @@ func customize(op object, verb, path string) {
 	}
 	// Database-backed per-IP/account/user limits (fixed windows of 15 minutes
 	// or 1 hour, not the per-minute API key window).
-	authLimited := map[string]bool{"POST /auth/login": true, "POST /auth/register": true, "POST /auth/2fa/challenge": true, "POST /auth/2fa/enable": true, "POST /auth/2fa/verify": true, "POST /auth/2fa/disable": true, "POST /security/2fa/setup": true, "POST /security/2fa/verify": true, "POST /security/2fa/disable": true, "POST /security/2fa/backup-codes": true, "POST /auth/change-password": true, "POST /oauth/link/confirm": true, "POST /unsubscribe/:token": true, "DELETE /unsubscribe/:token": true, "PUT /preferences/:token": true, "POST /forwards/verify": true}
+	authLimited := map[string]bool{"POST /auth/login": true, "POST /auth/register": true, "POST /auth/2fa/challenge": true, "POST /auth/2fa/enable": true, "POST /auth/2fa/verify": true, "POST /auth/2fa/disable": true, "POST /security/2fa/setup": true, "POST /security/2fa/verify": true, "POST /security/2fa/disable": true, "POST /security/2fa/backup-codes": true, "POST /auth/change-password": true, "POST /oauth/link/confirm": true, "POST /unsubscribe/:token": true, "DELETE /unsubscribe/:token": true, "PUT /preferences/:token": true, "POST /forwards/verify": true, "POST /auth/invites/lookup": true, "POST /auth/invites/accept": true, "POST /forwards": true, "POST /forwards/:uuid/resend-verification": true}
 	if responses, ok := op["responses"].(object); ok && authLimited[verb+" "+path] {
 		if limited, ok := responses["429"].(object); ok {
 			limited["description"] = "Too many attempts from this client, account or user; respect Retry-After"

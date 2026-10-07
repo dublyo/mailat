@@ -57,7 +57,7 @@ organization. Choose only the scopes a workflow needs:
 | Enroll contacts, cancel and retry enrollments | `automations:enroll` |
 
 Domain, identity, receiving, branding, shared-mailbox creation and
-member/invite routes carry `x-mailat-required-role` in the OpenAPI
+member/invite routes carry `x-mailat-role-required` (the roles allowed, such as `["owner","admin"]`) in the OpenAPI
 reference. A key reaches them only while the user who created it is
 an owner or admin; a member's key gets 403 even with the right scope. Contacts,
 lists, campaigns, automations and templates have no role check.

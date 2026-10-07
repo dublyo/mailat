@@ -7793,7 +7793,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       },
       "post": {
         "description": "CreateAPIKey generates a new API key\nPOST /api/v1/api-keys",
@@ -8046,7 +8049,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/api-keys/{uuid}": {
@@ -8293,7 +8299,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/auth/2fa/challenge": {
@@ -9788,6 +9797,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -9806,10 +9819,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -10038,6 +10051,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -10056,10 +10073,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -18046,7 +18063,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/branding/css": {
@@ -18520,7 +18540,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/campaign-settings": {
@@ -28751,7 +28774,10 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/domains/cloudflare/zones": {
@@ -29018,7 +29044,10 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/domains/{uuid}": {
@@ -29274,7 +29303,10 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       },
       "get": {
         "description": "Get returns a single domain with DNS records\nGET /api/v1/domains/:uuid",
@@ -30095,7 +30127,10 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/domains/{uuid}/sending-status": {
@@ -30919,7 +30954,10 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/domains/{uuid}/setup-sending": {
@@ -31183,7 +31221,10 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/domains/{uuid}/verify": {
@@ -31469,7 +31510,10 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/emails": {
@@ -33000,6 +33044,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -33018,10 +33066,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -34024,6 +34072,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Too many attempts. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -34042,10 +34094,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Too many attempts from this client, account or user; respect Retry-After",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current rate-limit window ends.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -37704,7 +37756,10 @@
         "x-api-key-scope": "identities:manage",
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/identities/{uuid}": {
@@ -37960,7 +38015,10 @@
         "x-api-key-scope": "identities:manage",
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       },
       "get": {
         "description": "Get returns a single identity\nGET /api/v1/identities/:uuid",
@@ -38766,7 +38824,10 @@
         "x-api-key-scope": "identities:manage",
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Owned sender identities support SES. Legacy identities with a Stalwart account can also synchronize password/deletion changes to Stalwart; SES identities do not require a separate mailbox server.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/identities/{uuid}/password": {
@@ -46800,7 +46861,10 @@
         "x-api-key-scope": "domains:manage",
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/inbox/threads/{id}": {
@@ -53819,7 +53883,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/org/identities/{uuid}/owner": {
@@ -54084,7 +54151,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/org/invites": {
@@ -54332,7 +54402,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Invite links are emailed through SES from an owned sending identity using the durable send queue, suppression list and monthly quota. The single-use token travels in the link fragment and only its SHA-256 hash is stored; accepting creates the account in the inviting organization and signs it in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       },
       "post": {
         "description": "CreateInvite emails a single-use link (valid INVITE_TTL_HOURS, default 7\ndays) from senderIdentityUuid or your default sending identity. Admins may\ninvite members only. 409 for a pending invite, an existing account, no free\nseat or no sending identity.\nPOST /api/v1/org/invites",
@@ -54585,7 +54658,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Invite links are emailed through SES from an owned sending identity using the durable send queue, suppression list and monthly quota. The single-use token travels in the link fragment and only its SHA-256 hash is stored; accepting creates the account in the inviting organization and signs it in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/org/invites/{uuid}": {
@@ -54832,7 +54908,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Invite links are emailed through SES from an owned sending identity using the durable send queue, suppression list and monthly quota. The single-use token travels in the link fragment and only its SHA-256 hash is stored; accepting creates the account in the inviting organization and signs it in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/org/invites/{uuid}/resend": {
@@ -55087,7 +55166,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Invite links are emailed through SES from an owned sending identity using the durable send queue, suppression list and monthly quota. The single-use token travels in the link fragment and only its SHA-256 hash is stored; accepting creates the account in the inviting organization and signs it in.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/org/members": {
@@ -55335,7 +55417,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/org/members/{uuid}": {
@@ -55600,7 +55685,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       },
       "put": {
         "description": "ChangeMemberRole sets a member's role to member or admin. Owner only; the\nowner's own role cannot change.\nPUT /api/v1/org/members/:uuid",
@@ -55863,7 +55951,9 @@
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail.",
-        "x-mailat-required-role": "owner"
+        "x-mailat-role-required": [
+          "owner"
+        ]
       }
     },
     "/api/v1/preferences/{token}": {
@@ -65940,7 +66030,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/shared-mailboxes/{id}": {
@@ -66187,7 +66280,10 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Executed on SES arrival: mail to the shared address is copied to every active member with canRead (at most 50 members), and members with canSend can compose as it. Admins see every mailbox but read no mail unless they are members; other users see only mailboxes they belong to. Owners and admins create and delete; admins and canManage members manage membership, and the last reader cannot be removed. Removing a member deletes that member's copies. Rows created before shared identities existed are listed with active=false and must be recreated.",
-        "x-mailat-required-role": "owner or admin"
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       },
       "get": {
         "description": "GetSharedMailbox returns a mailbox to an admin or a member.\nGET /api/v1/shared-mailboxes/:id",
