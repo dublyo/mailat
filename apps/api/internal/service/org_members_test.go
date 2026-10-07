@@ -573,6 +573,13 @@ func TestRemoveSoleSharedReaderKeepsMailboxReceiving(t *testing.T) {
 	if n := f.count(t, `SELECT count(*) FROM audit_logs WHERE action='member_remove' AND resource_id=$1 AND new_values::text LIKE '%sharedMailboxesHandedOver%'`, f.memberUUID); n != 1 {
 		t.Fatal("handover not audited")
 	}
+	// The owner also sees an unacknowledged alert naming the mailbox.
+	if n := f.count(t, `SELECT count(*) FROM alerts WHERE org_id=$1 AND type='shared_mailbox_handover' AND NOT acknowledged AND message LIKE '%support@acme.test%'`, f.org); n != 1 {
+		t.Fatalf("handover alerts for support@: %d", n)
+	}
+	if n := f.count(t, `SELECT count(*) FROM alerts WHERE org_id=$1 AND type='shared_mailbox_handover'`, f.org); n != 1 {
+		t.Fatalf("handover alerts: %d, want only support@", n)
+	}
 
 	// Mail to support@ is still stored for a reader instead of being dropped.
 	f.ingestShared(t, "after-removal", "support@acme.test")
@@ -701,8 +708,47 @@ func TestIngestResolvesPersonalOwnerInsideTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if owners, err = mailboxOwners(ctx, tx, stale); err != nil || len(owners) != 0 {
-		t.Fatalf("disabled identity owners %v %v", owners, err)
+	if owners, err = mailboxOwners(ctx, tx, stale); !errors.Is(err, errIngestRouteChanged) || len(owners) != 0 {
+		t.Fatalf("disabled identity owners %v %v; want a re-route", owners, err)
+	}
+}
+
+// A personal identity that stops receiving between routing and delivery must
+// not swallow the message: it is routed again, here to the catch-all.
+func TestIngestReroutesWhenPersonalIdentityStopsReceiving(t *testing.T) {
+	f := newOrgFixture(t)
+	var personal int64
+	if err := f.db.QueryRow(`INSERT INTO identities(user_id,domain_id,email,can_send,updated_at) VALUES($1,50,'m1@acme.test',true,now()) RETURNING id`, f.member.UserID).Scan(&personal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO identities(user_id,domain_id,email,can_send,is_catch_all,updated_at) VALUES($1,50,'catchall@acme.test',true,true,now())`, f.admin.UserID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE domains SET receiving_enabled=true WHERE id=50`); err != nil {
+		t.Fatal(err)
+	}
+	const sesID = "raced-disable"
+	storage := &fakeIncomingStorage{raw: []byte("From: Sender <sender@example.test>\r\nTo: m1@acme.test\r\nMessage-ID: <" + sesID + "@example.test>\r\nSubject: Hello\r\n\r\nbody")}
+	disabled := false
+	svc := &ReceivingService{db: f.db, storage: storage, beforeIngestTx: func() {
+		if !disabled {
+			disabled = true
+			if _, err := f.db.Exec(`UPDATE identities SET can_receive=false WHERE id=$1`, personal); err != nil {
+				t.Error(err)
+			}
+		}
+	}}
+	auth := &ReceivingAuthorization{OrgID: f.org, TopicARN: "arn:aws:sns:us-east-1:123456789012:acme", Bucket: "acme-bucket", Region: "us-east-1"}
+	n := &model.SESNotification{NotificationType: "Received", Mail: model.SESMail{MessageId: sesID}, Receipt: &model.SESReceipt{Timestamp: "2026-10-07T00:00:00Z", Recipients: []string{"m1@acme.test"},
+		Action: model.SESAction{Type: "S3", BucketName: auth.Bucket, ObjectKey: "incoming/acme.test/" + sesID}}}
+	if err := svc.ProcessIncomingEmail(context.Background(), auth, n); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM received_emails WHERE ses_message_id=$1 AND mailbox_owner_id=$2`, sesID, f.admin.UserID); n != 1 {
+		t.Fatalf("catch-all copies %d, want 1", n)
+	}
+	if n := f.count(t, `SELECT count(*) FROM received_ingestions WHERE ses_message_id=$1 AND identity_id=$2`, sesID, personal); n != 0 {
+		t.Fatal("the disabled identity was tombstoned")
 	}
 }
 
@@ -750,5 +796,54 @@ func TestRemoveMemberLocksPersonalAndSharedInIngestOrder(t *testing.T) {
 	}
 	if err = <-done; err != nil {
 		t.Fatal("removal:", err)
+	}
+}
+
+// Ingest holds the personal identity lock and then inserts mail and change
+// rows whose foreign keys take FOR KEY SHARE on the owner's users row. Removal
+// must not hold a lock on that row that conflicts with FOR KEY SHARE while it
+// waits for the identity, or the two deadlock and removal fails.
+func TestRemoveMemberDoesNotDeadlockIngestForeignKeys(t *testing.T) {
+	f := newOrgFixture(t)
+	ctx := context.Background()
+	m := f.member.UserID
+	var personal int64
+	if err := f.db.QueryRow(`INSERT INTO identities(user_id,domain_id,email,can_send,updated_at) VALUES($1,50,'m1@acme.test',true,now()) RETURNING id`, m).Scan(&personal); err != nil {
+		t.Fatal(err)
+	}
+	ingest, err := f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingest.Rollback()
+	if _, err = ingest.Exec(`SET LOCAL lock_timeout='5s'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = mailboxOwners(ctx, ingest, &recipientIdentity{ID: personal, Kind: "personal"}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.svc.RemoveMember(ctx, f.admin, f.memberUUID, "")
+		done <- err
+	}()
+	for i := 0; f.count(t, `SELECT count(*) FROM pg_locks WHERE NOT granted`) == 0; i++ {
+		if i > 500 {
+			t.Fatal("removal never waited for the ingest lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The lock a foreign key check on mailbox_changes/received_emails takes.
+	if _, err = ingest.Exec(`SELECT 1 FROM users WHERE id=$1 FOR KEY SHARE`, m); err != nil {
+		t.Fatal("ingest foreign key check blocked by removal:", err)
+	}
+	if err = ingest.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-done; err != nil {
+		t.Fatal("removal:", err)
+	}
+	if f.count(t, `SELECT count(*) FROM users WHERE id=$1 AND status='disabled'`, m) != 1 {
+		t.Fatal("member not removed")
 	}
 }

@@ -27,7 +27,20 @@ type ReceivingService struct {
 	receivingProvider     *provider.ReceivingProvider
 	storage               incomingStorage
 	webhookTriggerService *WebhookTriggerService
+	// beforeIngestTx, when set (tests only), runs between routing and the
+	// delivery transaction.
+	beforeIngestTx func()
 }
+
+// errIngestRouteChanged means a personal identity chosen by routing stopped
+// receiving before the delivery transaction locked it. The message is routed
+// again from the current state (another identity or a catch-all may now take
+// it) instead of being acknowledged without a copy.
+var errIngestRouteChanged = errors.New("recipient routing changed during delivery; retry")
+
+// ingestRouteAttempts bounds in-process re-routing; after that the error
+// reaches SNS, which redelivers the notification later.
+const ingestRouteAttempts = 3
 
 func NewReceivingService(db *sql.DB, region, accessKeyID, secretAccessKey, webhookBaseURL string) (*ReceivingService, error) {
 	rp, err := provider.NewReceivingProvider(&provider.ReceivingConfig{Region: region, AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey, WebhookBaseURL: webhookBaseURL})
@@ -210,6 +223,15 @@ func (s *ReceivingService) SetupDomainReceiving(ctx context.Context, orgID int64
 
 // Each provider delivery is committed once, with one mailbox copy per identity.
 func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *ReceivingAuthorization, n *model.SESNotification) error {
+	for attempt := 1; ; attempt++ {
+		err := s.processIncomingEmail(ctx, auth, n)
+		if !errors.Is(err, errIngestRouteChanged) || attempt == ingestRouteAttempts {
+			return err
+		}
+	}
+}
+
+func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *ReceivingAuthorization, n *model.SESNotification) error {
 	if auth.SendingOnly {
 		return fmt.Errorf("sending feedback topics cannot deliver incoming mail")
 	}
@@ -332,6 +354,9 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 		if err := s.storage.PutAttachment(ctx, att.S3Bucket, att.S3Key, att.ContentType, att.Data); err != nil {
 			return fmt.Errorf("save attachment: %w", err)
 		}
+	}
+	if s.beforeIngestTx != nil {
+		s.beforeIngestTx()
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -456,14 +481,16 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 // read it before the transaction, and a transfer or member removal (which
 // lock the identity FOR UPDATE) may have committed since. The copy, filters,
 // events and push then all follow the owner the trigger will write. An
-// identity that stopped receiving gets no copy.
+// identity that stopped receiving in between returns errIngestRouteChanged,
+// so nothing (not even the ingestion tombstone) is written and the message is
+// routed again from the current state, e.g. to a catch-all.
 func mailboxOwners(ctx context.Context, tx *sql.Tx, ident *recipientIdentity) ([]int64, error) {
 	if ident.Kind != "shared" {
 		var owner int64
 		err := tx.QueryRowContext(ctx, `SELECT i.user_id FROM identities i JOIN users u ON u.id=i.user_id
    WHERE i.id=$1 AND i.kind='personal' AND i.can_receive AND u.status='active' FOR SHARE OF i`, ident.ID).Scan(&owner)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, errIngestRouteChanged
 		}
 		if err != nil {
 			return nil, err

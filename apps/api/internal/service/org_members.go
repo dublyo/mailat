@@ -416,7 +416,11 @@ func (s *OrgMemberService) RemoveMember(ctx context.Context, a OrgActor, userUUI
 	defer tx.Rollback()
 	var id int64
 	var role, status string
-	err = tx.QueryRowContext(ctx, `SELECT id,role,status FROM users WHERE uuid=$1 AND org_id=$2 FOR UPDATE`, userUUID, a.OrgID).Scan(&id, &role, &status)
+	// FOR NO KEY UPDATE, not FOR UPDATE: an ingest holding this user's identity
+	// or membership locks still needs FOR KEY SHARE on the row for its foreign
+	// key checks (received_emails, mailbox_changes, counters). FOR UPDATE would
+	// block those while removal waits on the identity lock: a deadlock.
+	err = tx.QueryRowContext(ctx, `SELECT id,role,status FROM users WHERE uuid=$1 AND org_id=$2 FOR NO KEY UPDATE`, userUUID, a.OrgID).Scan(&id, &role, &status)
 	if err == sql.ErrNoRows || (err == nil && status != "active") {
 		return nil, orgError(http.StatusNotFound, "Member not found")
 	}
@@ -521,6 +525,16 @@ func (s *OrgMemberService) RemoveMember(ctx context.Context, a OrgActor, userUUI
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE auto_replies SET active=false,updated_at=now() WHERE user_id=$1 AND cardinality(COALESCE(identity_ids,'{}'))=0 AND active`, id); err != nil {
 		return nil, err
+	}
+	// The owner learns about each handover from the alerts list (and its digest).
+	if len(handedOver) > 0 {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO alerts(org_id,type,severity,title,message,data)
+			SELECT $1,'shared_mailbox_handover','info','Shared mailbox handed to the owner',
+				'The last reader of the shared mailbox '||i.email||' was removed from the organization. The organization owner is now its reader and manager; add members to it or delete it in Settings.',
+				jsonb_build_object('sharedMailboxUuid',sm.uuid::text,'email',i.email,'removedMember',$3::text)
+			FROM shared_mailboxes sm JOIN identities i ON i.id=sm.identity_id WHERE sm.uuid::text=ANY($2)`, a.OrgID, pq.Array(handedOver), userUUID); err != nil {
+			return nil, err
+		}
 	}
 	if err = auditTx(ctx, tx, a, "member_remove", "user", userUUID, "Removed member", map[string]any{
 		"transferredTo": transferTo, "identitiesTransferred": result.IdentitiesTransferred, "identitiesDisabled": result.IdentitiesDisabled,
