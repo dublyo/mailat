@@ -65,8 +65,10 @@ export const useAuthStore = defineStore('auth', () => {
   // server is told while the session still authenticates, then the browser
   // subscription is dropped.
   function endPush(token: string | null) {
-    return endDevicePush(token ? endpoint => pushApi.unsubscribe(endpoint, token) : null)
+    const ended = endDevicePush(token ? endpoint => pushApi.unsubscribe(endpoint, token) : null)
       .catch(() => false /* No service worker, or push unavailable in this browser. */)
+    // A hung server call must not block sign-out or account switching.
+    return Promise.race([ended, new Promise<boolean>(resolve => setTimeout(() => resolve(false), 5000))])
   }
 
   function clearLocalSession(options: { keepLegacyRules?: boolean }) {

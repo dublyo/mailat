@@ -412,8 +412,6 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.POST("/health/warmup", healthOpsCtrl.StartWarmup)
 			protectedGroup.GET("/health/warmup/:ip", healthOpsCtrl.GetWarmupStatus)
 			protectedGroup.GET("/health/quota", healthOpsCtrl.GetQuotaStatus)
-			protectedGroup.GET("/health/alerts", healthOpsCtrl.GetAlerts)
-			protectedGroup.POST("/health/alerts/:id/acknowledge", healthOpsCtrl.AcknowledgeAlert)
 			protectedGroup.GET("/health/logs", healthOpsCtrl.GetDeliveryLogs)
 
 			// Phase 5.1: Email Rules & Filters
@@ -529,6 +527,9 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 				adminGroup.DELETE("/org/invites/:uuid", orgCtrl.RevokeInvite)
 				adminGroup.GET("/org/identities", orgCtrl.ListOrgIdentities)
 				adminGroup.PUT("/org/identities/:uuid/owner", orgCtrl.TransferIdentity)
+				// Alerts include org-wide handover notices for the owner.
+				adminGroup.GET("/health/alerts", healthOpsCtrl.GetAlerts)
+				adminGroup.POST("/health/alerts/:id/acknowledge", healthOpsCtrl.AcknowledgeAlert)
 
 				// Branding and shared mailboxes
 				adminGroup.PUT("/branding", phase5Ctrl.UpdateBranding)

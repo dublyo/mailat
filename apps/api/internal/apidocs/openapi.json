@@ -34705,7 +34705,11 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/health/alerts/{id}/acknowledge": {
@@ -34951,7 +34955,11 @@
         ],
         "x-human-session-required": true,
         "x-mailat-backend": "mailat",
-        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee."
+        "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/health/blacklist-check": {
