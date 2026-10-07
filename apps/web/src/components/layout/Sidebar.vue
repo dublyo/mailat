@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   Inbox, Star, Send, FileText, Trash2, AlertCircle,
   Mail, BarChart3, Users, Globe, Activity, Settings, Plus,
-  ChevronDown, ChevronRight, Zap, Archive
+  ChevronDown, ChevronRight, Zap, Archive, AtSign
 } from 'lucide-vue-next'
 import { useReceivedInboxStore } from '@/stores/receivedInbox'
 import { useDomainsStore } from '@/stores/domains'
@@ -42,6 +42,8 @@ const moreNavItems = [
 
 // Mailbox users see mail only; Health is org-wide and admin-only.
 const allAppNavItems: NavItem[] = [
+  // Migadu-style: one place to create and manage mailbox logins on any domain.
+  { id: 'mailboxes', label: 'Mailboxes', icon: AtSign, route: '/mailboxes', audience: 'admin' },
   { id: 'campaigns', label: 'Campaigns', icon: Mail, route: '/campaigns', audience: 'staff' },
   { id: 'automations', label: 'Automations', icon: Zap, route: '/automations', audience: 'staff' },
   { id: 'contacts', label: 'Contacts', icon: Users, route: '/contacts', audience: 'staff' },
@@ -52,7 +54,11 @@ const allAppNavItems: NavItem[] = [
 ]
 const appNavItems = computed(() => visibleFor(allAppNavItems, authStore.user))
 
+const isMailboxPage = () => route.path === '/mailboxes' || /^\/domains\/[^/]+\/mailboxes(\/|$)/.test(route.path)
 const isActive = (itemRoute: string, folder?: string) => {
+  // Mailbox pages live under /domains/:uuid but belong to the Mailboxes item.
+  if (itemRoute === '/mailboxes') return isMailboxPage()
+  if (itemRoute === '/domains' && isMailboxPage()) return false
   // For received inbox, check both path and folder query param
   if (itemRoute.startsWith('/received')) {
     if (!['/received', '/inbox'].includes(route.path)) return false

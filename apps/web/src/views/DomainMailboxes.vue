@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
-import { ArrowLeft, Plus, Upload, Download, AlertTriangle, ChevronRight, Check, X } from 'lucide-vue-next'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ArrowLeft, Plus, Upload, Download, AlertTriangle, ChevronRight, Check, X, Globe } from 'lucide-vue-next'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import Badge from '@/components/common/Badge.vue'
@@ -15,8 +15,17 @@ import {
 import { CSV_MIME } from '@/lib/csv'
 
 const route = useRoute()
+const router = useRouter()
 const domains = useDomainsStore()
-const domainUuid = route.params.uuid as string
+// Two entry points: /domains/:uuid/mailboxes (one domain) and the sidebar's
+// /mailboxes, which picks the domain with a switcher kept in ?domain=.
+const fixedDomain = computed(() => (route.params.uuid as string | undefined) || '')
+const allDomainsMode = computed(() => !fixedDomain.value)
+// Mailboxes need an active domain that SES has verified for sending.
+const readyDomains = computed(() => domains.domains.filter(d => d.status === 'active' && d.sesVerified))
+const selectedDomain = ref((route.query.domain as string | undefined) || '')
+const domainUuid = computed(() => fixedDomain.value || selectedDomain.value)
+const noReadyDomains = ref(false)
 const data = ref<DomainMailboxes | null>(null)
 const loading = ref(true)
 const error = ref('')
@@ -25,21 +34,37 @@ const showRemoved = ref(false)
 const domainName = computed(() => data.value?.domain.name ?? '')
 
 async function load() {
+  if (!domainUuid.value) { loading.value = false; return }
   loading.value = true
   error.value = ''
   try {
-    data.value = await mailboxAdminApi.list(domainUuid, showRemoved.value)
+    data.value = await mailboxAdminApi.list(domainUuid.value, showRemoved.value)
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not load the mailboxes.'
   } finally {
     loading.value = false
   }
 }
-onMounted(() => {
-  load()
+onMounted(async () => {
   // For the invite sender picker and the receiving-domain warning.
   domains.fetchIdentities()
-  if (!domains.domains.length) domains.fetchDomains()
+  if (allDomainsMode.value) {
+    if (!domains.domains.length) await domains.fetchDomains()
+    const ready = readyDomains.value
+    if (!ready.some(d => d.uuid === selectedDomain.value)) selectedDomain.value = ready[0]?.uuid ?? ''
+    noReadyDomains.value = !ready.length
+    if (selectedDomain.value && route.query.domain !== selectedDomain.value) router.replace({ query: { ...route.query, domain: selectedDomain.value } })
+  } else if (!domains.domains.length) domains.fetchDomains()
+  load()
+})
+// Switching domains on /mailboxes keeps the choice in the URL so Back and
+// links from the detail page land on the same list.
+watch(selectedDomain, (uuid, previous) => {
+  if (!allDomainsMode.value || !uuid || uuid === previous) return
+  data.value = null
+  notice.value = ''
+  router.replace({ query: { ...route.query, domain: uuid } })
+  load()
 })
 const formatDate = (value: string | null) => value ? new Date(value).toLocaleDateString() : 'Never'
 
@@ -73,7 +98,7 @@ async function create() {
     const access = f.mode === 'invite'
       ? { mode: 'invite' as const, inviteEmail: f.inviteEmail.trim(), senderIdentityUuid: f.senderIdentityUuid || undefined }
       : { mode: 'password' as const, password: f.password }
-    const result = await mailboxAdminApi.create(domainUuid, { localPart: f.localPart.trim(), name: f.name.trim(), access, maySend: f.maySend, mayReceive: f.mayReceive })
+    const result = await mailboxAdminApi.create(domainUuid.value, { localPart: f.localPart.trim(), name: f.name.trim(), access, maySend: f.maySend, mayReceive: f.mayReceive })
     createOpen.value = false
     form.value = blankForm()
     const parts = [f.mode === 'invite'
@@ -147,7 +172,7 @@ async function runImport(dryRun: boolean) {
   importBusy.value = true
   importError.value = ''
   try {
-    const result = await mailboxAdminApi.importCsv(domainUuid, importText.value, dryRun)
+    const result = await mailboxAdminApi.importCsv(domainUuid.value, importText.value, dryRun)
     if (dryRun) dryRows.value = result.rows
     else { resultRows.value = result.rows; importText.value = '' }
   } catch (e) {
@@ -161,10 +186,18 @@ async function runImport(dryRun: boolean) {
 <template>
   <AppLayout>
     <section class="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6" :aria-busy="loading">
-      <router-link to="/domains" class="inline-flex items-center gap-1 text-sm text-gmail-gray hover:text-gmail-blue mb-4"><ArrowLeft class="w-4 h-4" />Domains</router-link>
+      <router-link v-if="!allDomainsMode" to="/domains" class="inline-flex items-center gap-1 text-sm text-gmail-gray hover:text-gmail-blue mb-4"><ArrowLeft class="w-4 h-4" />Domains</router-link>
       <header class="flex flex-wrap justify-between items-start gap-4 mb-4">
         <div>
-          <h1 class="text-2xl font-medium break-all">Mailboxes{{ domainName ? ` · ${domainName}` : '' }}</h1>
+          <h1 class="text-2xl font-medium break-all">Mailboxes{{ !allDomainsMode && domainName ? ` · ${domainName}` : '' }}</h1>
+          <p v-if="allDomainsMode" class="text-sm text-gmail-gray mt-1">Each mailbox is a login that sees and sends only its own address. Mail to addresses without a mailbox goes to the domain's catch-all.</p>
+          <label v-if="allDomainsMode && readyDomains.length" class="mt-3 flex flex-wrap items-center gap-2 text-sm">
+            <Globe class="w-4 h-4 text-gmail-gray" aria-hidden="true" />
+            <span class="font-medium">Domain</span>
+            <select v-model="selectedDomain" class="border border-gmail-border rounded-lg px-2 py-1.5 bg-white min-w-48">
+              <option v-for="domain in readyDomains" :key="domain.uuid" :value="domain.uuid">{{ domain.name }}</option>
+            </select>
+          </label>
           <div v-if="data" class="flex flex-wrap gap-2 mt-2">
             <Badge size="sm" :variant="data.domain.sesVerified ? 'success' : 'error'">{{ data.domain.sesVerified ? 'SES verified' : 'SES not verified' }}</Badge>
             <Badge size="sm" :variant="data.domain.receivingEnabled ? 'success' : 'warning'">Receiving {{ data.domain.receivingEnabled ? 'on' : 'off' }}</Badge>
@@ -181,6 +214,10 @@ async function runImport(dryRun: boolean) {
         <AlertTriangle class="w-4 h-4 shrink-0" />
         <span class="flex-1 min-w-0">Receiving is off for this domain; mailboxes won't get mail until you set it up.</span>
         <router-link to="/domains" class="font-medium underline">Set up receiving</router-link>
+      </div>
+      <div v-if="allDomainsMode && noReadyDomains" role="status" class="mb-4 p-4 rounded-lg border border-gmail-border bg-gmail-lightGray text-sm">
+        No domain is ready for mailboxes yet. Add a domain and verify it with SES, then come back here.
+        <router-link to="/domains" class="ml-1 font-medium text-gmail-blue underline">Go to Domains</router-link>
       </div>
       <div v-if="error" role="alert" class="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">{{ error }}</div>
       <div v-if="notice" role="status" class="mb-4 p-3 bg-blue-50 text-blue-800 rounded-lg text-sm flex gap-3"><span class="flex-1">{{ notice }}</span><button type="button" class="underline" @click="notice = ''">Dismiss</button></div>
@@ -199,7 +236,7 @@ async function runImport(dryRun: boolean) {
             </thead>
             <tbody class="divide-y">
               <tr v-for="mailbox in data.mailboxes" :key="mailbox.userUuid" :class="mailbox.status === 'removed' ? 'text-gmail-gray' : ''">
-                <td class="p-2 break-all"><span class="font-medium">{{ mailbox.address }}</span> <Badge v-if="mailbox.isCatchAll" size="sm" variant="warning">Catch-all</Badge></td>
+                <td class="p-2 break-all"><router-link v-if="mailbox.status !== 'removed'" :to="`/domains/${domainUuid}/mailboxes/${mailbox.userUuid}`" class="font-medium text-gmail-blue hover:underline">{{ mailbox.address }}</router-link><span v-else class="font-medium">{{ mailbox.address }}</span> <Badge v-if="mailbox.isCatchAll" size="sm" variant="warning">Catch-all</Badge></td>
                 <td class="p-2">{{ mailbox.name }}</td>
                 <td class="p-2"><Badge size="sm" :variant="mailboxStatusBadge[mailbox.status]">{{ mailboxStatusLabel[mailbox.status] }}</Badge></td>
                 <td class="p-2"><component :is="mailbox.maySend ? Check : X" :class="['w-4 h-4', mailbox.maySend ? 'text-green-600' : 'text-gray-400']" /><span class="sr-only">{{ mailbox.maySend ? 'Yes' : 'No' }}</span></td>

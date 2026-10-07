@@ -68,7 +68,7 @@ test('admin-only pages are blocked for members, staff pages are not', async () =
 
 test('mailbox admin pages are for owners and admins only', async () => {
   const uuid = '0d6c1c1e-8b7a-4b8e-9e2f-6a1f2b3c4d5e'
-  for (const path of [`/domains/${uuid}/mailboxes`, `/domains/${uuid}/mailboxes/${uuid}`]) {
+  for (const path of ['/mailboxes', `/mailboxes?domain=${uuid}`, `/domains/${uuid}/mailboxes`, `/domains/${uuid}/mailboxes/${uuid}`]) {
     assert.equal(await navigate(path, mailbox), '/received', path)
     assert.equal(await navigate(path, member), '/received', path)
     assert.equal(await navigate(path, admin), path, path)
@@ -137,9 +137,10 @@ test('sidebar items per role', async () => {
   const { readFile } = await import('node:fs/promises')
   const source = await readFile(`${webRoot}/src/components/layout/Sidebar.vue`, 'utf8')
   const items = [...source.matchAll(/\{ id: '([\w-]+)'[^}]*?audience: '(\w+)' \}/g)].map(m => ({ id: m[1], audience: m[2] }))
-  assert.ok(items.length === 14, 'every sidebar item declares an audience')
+  assert.ok(items.length === 15, 'every sidebar item declares an audience')
   const ids = user => roles.visibleFor(items, user).map(i => i.id)
   assert.deepEqual(ids(mailbox), ['inbox', 'all', 'starred', 'sent', 'drafts', 'outbox'])
   assert.ok(ids(member).includes('dmarc-reports') && ids(member).includes('campaigns') && !ids(member).includes('health'))
-  assert.ok(ids(admin).includes('health'))
+  assert.ok(ids(admin).includes('health') && ids(admin).includes('mailboxes') && ids(owner).includes('mailboxes'))
+  assert.ok(!ids(member).includes('mailboxes') && !ids(mailbox).includes('mailboxes'))
 })

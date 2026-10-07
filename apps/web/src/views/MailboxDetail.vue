@@ -13,7 +13,7 @@ const route = useRoute()
 const router = useRouter()
 const domainUuid = route.params.uuid as string
 const userUuid = route.params.userUuid as string
-const listPath = `/domains/${domainUuid}/mailboxes`
+const listPath = `/mailboxes?domain=${encodeURIComponent(domainUuid)}`
 
 const detail = ref<MailboxDetail | null>(null)
 const loading = ref(true)
