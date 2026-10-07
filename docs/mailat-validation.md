@@ -109,16 +109,16 @@ Recorded by the M6 handoff agent. Only facts checked on 2026-10-07 are listed; n
 
 **Live instance (read-only, 2026-10-07T14:13Z).**
 
-- `GET https://mail.dublyo.com/api/v1/health`: `healthy`, PostgreSQL `ok`, Redis `ok`, version `f696e552028e6e53117a35fca46a02afde5dbab3`.
+- `GET /api/v1/health` on the production instance: `healthy`, PostgreSQL `ok`, Redis `ok`, version `f696e552028e6e53117a35fca46a02afde5dbab3`.
 - `GET /api/v1/openapi.json`: 279 operations, including the M5.1 `/api/v1/org/mailboxes/...` routes; `info.version` is still `2026-10-04` because the date-based contract version is an unpushed M6 change.
 - The web root's `last-modified` (12:10:15 GMT) matches the `mailat-web` build time for f696e55. This is an inference, not a digest comparison.
 - Not verified by this record: who performed the rollout from `18b8dcc` to `f696e55`, the pre-upgrade backup, the `mailat_schema_migrations` ledger (015–017 expected once), browser workflows, signup/campaign/forward mail behaviour, and response headers on `/subscribe/*`.
 
-**Local M6 tree.** Local `main` at `da71cd4` (14 M6 commits ahead of `origin/main`, clean tree, `scripts/` and `examples/` untracked):
+**Local M6 tree.** Local `main` at `da71cd4` (14 commits ahead of `origin/main`: 13 M6 commits plus `28a7f1e`, which accepts plus addresses such as `name+tag@example.com` in request email validation and was found in live testing; clean tree, `scripts/` and `examples/` untracked):
 
 - `go build ./...`, `go vet ./...` and `go run ./cmd/openapi --check` ("OpenAPI matches routes and DTOs") passed.
 - `go test -race -count=1 ./...` with a disposable local PostgreSQL (`MAILAT_TEST_DATABASE_URL`) passed in every package that has tests.
 - `apps/web`: `npm test` 190 passed, 0 failed; `npm run build` (vue-tsc and Vite) passed.
-- Docker image builds, the non-root nginx smoke and Caddy validation were not run locally (the Docker daemon was off); CI is the build proof once pushed.
+- Docker image builds, the image smoke steps (API non-root uid check; web `/`, `/nginx-health` and `/subscribe` headers) and Caddy validation were not run locally (the Docker daemon was off); CI is the build proof once pushed. The web nginx master still runs as root (workers run as `nginx`); the spec's non-root web image was deferred, and CI checks no web uid.
 
 **Still required before an R1 record can be written.** Owner approval, push and green CI for the M6 head, `sha-<full>` images, the backup and isolated rehearsal, the stack 5 tag change, ledger and row-count verification, the post-deploy checklist and a 30-minute watch (runbook in `MAILAT-AI-HANDOFF-2026-10-07.md`, section 10.1, outside this repository).

@@ -2,7 +2,7 @@
 
 Requires Go 1.21+. Run `go test -race ./...` in this package for HTTP and signature tests.
 
-Version 0.2.0 targets API contract `2026-10-07` (the `info.version` of your instance's `/api/v1/openapi.json`).
+Version 0.2.0 targets API contract `2026-10-07` (the `info.version` of your instance's `/api/v1/openapi.json`). Instances on `f696e55` serve the same paths and schemas but still label them `2026-10-04`; the date-based version starts with the M6 release.
 
 The base URL is required: Mailat is self-hosted, so there is no default host. `NewClient(baseURL, apiKey string, opts ...ClientOption) (*Client, error)` takes your instance origin or its API root; `https://mail.example.com`, `https://mail.example.com/`, `https://mail.example.com/api/v1` and `https://mail.example.com/api/v1/` all resolve to `https://mail.example.com/api/v1`. It returns an error for an empty or invalid base URL or an empty API key. This is a breaking change from 0.1.x: `DefaultBaseURL` and `WithBaseURL` are removed, and `NewClient` now returns an error.
 

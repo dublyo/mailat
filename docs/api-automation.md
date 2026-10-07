@@ -266,7 +266,8 @@ list or template that an active or paused version uses.
 ### Execution and email delivery
 
 The API process runs the executor. It polls PostgreSQL, takes leases with
-`FOR UPDATE SKIP LOCKED` and needs no Redis, so more than one replica is safe.
+`FOR UPDATE SKIP LOCKED` and needs no Redis. The leases are designed for more
+than one replica, but only a single API process has been deployed and validated.
 Each step commits in one transaction together with its side effect and the
 enrollment's advance.
 

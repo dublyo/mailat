@@ -319,7 +319,7 @@ Sieve scripts are not supported. Existing rows are kept but never run; use inbox
 
 ### Live updates and web push
 
-Open mailboxes update live over Server-Sent Events. Every committed mailbox change is recorded in `mailbox_changes` and announced with PostgreSQL `NOTIFY`, so all API replicas see it; `LISTEN` needs a direct (session-mode) PostgreSQL connection, not a transaction-pooling proxy. If the listener drops, streams fall back to polling every 5 seconds. Browsers fetch a single-use stream ticket for each connection, and a stream stays open as long as its session. After a reconnect the client resumes from its last cursor, so nothing committed in between is missed; a cursor that is too old asks the client to reload. The API sends `X-Accel-Buffering: no`; any reverse proxy in front of it must pass `text/event-stream` responses through unbuffered. `SSE_MAX_CONNECTIONS` (default 5000) caps streams per replica; each user keeps at most 10.
+Open mailboxes update live over Server-Sent Events. Every committed mailbox change is recorded in `mailbox_changes` and announced with PostgreSQL `NOTIFY`, so every API replica would see it (multi-replica deployment is unvalidated; see [Known limits](#known-limits)); `LISTEN` needs a direct (session-mode) PostgreSQL connection, not a transaction-pooling proxy. If the listener drops, streams fall back to polling every 5 seconds. Browsers fetch a single-use stream ticket for each connection, and a stream stays open as long as its session. After a reconnect the client resumes from its last cursor, so nothing committed in between is missed; a cursor that is too old asks the client to reload. The API sends `X-Accel-Buffering: no`; any reverse proxy in front of it must pass `text/event-stream` responses through unbuffered. `SSE_MAX_CONNECTIONS` (default 5000) caps streams per replica; each user keeps at most 10.
 
 Desktop notifications for new inbox mail use web push with VAPID keys. Generate a pair once with `cd apps/api && go run ./cmd/vapid-keys` and set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` (a `mailto:` or `https:` contact). Set all three or none; a partial or mismatched set stops startup, and with none push is disabled. Keep the private key secret. Rotating the keys retires existing subscriptions, so users enable notifications again in Settings. Subscriptions are accepted only for push-service hosts in `PUSH_ENDPOINT_HOST_SUFFIXES` (Chrome/Edge, Firefox, Safari and Windows by default), and deliveries go only to public addresses without redirects. Signing out turns push off in that browser, and signing out of all other sessions pauses push on every device of the account until it is enabled again.
 
@@ -352,10 +352,12 @@ It does not cover: the transactional `suppression_list` (SES bounce and complain
 
 ### Known limits
 
-- **One API replica.** Run a single API container. Several background loops lease their work in PostgreSQL and live updates use `NOTIFY`, but this release is only tested with one API process; multiple replicas are unsupported.
+- **Validated with one API replica.** Background loops lease their work in PostgreSQL and live updates use `NOTIFY`, so several replicas are designed to work, but this release has only been deployed and validated with one API process. Run a single API container unless you test more yourself.
+- **Signup forms are per creator.** A form is managed only by the user who created it, and its `contact.subscribed` events go only to that user's webhooks.
 - **No conversation threading for SES mail.** Received messages store a thread ID, but the SES inbox lists messages individually; `/inbox/threads/:id` serves only the legacy JMAP inbox.
 - **Compose sends have no stale-`sending` reconciler** (see [Send status and safe retries](#send-status-and-safe-retries)).
 - **SNS SHA1 signatures are still accepted**; see the `SignatureVersion` step above.
+- **The web image's nginx master runs as root.** The workers that serve requests run as the `nginx` user; a fully non-root web image is deferred.
 
 ### Upgrade rollback
 

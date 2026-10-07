@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.8"
 authors = [
-    { name = "mailat.co", email = "support@mailat.co" }
+    { name = "Mailat" }
 ]
 keywords = [
     "email",
@@ -48,7 +48,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://mailat.co"
+Homepage = "https://github.com/dublyo/mailat"
 Documentation = "https://github.com/dublyo/mailat/tree/main/packages/sdk-python"
 Repository = "https://github.com/dublyo/mailat"
 

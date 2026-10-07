@@ -6,11 +6,11 @@ Thank you for your interest in contributing to Mailat! This document provides gu
 
 ### Prerequisites
 
-- Go 1.24 or higher
-- Node.js 20 or higher
-- Docker and Docker Compose
-- PostgreSQL 17+ (or use Supabase/Neon)
-- Redis 7+ (or use Upstash)
+- Go 1.27.1 (pinned by the `toolchain` line in `apps/api/go.mod`; an older Go 1.21+ downloads it automatically unless `GOTOOLCHAIN=local`)
+- Node.js 24
+- PostgreSQL 16 (the version CI tests against)
+- Redis 7 (required: the API exits at startup without it)
+- Docker, optional, for running PostgreSQL and Redis locally
 
 ### Getting Started
 
@@ -20,13 +20,10 @@ Thank you for your interest in contributing to Mailat! This document provides gu
    cd mailat
    ```
 
-2. **Install dependencies**
+2. **Install web dependencies**
    ```bash
-   # Install pnpm if you haven't already
-   npm install -g pnpm
-
-   # Install dependencies
-   pnpm install
+   # The web app uses npm and apps/web/package-lock.json, the same as CI
+   cd apps/web && npm ci
    ```
 
 3. **Set up environment variables**
@@ -44,13 +41,15 @@ Thank you for your interest in contributing to Mailat! This document provides gu
    that has already been released.
 
 5. **Start services**
-   ```bash
-   # Start Stalwart mail server
-   docker-compose up -d
 
-   # Start API (in another terminal)
+   Start PostgreSQL and Redis first (see the README's Local development
+   section for example `docker run` commands). The root `docker-compose.yml`
+   only starts the legacy Stalwart server and is not needed for SES mode.
+
+   ```bash
+   # Start API (run from apps/api so ../../.env resolves)
    cd apps/api
-   go run cmd/server/main.go
+   go run ./cmd/server
 
    # Start web UI (in another terminal)
    cd apps/web
@@ -59,8 +58,8 @@ Thank you for your interest in contributing to Mailat! This document provides gu
 
 6. **Access the application**
    - Web UI: http://localhost:3000
-   - API: http://localhost:8000
-   - API Docs: http://localhost:8000/docs
+   - API: http://localhost:3001 (the Docker image listens on 8000)
+   - API Docs: http://localhost:3001/docs/
 
 ## Code Style
 
@@ -107,14 +106,12 @@ test: add tests for campaign service
 
 3. **Test your changes**
    ```bash
-   # Run Go tests
-   cd apps/api && go test ./...
+   # Go: build, vet, OpenAPI drift check and tests
+   cd apps/api && go build ./... && go vet ./... && go run ./cmd/openapi --check
+   go test -race ./...   # set MAILAT_TEST_DATABASE_URL to run the PostgreSQL integration tests
 
-   # Run TypeScript type checking
-   cd apps/web && npm run type-check
-
-   # Build to ensure no errors
-   npm run build
+   # Web: tests, type check and production build
+   cd apps/web && npm test && npm run build
    ```
 
 4. **Commit your changes**

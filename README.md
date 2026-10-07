@@ -27,8 +27,11 @@ Mailat is an MIT-licensed, self-hosted email platform built on Amazon SES. One i
 ### Known limits
 
 - No conversation threading for SES mail: messages are listed one by one.
-- Run a single API container; multiple API replicas are unsupported.
+- Validated with a single API container only. Background work is leased in PostgreSQL and live updates use `NOTIFY`, so several replicas are designed to work (integration tests cover two notifiers on one database), but no multi-replica deployment has been validated; run one API container unless you test more yourself.
 - No IMAP, POP3 or SMTP submission. Mail is read and sent in the web app or through the API.
+- Signup forms are managed only by the user who created them, and their `contact.subscribed` events go only to that user's webhooks, not organization-wide.
+- SNS topics are created with the default `SignatureVersion` 1, which Mailat still accepts; switch them to version 2 manually (see [AWS setup and receiving](docs/self-hosting-ses.md#aws-setup-and-receiving)).
+- The web image's nginx master process runs as root; the workers that serve requests run as the `nginx` user.
 
 ## Mailbox users
 
@@ -51,7 +54,7 @@ There is no IMAP/SMTP access and no self-service password reset. Details are in 
 ### Prerequisites
 
 - Go 1.27.1 (pinned by the `toolchain` line in `apps/api/go.mod`; an older Go 1.21+ downloads it automatically unless `GOTOOLCHAIN=local`)
-- Node.js 24 and pnpm 9
+- Node.js 24 (npm ships with it)
 - PostgreSQL 16
 - Redis 7
 - An AWS account with SES in a region that supports receiving
@@ -70,14 +73,14 @@ Then:
 
 ```bash
 cp .env.example .env        # fill in DATABASE_URL, REDIS_URL, secrets and AWS values
-pnpm install
 
 # API on port 3001 (run from apps/api so ../../.env resolves)
 cd apps/api
 go run ./cmd/server
 
-# Web app on port 3000 (in another terminal)
+# Web app on port 3000 (in another terminal); CI installs it the same way
 cd apps/web
+npm ci
 npm run dev
 ```
 

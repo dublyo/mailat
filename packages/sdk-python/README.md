@@ -2,7 +2,7 @@
 
 Install this package with `pip install .`. Run `PYTHONPATH=. python -m unittest discover -s tests -v` for HTTP and signature tests.
 
-Version 0.2.0 targets API contract `2026-10-07` (the `info.version` of your instance's `/api/v1/openapi.json`).
+Version 0.2.0 targets API contract `2026-10-07` (the `info.version` of your instance's `/api/v1/openapi.json`). Instances on `f696e55` serve the same paths and schemas but still label them `2026-10-04`; the date-based version starts with the M6 release.
 
 `base_url` is required: Mailat is self-hosted, so there is no default host. Pass your instance origin or its API root; `https://mail.example.com`, `https://mail.example.com/`, `https://mail.example.com/api/v1` and `https://mail.example.com/api/v1/` all resolve to `https://mail.example.com/api/v1`. A missing or invalid `base_url` raises `ValueError` at construction (breaking change from 0.1.x, which fell back to a hosted URL).
 
