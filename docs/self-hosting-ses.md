@@ -53,21 +53,128 @@ DMARC setup checks for an existing or inherited policy before proposing a new re
 
 Manual DNS users can check DMARC and copy a missing-policy suggestion separately. The bulk DNS download continues to exclude DMARC, root MX, and root SPF: a BIND import cannot conditionally create a record only while it is absent and could otherwise introduce a duplicate policy. Review the current DMARC status before publishing any manually copied record. See [the DMARC setup specification](mailat-dmarc-spec.md) for behavior and edge cases.
 
-Enable receiving for the domain through the Domains screen. The setup creates/reuses an organization bucket and SNS topic, creates an SES receipt rule, and activates its rule set. Activation can replace the account's currently active receipt rule set in that region: review existing receiving workloads before enabling it. Publish the generated MX record using your region's receiving endpoint. Do not replace an existing provider's MX records unless intentionally moving inbound delivery.
+Enable receiving for the domain through the Domains screen. The first domain of an organization creates a private bucket (`mailat-<org id>-<random>`) and an SNS topic (`mailat-incoming-<org id>-<random>`); later domains reuse them. Mailat then adds a rule named `receive-<domain with dots replaced by dashes>` to the region's **currently active** receipt rule set, whatever its name. Only when no rule set is active does it create `mailat-receiving` and activate it. It never deactivates another rule set. The hazard is the rule name: setup first deletes any rule with the same `receive-…` name in the active set, then recreates it, so a rule another tool created with that name is replaced. The rule matches the whole domain, so check the active rule set for other rules that act on the same recipients before enabling it. Publish the generated MX record using your region's receiving endpoint. Do not replace an existing provider's MX records unless intentionally moving inbound delivery.
 
 If the domain already receives mail through Google Workspace, Microsoft 365, or another provider, keep that provider's root MX. Configure a separate receiving subdomain in Mailat, or arrange forwarding from the existing provider to a configured Mailat receiving address. An SES receipt rule alone cannot receive messages still routed exclusively to another provider. Set the receiving MX manually only for the domain/subdomain whose inbound mail you intend to route to SES.
 
-The setup credentials need the AWS operations used by the application: SES identity verification/DKIM and receipt-rule management, SES sending/account inspection, S3 bucket creation/policy/public-access-block management and private object read/write/delete, SNS topic/policy/subscription management, and STS caller-identity lookup. Scope IAM access to the installation's account, regions, identities, topics, and buckets where the operations support it. The old README policy is not a complete deployment policy for this release, particularly for `s3:PutBucketPublicAccessBlock` and `sns:SetTopicAttributes`.
+The AWS credentials need the permissions in [IAM policy](#iam-policy) below.
 
-The receiving rule uses an S3 action with prefix `incoming/<domain>/` and the stored SNS topic. Mailat authenticates `/api/v1/webhooks/ses/incoming?secret=<generated-secret>` using the stored topic, organization secret, AWS signature, and region. Subscription confirmation is restricted to the signed AWS SNS URL. Secrets are generated and stored by setup, not a separate environment variable. Redact webhook query strings from access logs and monitoring exports.
+The receiving rule uses an S3 action with prefix `incoming/<domain>/` and the stored SNS topic. Mailat authenticates `/api/v1/webhooks/ses/incoming?secret=<generated-secret>` using the stored topic, organization secret, AWS signature, and region. Subscription confirmation is restricted to the signed AWS SNS URL. Secrets are generated and stored by setup, not a separate environment variable. The `?secret=` query string is a credential: scrub it from reverse-proxy access logs (Caddy, nginx, load balancers) and monitoring exports.
+
+Mailat verifies both SNS signature versions: `SignatureVersion` 1 (SHA1) and 2 (SHA256). Topics Mailat creates keep the SNS default, version 1, and running setup again does not change existing topics. To have SNS sign with SHA256, set it on each Mailat topic yourself:
+
+```sh
+aws sns set-topic-attributes --region <region> --topic-arn <mailat topic ARN> \
+  --attribute-name SignatureVersion --attribute-value 2
+```
 
 SNS success is acknowledged after durable processing. Temporary storage/database failures return a retryable error. Retries deduplicate per mailbox identity; each eligible recipient receives an independent copy. Exact receiving-enabled identities take precedence, otherwise the domain's configured receiving-enabled catch-all receives unmatched addresses. Routing uses SMTP envelope recipients, not an untrusted `To` header. An organization topic cannot route mail into another organization's mailbox.
 
 ### Delivery, bounces, and complaints
 
-`SES_CONFIGURATION_SET` names an existing SES configuration set; setting the variable does not create a configuration set or its destinations. Configure SES delivery, bounce, and complaint publishing to the same SNS topic stored in that organization's receiving configuration. The webhook authorizes that exact topic and accepts both SES `notificationType` and configuration-set `eventType` payloads. For a deployment spanning multiple organizations, design topic/event routing explicitly: one globally configured destination is not automatically authorized for every organization.
+Delivery feedback is set up per domain with **Set up sending resources** in the domain's sending panel on the Domains screen (`POST /api/v1/domains/:uuid/setup-sending`). It is independent of receiving and never touches MX or receipt rules. The first run for an organization creates a private, AES256-encrypted bucket and an SNS topic, both named `mailat-send-<AWS account id>-<hash of the organization>`, and subscribes the webhook. For the domain's SES identity it then points bounce, complaint and delivery notifications at that topic and turns on original headers in them. A channel that already publishes to a different topic (not this one and not the organization's receiving topic) is never replaced; setup stops and reports the conflict. The response's `storageReady`, `feedbackConfigured` and `subscriptionStatus` show how far it got; run it again after fixing a problem.
+
+`SES_CONFIGURATION_SET` is optional. When set, Mailat only names that existing configuration set on each send; it never creates the set or its event destinations, and the setup above does not need it. If you add an event destination to your configuration set, do not point it at a Mailat topic: SES would then publish each event twice, once from the identity and once from the configuration set.
 
 Delivery events update recorded attempts and suppression state with organization isolation and duplicate handling. SES acceptance (`sent`) is not proof of delivery. Without a working event destination, accepted messages can remain `sent` indefinitely. Test the complete event path before relying on bounce/complaint suppression.
+
+### IAM policy
+
+Mailat signs every AWS call with the static `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` pair. The policy below grants exactly the AWS API calls the API makes in this release, derived from the SES (v1 and v2), S3, SNS and STS clients in `apps/api/internal/provider` and `apps/api/internal/service/health.go`. Replace `REGION` with your `AWS_REGION` and `ACCOUNT_ID` with the 12-digit account ID.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SendMail",
+      "Effect": "Allow",
+      "Action": ["ses:SendEmail", "ses:SendRawEmail"],
+      "Resource": [
+        "arn:aws:ses:REGION:ACCOUNT_ID:identity/*",
+        "arn:aws:ses:REGION:ACCOUNT_ID:configuration-set/*"
+      ]
+    },
+    {
+      "Sid": "DomainIdentities",
+      "Effect": "Allow",
+      "Action": [
+        "ses:CreateEmailIdentity",
+        "ses:GetEmailIdentity",
+        "ses:PutEmailIdentityMailFromAttributes"
+      ],
+      "Resource": "arn:aws:ses:REGION:ACCOUNT_ID:identity/*"
+    },
+    {
+      "Sid": "AccountReceivingAndFeedback",
+      "Effect": "Allow",
+      "Action": [
+        "ses:GetAccount",
+        "ses:DescribeActiveReceiptRuleSet",
+        "ses:CreateReceiptRuleSet",
+        "ses:SetActiveReceiptRuleSet",
+        "ses:CreateReceiptRule",
+        "ses:DeleteReceiptRule",
+        "ses:GetIdentityNotificationAttributes",
+        "ses:SetIdentityNotificationTopic",
+        "ses:SetIdentityHeadersInNotificationsEnabled"
+      ],
+      "Resource": "*",
+      "Condition": { "StringEquals": { "aws:RequestedRegion": "REGION" } }
+    },
+    {
+      "Sid": "MailatBuckets",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:PutBucketPolicy",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:PutEncryptionConfiguration"
+      ],
+      "Resource": "arn:aws:s3:::mailat-*"
+    },
+    {
+      "Sid": "MailatObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::mailat-*/*",
+      "Condition": { "StringEquals": { "s3:ResourceAccount": "ACCOUNT_ID" } }
+    },
+    {
+      "Sid": "MailatTopics",
+      "Effect": "Allow",
+      "Action": [
+        "sns:CreateTopic",
+        "sns:TagResource",
+        "sns:SetTopicAttributes",
+        "sns:Subscribe",
+        "sns:ListSubscriptionsByTopic"
+      ],
+      "Resource": "arn:aws:sns:REGION:ACCOUNT_ID:mailat-*"
+    }
+  ]
+}
+```
+
+What each statement covers:
+
+| Statement | Used for | Code |
+| --- | --- | --- |
+| `SendMail` | Every outgoing message: compose, transactional, campaigns, automations, invites, forwards and auto-replies. Mailat sends raw MIME through the SES v2 `SendEmail` call. The `configuration-set/*` resource matters only when `SES_CONFIGURATION_SET` is set. | `provider/ses_provider.go` |
+| `DomainIdentities` | Adding a domain (Easy DKIM 2048-bit, `bounce.<domain>` MAIL FROM) and checking verification. | `provider/ses_provider.go` |
+| `AccountReceivingAndFeedback` | Quota and health checks (`GetAccount`); receiving setup on the active receipt rule set; pointing a domain's bounce, complaint and delivery notifications at Mailat's topic during sending setup. AWS does not support resource-level permissions for these actions, so the region condition is the only scoping. | `provider/receiving_provider.go`, `provider/sending_setup.go`, `service/health.go` |
+| `MailatBuckets` | Creating the receiving bucket `mailat-<org id>-<random>` and the sending bucket `mailat-send-<account id>-<hash>`, then making them private (public access block), encrypted (sending bucket) and writable by SES in this account only (receiving bucket policy). | `provider/receiving_provider.go`, `provider/sending_setup.go` |
+| `MailatObjects` | Reading received raw MIME, storing and serving attachments (including short-lived signed download URLs, which use the caller's `s3:GetObject`), and deleting unused objects. | `provider/receiving_provider.go`, `provider/attachment_storage.go` |
+| `MailatTopics` | Creating the receiving topic `mailat-incoming-<org id>-<random>` and the sending topic `mailat-send-…` (with tags, hence `sns:TagResource`), setting their SES-only publish policy, subscribing the HTTPS webhook, and checking that the subscription is confirmed. | `provider/receiving_provider.go`, `provider/sending_setup.go` |
+
+Notes on scoping:
+
+- **Identities.** `identity/*` covers every domain in the account and region. To restrict Mailat to known domains, list them instead, for example `arn:aws:ses:REGION:ACCOUNT_ID:identity/example.com`; adding a new domain in Mailat then needs a policy change first.
+- **Configuration set.** If you set `SES_CONFIGURATION_SET`, you can replace `configuration-set/*` with that set's ARN. Without it, the entry is unused.
+- **`ses:SendRawEmail`.** The SES v2 `SendEmail` call is authorized as `ses:SendEmail`. Mailat always sends raw MIME, and some accounts have also evaluated `ses:SendRawEmail` for raw content, so the policy grants both. Remove `ses:SendRawEmail` only after a test send succeeds without it.
+- **Buckets and topics.** Every bucket and topic Mailat creates starts with `mailat-`. S3 bucket names are global, so the object statement is also limited to your account with `s3:ResourceAccount`. If an older installation stored mail in buckets with other names, add those buckets too.
+- **Rule set.** Receiving adds its rule to whichever rule set is active (see above), which is why the receipt-rule actions cannot be narrowed to `mailat-receiving`.
+- **Not needed.** STS `GetCallerIdentity` (used to find the account ID) needs no permission. Subscription confirmation is an HTTPS request to the signed SNS URL, not an IAM call, so `sns:ConfirmSubscription` and `sns:Publish` are not needed. `ses:DeleteEmailIdentity`, `sns:Unsubscribe` and `sns:DeleteTopic` exist in the provider code but no route calls them in this release: deleting a domain or disabling receiving leaves the SES identity, buckets and topics in place.
 
 ## Authentication and mailbox ownership
 
@@ -177,7 +284,7 @@ A newly attached file is represented as:
 
 Application safety limits are 50 recipients per message, 50 attachments, 10 MiB combined decoded attachment bytes, and 2 MiB combined compose HTML/text. The compose JSON body is bounded at 18 MiB. Received raw MIME is bounded at 40 MiB. These limits still apply when plan caps are disabled, and AWS's [service quotas](https://docs.aws.amazon.com/ses/latest/dg/quotas.html) apply independently. A received file larger than the compose attachment limit cannot be forwarded through compose unchanged.
 
-Outbound attachments use private objects in the domain/organization receiving bucket. Configure receiving/storage before sending attachments; a send-only domain without a configured bucket cannot store new attachment bytes. If storage fails, the request fails instead of returning a fake blob or silently omitting a file.
+Outbound attachments use private objects in the domain's attachment bucket: the `mailat-send-…` bucket that sending setup records for the domain, or otherwise the receiving bucket. A send-only domain therefore stores attachments once **Set up sending resources** has run; a domain with neither sending setup nor receiving cannot store new attachment bytes. If storage fails, the request fails instead of returning a fake blob or silently omitting a file.
 
 ### Send status and safe retries
 
@@ -194,11 +301,15 @@ A successful HTTP response records an attempt, not necessarily successful delive
 | `unknown` | Timeout or other uncertain provider result; verify delivery before considering a new attempt. |
 | `bounced`, `complained` | A later authenticated provider event reports a delivery/reputation problem. |
 
-AWS SES submission has no application idempotency token here. The SES SDK and Mailat worker do not repeat uncertain submissions automatically. This prevents blind duplicate sends but does not promise exactly-once delivery. A process crash after claiming a submission can leave `sending` indefinitely; there is no automatic reconciliation/resend job. Operators must inspect delivery events/provider evidence before resolving it. Mailbox mutations are rejected while a message is actively `sending`.
+AWS SES submission has no application idempotency token here. The SES SDK and Mailat worker do not repeat uncertain submissions automatically. This prevents blind duplicate sends but does not promise exactly-once delivery. For compose, a process crash after claiming a submission can leave it `sending` indefinitely; compose has no reconciliation job, and operators must inspect delivery events or provider evidence before resolving it. Transactional sends (`/emails`) do have one: every API process checks for transactional rows that have stayed `sending` for more than 10 minutes and marks them `unknown`. Nothing is resent automatically. Mailbox mutations are rejected while a message is actively `sending`.
 
 After a definitive failed draft send, an explicit retry reloads the owned failed Outbox copy and its current attachment UUIDs, clears the consumed draft identifier/version, and creates a new submission key. The original draft was consumed when the outgoing copy was persisted. Infrastructure failures return HTTP 503; keep the same frozen submission key and payload. After an uncertain response, a later request error is not proof that the first send was rejected.
 
-The transactional endpoint `POST /emails` uses its existing string-array address contract (`from`, `to`, `cc`, `bcc`, `replyTo`, `subject`, `text`/`html`/`templateId`), separate from the compose DTO. Its optional `Idempotency-Key` is scoped to organization and request content; omitting it creates a new attempt each call. For `/emails/batch`, specify `idempotencyKey` on each item when retries need protection. Batch size is at most 100. Transactional records are tracked through `/emails/:id`, not automatically copied into the personal Sent folder. Scheduled sends require a future RFC3339 `scheduledFor` and a functioning queue; scheduling failure never changes them to immediate sends.
+The transactional endpoint `POST /emails` uses its existing string-array address contract (`from`, `to`, `cc`, `bcc`, `replyTo`, `subject`, `text`/`html`/`templateId`), separate from the compose DTO. An idempotency key of 8–128 characters is required: send the `Idempotency-Key` header, the JSON field `idempotencyKey`, or both (they must then match). Keys are scoped to the organization; repeating a key with the same content returns the original result, and with different content is rejected.
+
+`POST /emails/batch` takes 1 to 100 items and requires the `Idempotency-Key` header. The header key is bound to the exact batch body and the calling user: a retry must resend the identical batch, and a changed batch under the same key is rejected. Each item uses its own `idempotencyKey` when given; otherwise its key is derived from the batch key and the item's position, so a retried batch reuses every item's key. Items are processed in order and reported one by one (`index`, `id`, `status`, `error`): a validation error, invalid item key or key conflict reports `failed`, and any other error reports `unknown`, without stopping the remaining items. Retrying the identical batch returns the recorded result for items that were already accepted and tries the others again.
+
+Each transactional send also gets a mailbox copy: it appears in the Sent folder of the user who owns the sending identity (in Outbox until SES accepts it) and is tracked through `/emails/:id`. Scheduled sends require a future RFC3339 `scheduledFor` and a functioning queue; scheduling failure never changes them to immediate sends.
 
 ### Forwarding and auto-replies
 
@@ -238,5 +349,18 @@ Permanent mailbox deletion preserves objects still referenced by another mailbox
 `DELETE /api/v1/contacts/:uuid/gdpr` removes the address from the organization's marketing data in one transaction: every case variant of the contact, list memberships, consent history, automation enrollments and logs, campaign email content, campaign recipient addresses and tracking IPs/user agents, webhook event payloads and undelivered webhook deliveries, signup requests, and plaintext suppressions. It leaves a hashed `erased:` suppression so the address cannot be re-imported, re-subscribed, or mailed by campaigns.
 
 It does not cover: the transactional `suppression_list` (SES bounce and complaint deliverability data, kept in plaintext), the organization users' own mailboxes (`received_emails`, `transactional_emails`), raw MIME and attachment objects in S3, or backups. A webhook delivery already being sent when the erasure runs may still go out once. Handle those stores separately when a request requires it.
+
+### Known limits
+
+- **One API replica.** Run a single API container. Several background loops lease their work in PostgreSQL and live updates use `NOTIFY`, but this release is only tested with one API process; multiple replicas are unsupported.
+- **No conversation threading for SES mail.** Received messages store a thread ID, but the SES inbox lists messages individually; `/inbox/threads/:id` serves only the legacy JMAP inbox.
+- **Compose sends have no stale-`sending` reconciler** (see [Send status and safe retries](#send-status-and-safe-retries)).
+- **SNS SHA1 signatures are still accepted**; see the `SignatureVersion` step above.
+
+### Upgrade rollback
+
+Take a PostgreSQL dump and note the running `VERSION` before every upgrade. To roll back, restore the pre-upgrade dump into a database, point the API at it, then redeploy the previous api and web image tags. Redeploying old images against the upgraded schema is not a rollback (see above).
+
+### Health checks
 
 Use `/api/v1/health` and `/api/v1/ready` as basic process/dependency checks; neither proves delivery or correct SNS/DNS configuration. Review [the validation record](mailat-validation.md) for local evidence and remaining runtime checks. Before treating a production installation as verified, complete controlled tests for real domain verification/MX, receiving and catch-all routing, owned attachment upload/download, provider acceptance, delivery/bounce events, and worker processing. Do not infer those results from fake-provider unit/integration tests.
