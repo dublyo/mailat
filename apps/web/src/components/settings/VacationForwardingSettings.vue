@@ -7,6 +7,7 @@ import Modal from '@/components/common/Modal.vue'
 import { autoRepliesApi, forwardsApi, type AutoReply, type AutoReplyInput, type EmailForward, type ForwardStatus } from '@/lib/api'
 import { useDomainsStore } from '@/stores/domains'
 import { escapeHtml } from '@/lib/compose'
+import { forwardActions } from '@/lib/forwards'
 
 const domains = useDomainsStore()
 // Rules may cover your own identities and shared mailboxes you manage.
@@ -148,8 +149,9 @@ async function forwardAction(forward: EmailForward, action: 'pause' | 'resume' |
       await forwardsApi.delete(forward.uuid)
       forwards.value = forwards.value.filter(f => f.uuid !== forward.uuid)
     } else if (action === 'resend') {
-      await forwardsApi.resendVerification(forward.uuid)
-      notice.value = `A new confirmation link was sent to ${forward.forwardTo}.`
+      const saved = await forwardsApi.resendVerification(forward.uuid)
+      if (saved?.uuid) forwards.value = forwards.value.map(f => f.uuid === saved.uuid ? saved : f)
+      notice.value = `A new confirmation link was sent to ${forward.forwardTo}. Forwarding starts once it is confirmed.`
     } else {
       const saved = await forwardsApi.update(forward.uuid, { active: action === 'resume' })
       forwards.value = forwards.value.map(f => f.uuid === saved.uuid ? saved : f)
@@ -222,9 +224,7 @@ async function forwardAction(forward: EmailForward, action: 'pause' | 'resume' |
             <p v-if="forward.lastError" class="text-red-700">{{ forward.lastError }}</p>
           </div>
           <div class="flex gap-2">
-            <Button v-if="forward.status === 'pending'" size="sm" variant="secondary" :disabled="busy === forward.uuid" @click="forwardAction(forward, 'resend')">Resend link</Button>
-            <Button v-if="forward.status === 'active'" size="sm" variant="secondary" :disabled="busy === forward.uuid" @click="forwardAction(forward, 'pause')">Pause</Button>
-            <Button v-if="forward.status === 'paused' && forward.verified" size="sm" variant="secondary" :disabled="busy === forward.uuid" @click="forwardAction(forward, 'resume')">Resume</Button>
+            <Button v-for="item in forwardActions(forward)" :key="item.action" size="sm" variant="secondary" :disabled="busy === forward.uuid" @click="forwardAction(forward, item.action)">{{ item.label }}</Button>
             <Button size="sm" variant="ghost" :disabled="busy === forward.uuid" @click="forwardAction(forward, 'delete')"><Trash2 class="w-4 h-4 text-red-600" />Delete</Button>
           </div>
         </li>

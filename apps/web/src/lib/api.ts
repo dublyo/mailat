@@ -1689,7 +1689,7 @@ export const forwardsApi = {
   create: (data: { identityUuid: string; forwardTo: string; keepCopy: boolean }) => api.post<EmailForward>('/api/v1/forwards', data),
   // Resuming works only for a verified, paused forward.
   update: (uuid: string, data: { active?: boolean; keepCopy?: boolean }) => api.put<EmailForward>(`/api/v1/forwards/${encodeURIComponent(uuid)}`, data),
-  resendVerification: (uuid: string) => api.post(`/api/v1/forwards/${encodeURIComponent(uuid)}/resend-verification`),
+  resendVerification: (uuid: string) => api.post<EmailForward>(`/api/v1/forwards/${encodeURIComponent(uuid)}/resend-verification`),
   delete: (uuid: string) => api.delete(`/api/v1/forwards/${encodeURIComponent(uuid)}`),
   // Public: opened from the verification email's /forwards/verify#id=&token= link.
   verify: (uuid: string, token: string) => api.post<{ verified: boolean }>('/api/v1/forwards/verify', { uuid, token }),
