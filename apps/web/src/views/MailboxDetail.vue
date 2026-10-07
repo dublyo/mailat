@@ -6,7 +6,8 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import Badge from '@/components/common/Badge.vue'
 import Modal from '@/components/common/Modal.vue'
-import { mailboxAdminApi, orgApi, type MailboxDetail, type OrgMember } from '@/lib/api'
+import { mailboxAdminApi, orgApi, domainApi, type MailboxDetail, type OrgMember, type DomainReceivingStatus } from '@/lib/api'
+import { receivesMailLabel, receivingFixLink } from '@/lib/receiving'
 import { mailboxStatusLabel, mailboxStatusBadge, localPartError, nameError, passwordError, overviewRows } from '@/lib/mailboxes'
 
 const route = useRoute()
@@ -33,6 +34,23 @@ const domainName = computed(() => detail.value?.domain.name ?? '')
 const status = computed(() => mailbox.value?.status)
 const pending = computed(() => status.value === 'invited' || status.value === 'invite_expired')
 const rows = computed(() => detail.value ? overviewRows(detail.value.overview) : [])
+// Whether mail actually arrives: the mailbox switch plus the domain's live MX.
+const receiving = ref<DomainReceivingStatus | null>(null)
+const receivingFailed = ref(false)
+const receivesMail = computed(() => {
+  if (!detail.value) return null
+  if (receivingFailed.value && detail.value.overview.mayReceive) return { value: 'Unknown — could not check the domain MX', ok: false }
+  return receivesMailLabel(receiving.value, detail.value.overview.mayReceive)
+})
+const fixLink = receivingFixLink(domainUuid)
+async function loadReceiving() {
+  try {
+    const result = await domainApi.receivingStatus(domainUuid)
+    if (result.domainUuid === domainUuid) receiving.value = result
+  } catch {
+    receivingFailed.value = true
+  }
+}
 
 const nameDraft = ref('')
 const recoveryDraft = ref('')
@@ -50,7 +68,7 @@ async function load() {
     loading.value = false
   }
 }
-onMounted(load)
+onMounted(() => { load(); loadReceiving() })
 
 async function run(key: string, action: () => Promise<string | void>, fallback: string) {
   if (busy.value) return
@@ -222,6 +240,13 @@ async function remove() {
                 <td class="p-2">
                   <button v-if="row.section" type="button" class="hover:underline" :class="row.value ? 'text-green-700' : 'text-gmail-gray'" @click="showSection(row.section as Section)">{{ row.value ? 'Yes' : 'No' }}</button>
                   <span v-else :class="row.value ? 'text-green-700' : 'text-gmail-gray'">{{ row.value ? 'Yes' : 'No' }}</span>
+                </td>
+              </tr>
+              <tr v-if="receivesMail">
+                <th scope="row" class="p-2 text-left font-medium bg-gmail-lightGray">Receives mail</th>
+                <td class="p-2">
+                  <span :class="receivesMail.ok ? 'text-green-700' : 'text-amber-800'">{{ receivesMail.value }}</span>
+                  <router-link v-if="!receivesMail.ok && detail.overview.mayReceive && receiving" :to="fixLink" class="ml-2 text-gmail-blue underline">Fix receiving</router-link>
                 </td>
               </tr>
               <tr>

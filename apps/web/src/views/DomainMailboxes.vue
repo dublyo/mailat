@@ -6,7 +6,8 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import Badge from '@/components/common/Badge.vue'
 import Modal from '@/components/common/Modal.vue'
-import { mailboxAdminApi, type DomainMailboxes, type MailboxImportRow } from '@/lib/api'
+import { mailboxAdminApi, domainApi, type DomainMailboxes, type MailboxImportRow, type DomainReceivingStatus } from '@/lib/api'
+import { receivingProblem, receivingFixLink } from '@/lib/receiving'
 import { useDomainsStore } from '@/stores/domains'
 import {
   mailboxStatusLabel, mailboxStatusBadge, localPartError, nameError, passwordError, onReceivingDomain,
@@ -32,6 +33,23 @@ const error = ref('')
 const notice = ref('')
 const showRemoved = ref(false)
 const domainName = computed(() => data.value?.domain.name ?? '')
+// Live MX status: says exactly why mailboxes on this domain would get no mail.
+const receiving = ref<DomainReceivingStatus | null>(null)
+const receivingReason = computed(() => data.value ? receivingProblem(receiving.value, domainName.value, data.value.domain.receivingEnabled) : '')
+const fixLink = computed(() => receivingFixLink(domainUuid.value))
+let receivingVersion = 0
+async function loadReceiving() {
+  const uuid = domainUuid.value
+  const version = ++receivingVersion
+  receiving.value = null
+  if (!uuid) return
+  try {
+    const result = await domainApi.receivingStatus(uuid)
+    if (version === receivingVersion && result.domainUuid === domainUuid.value) receiving.value = result
+  } catch {
+    // Keep the receivingEnabled fallback; the domain card can re-check.
+  }
+}
 
 async function load() {
   if (!domainUuid.value) { loading.value = false; return }
@@ -56,6 +74,7 @@ onMounted(async () => {
     if (selectedDomain.value && route.query.domain !== selectedDomain.value) router.replace({ query: { ...route.query, domain: selectedDomain.value } })
   } else if (!domains.domains.length) domains.fetchDomains()
   load()
+  loadReceiving()
 })
 // Switching domains on /mailboxes keeps the choice in the URL so Back and
 // links from the detail page land on the same list.
@@ -65,6 +84,7 @@ watch(selectedDomain, (uuid, previous) => {
   notice.value = ''
   router.replace({ query: { ...route.query, domain: uuid } })
   load()
+  loadReceiving()
 })
 const formatDate = (value: string | null) => value ? new Date(value).toLocaleDateString() : 'Never'
 
@@ -200,7 +220,7 @@ async function runImport(dryRun: boolean) {
           </label>
           <div v-if="data" class="flex flex-wrap gap-2 mt-2">
             <Badge size="sm" :variant="data.domain.sesVerified ? 'success' : 'error'">{{ data.domain.sesVerified ? 'SES verified' : 'SES not verified' }}</Badge>
-            <Badge size="sm" :variant="data.domain.receivingEnabled ? 'success' : 'warning'">Receiving {{ data.domain.receivingEnabled ? 'on' : 'off' }}</Badge>
+            <Badge size="sm" :variant="data.domain.receivingEnabled && !receivingReason ? 'success' : 'warning'">Receiving {{ !data.domain.receivingEnabled ? 'off' : receivingReason ? 'on, MX not ready' : 'on' }}</Badge>
           </div>
         </div>
         <div v-if="data" class="flex flex-wrap items-center gap-2">
@@ -210,10 +230,10 @@ async function runImport(dryRun: boolean) {
         </div>
       </header>
 
-      <div v-if="data && !data.domain.receivingEnabled" role="status" class="mb-4 p-3 rounded-lg border border-amber-200 bg-amber-50 text-amber-900 text-sm flex flex-wrap items-center gap-2">
+      <div v-if="receivingReason" role="status" class="mb-4 p-3 rounded-lg border border-amber-200 bg-amber-50 text-amber-900 text-sm flex flex-wrap items-center gap-2">
         <AlertTriangle class="w-4 h-4 shrink-0" />
-        <span class="flex-1 min-w-0">Receiving is off for this domain; mailboxes won't get mail until you set it up.</span>
-        <router-link to="/domains" class="font-medium underline">Set up receiving</router-link>
+        <span class="flex-1 min-w-0">{{ receivingReason }}</span>
+        <router-link :to="fixLink" class="font-medium underline">Fix receiving</router-link>
       </div>
       <div v-if="allDomainsMode && noReadyDomains" role="status" class="mb-4 p-4 rounded-lg border border-gmail-border bg-gmail-lightGray text-sm">
         No domain is ready for mailboxes yet. Add a domain and verify it with SES, then come back here.
@@ -286,6 +306,10 @@ async function runImport(dryRun: boolean) {
           <label class="flex items-center gap-2"><input v-model="form.maySend" type="checkbox" class="w-4 h-4" />May send</label>
           <label class="flex items-center gap-2"><input v-model="form.mayReceive" type="checkbox" class="w-4 h-4" />May receive</label>
         </div>
+        <p v-if="receivingReason" role="status" class="text-amber-900 bg-amber-50 border border-amber-200 rounded p-2 text-xs">
+          This domain cannot receive mail yet: {{ receivingReason }} You can still create the mailbox; it gets mail once that is fixed.
+          <router-link :to="fixLink" class="font-medium underline">Fix receiving</router-link>
+        </p>
         <p v-if="createError" role="alert" class="text-red-700">{{ createError }}</p>
         <div class="flex justify-end gap-2">
           <Button variant="secondary" @click="createOpen = false">Cancel</Button>

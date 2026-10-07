@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { Plus, Globe, CheckCircle, XCircle, RefreshCw, MoreVertical, Copy, Cloud, Server, Shield, X, Loader2, ChevronDown, ChevronUp, Mail, AlertCircle, Check, Zap, ExternalLink, Key, Inbox, Pencil, Trash2, Star, Download, Users } from 'lucide-vue-next'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
@@ -7,6 +8,7 @@ import Badge from '@/components/common/Badge.vue'
 import Spinner from '@/components/common/Spinner.vue'
 import DomainDmarcStatus from '@/components/settings/DomainDmarcStatus.vue'
 import DomainSendingReadiness from '@/components/settings/DomainSendingReadiness.vue'
+import DomainReceivingStatus from '@/components/settings/DomainReceivingStatus.vue'
 import { useDomainsStore } from '@/stores/domains'
 import { useAuthStore } from '@/stores/auth'
 import { isOrgAdmin, type CloudflareZone, type CloudflareDNSResult, type DomainDMARCStatus } from '@/lib/api'
@@ -62,8 +64,17 @@ const receivingSetupResult = ref<{
   requiredDns?: Array<{ recordType: string; hostname: string; value: string }>
 } | null>(null)
 
+const route = useRoute()
+// Mailbox pages link here with ?receiving=<uuid>; bring that card's receiving row into view.
+async function focusReceivingRow() {
+  const uuid = route.query.receiving
+  if (typeof uuid !== 'string' || !uuid) return
+  await nextTick()
+  document.getElementById(`receiving-${uuid}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
 onMounted(() => {
-  domainsStore.fetchDomains()
+  domainsStore.fetchDomains().then(focusReceivingRow, () => {})
   domainsStore.fetchIdentities()
 })
 
@@ -647,11 +658,20 @@ async function handleSetupReceiving(domain: any) {
                   </div>
                 </div>
                 <p v-if="domain.emailProvider === 'ses'" class="text-xs text-gray-500 mt-3">Sending setup preserves your existing inbox provider. The MX record at bounce.{{ domain.name || domain.domain }} is for SES MAIL FROM, not inbox routing.</p>
+                <DomainReceivingStatus
+                  :domain-uuid="domain.uuid"
+                  :domain-name="domain.name || domain.domain || ''"
+                  :domain-id="domain.id"
+                  :receiving-enabled="!!domain.receivingEnabled"
+                  :can-manage="canManage"
+                  :can-enable="domain.status === 'active'"
+                  @changed="domainsStore.fetchDomains()"
+                />
                 <section v-if="receivingOptionsDomain === domain.uuid" class="mt-4 p-4 rounded-xl border border-blue-200 bg-blue-50 text-sm" aria-label="Optional email receiving">
                   <h4 class="font-semibold text-gray-900">Receiving is a separate choice</h4>
                   <p class="text-gray-700 mt-2">Pointing the root MX for {{ domain.name || domain.domain }} to SES routes incoming mail to Mailat. It does not send a copy to your existing inbox provider.</p>
                   <p class="text-gray-700 mt-2">To keep that provider, retain its root MX records and use its forwarding feature to a separately configured Mailat receiving address, or add a receiving subdomain to Mailat.</p>
-                  <p class="text-gray-600 mt-2">Preparing receiving creates the SES receiving infrastructure only. Any receiving MX change must be made manually after you choose where incoming mail should go.</p>
+                  <p class="text-gray-600 mt-2">Preparing receiving creates the SES receiving infrastructure only. Mailat never changes your root MX by itself: publish the record shown in Receiving (MX) above, or add it there with Cloudflare.</p>
                   <p v-if="submitError" role="alert" class="text-red-700 mt-3">{{ submitError }}</p>
                   <Button variant="secondary" size="sm" class="mt-3" @click="handleSetupReceiving(domain)" :disabled="receivingSetupLoading === domain.uuid">
                     <Loader2 v-if="receivingSetupLoading === domain.uuid" class="w-4 h-4 animate-spin" />

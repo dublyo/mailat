@@ -557,6 +557,30 @@ export interface CloudflareDNSResult {
   reason?: string
   error?: string
   dmarc?: DomainDMARCStatus
+  receiving?: boolean
+}
+
+export type ReceivingMXStatus = 'not_enabled' | 'missing' | 'published' | 'conflict' | 'unknown'
+
+export interface ReceivingMXRecord {
+  type: 'MX'
+  host: string
+  name: string
+  value: string
+  priority: number
+  target: string
+}
+
+// Receiving is the owner's opt-in; mxStatus comes from a live public lookup.
+export interface DomainReceivingStatus {
+  domainUuid: string
+  domain: string
+  enabled: boolean
+  mxRecord: ReceivingMXRecord
+  mxStatus: ReceivingMXStatus
+  existingMx: string[]
+  reason: string
+  checkedAt: string
 }
 
 export interface DomainDMARCStatus {
@@ -624,8 +648,12 @@ export const domainApi = {
   getCloudflareZones: (apiToken: string) =>
     api.post<CloudflareZone[]>('/api/v1/domains/cloudflare/zones', { apiToken }),
 
-  addDNSToCloudflare: (uuid: string, apiToken: string, zoneId?: string) =>
-    api.post<{ results: CloudflareDNSResult[] }>(`/api/v1/domains/${uuid}/dns/cloudflare`, { apiToken, zoneId }),
+  // scope 'receiving-mx' adds only the root receiving MX (server-gated).
+  addDNSToCloudflare: (uuid: string, apiToken: string, zoneId?: string, scope?: 'receiving-mx') =>
+    api.post<{ results: CloudflareDNSResult[] }>(`/api/v1/domains/${uuid}/dns/cloudflare`, scope ? { apiToken, zoneId, scope } : { apiToken, zoneId }),
+
+  receivingStatus: (uuid: string, refresh = false, signal?: AbortSignal) =>
+    api.get<DomainReceivingStatus>(`/api/v1/domains/${uuid}/receiving${refresh ? '?refresh=true' : ''}`, signal),
 }
 
 // ============ Identity API ============
