@@ -35,6 +35,15 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # the image's nginx.conf ("user nginx;") runs every worker that handles
 # requests as the unprivileged nginx user. A fully non-root image waits until
 # the live stack's runtime options (network mode, dropped capabilities) are known.
+# Until then the image keeps the older appuser account and its writable nginx
+# paths, so a runtime that sets `user: appuser` still starts. There is
+# deliberately no USER line.
+RUN adduser -D -g '' appuser && \
+    chown -R appuser:appuser /var/cache/nginx && \
+    chown -R appuser:appuser /var/log/nginx && \
+    chown -R appuser:appuser /etc/nginx/conf.d && \
+    touch /var/run/nginx.pid && \
+    chown -R appuser:appuser /var/run/nginx.pid
 
 EXPOSE 80
 
