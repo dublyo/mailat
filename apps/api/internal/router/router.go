@@ -139,6 +139,7 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 	phase5Ctrl := controller.NewPhase5Controller(webauthnService, sharedMailboxService, webhookTriggerService, pushService, brandingService, auditLogService)
 	settingsCtrl := controller.NewSettingsController(settingsService)
 	orgCtrl := controller.NewOrgController(orgMemberService, rateLimiter)
+	mailboxCtrl := controller.NewMailboxController(service.NewMailboxService(database.DB, orgMemberService))
 
 	// Email Receiving controllers
 	// Live updates: the mailbox_changes trigger NOTIFYs every replica's listener.
@@ -516,6 +517,21 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 				adminGroup.DELETE("/org/invites/:uuid", orgCtrl.RevokeInvite)
 				adminGroup.GET("/org/identities", orgCtrl.ListOrgIdentities)
 				adminGroup.PUT("/org/identities/:uuid/owner", orgCtrl.TransferIdentity)
+
+				// Mailbox users (logins that see only their own mailbox)
+				adminGroup.GET("/org/domains/:domainUuid/mailboxes", mailboxCtrl.List)
+				adminGroup.POST("/org/domains/:domainUuid/mailboxes", mailboxCtrl.Create)
+				adminGroup.POST("/org/domains/:domainUuid/mailboxes/import", mailboxCtrl.Import)
+				adminGroup.GET("/org/mailboxes/:userUuid", mailboxCtrl.Get)
+				adminGroup.PUT("/org/mailboxes/:userUuid", mailboxCtrl.Update)
+				adminGroup.DELETE("/org/mailboxes/:userUuid", mailboxCtrl.Remove)
+				adminGroup.POST("/org/mailboxes/:userUuid/aliases", mailboxCtrl.AddAlias)
+				adminGroup.DELETE("/org/mailboxes/:userUuid/aliases/:aliasUuid", mailboxCtrl.DeleteAlias)
+				adminGroup.POST("/org/mailboxes/:userUuid/password", mailboxCtrl.Password)
+				adminGroup.POST("/org/mailboxes/:userUuid/2fa/reset", mailboxCtrl.ResetTwoFactor)
+				adminGroup.POST("/org/mailboxes/:userUuid/invite/resend", mailboxCtrl.ResendInvite)
+				adminGroup.POST("/org/mailboxes/:userUuid/suspend", mailboxCtrl.Suspend)
+				adminGroup.POST("/org/mailboxes/:userUuid/reactivate", mailboxCtrl.Reactivate)
 
 				// Health and operations: org-wide sending data, alerts (including
 				// handover notices) and delivery logs are for owners and admins.

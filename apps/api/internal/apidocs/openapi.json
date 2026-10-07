@@ -4669,6 +4669,18 @@
         },
         "type": "object"
       },
+      "service.AddSendAliasRequest": {
+        "properties": {
+          "localPart": {
+            "description": "the part before @ on the mailbox's domain; no '+'",
+            "type": "string"
+          }
+        },
+        "required": [
+          "localPart"
+        ],
+        "type": "object"
+      },
       "service.Alert": {
         "properties": {
           "acknowledged": {
@@ -5323,6 +5335,63 @@
         ],
         "type": "object"
       },
+      "service.CreateMailboxRequest": {
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/service.MailboxAccessRequest"
+          },
+          "localPart": {
+            "description": "the part before @; no '+'",
+            "type": "string"
+          },
+          "mayReceive": {
+            "allOf": [
+              {
+                "type": "boolean"
+              }
+            ],
+            "description": "default true",
+            "nullable": true
+          },
+          "maySend": {
+            "allOf": [
+              {
+                "type": "boolean"
+              }
+            ],
+            "description": "default true",
+            "nullable": true
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "localPart",
+          "name"
+        ],
+        "type": "object"
+      },
+      "service.CreateMailboxResult": {
+        "properties": {
+          "mailbox": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/service.MailboxAccount"
+              }
+            ],
+            "nullable": true
+          },
+          "warnings": {
+            "description": "receiving_disabled when the domain does not receive mail yet",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "service.CreatePushSubscriptionInput": {
         "properties": {
           "authKey": {
@@ -5447,6 +5516,34 @@
           },
           "spfVerified": {
             "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "service.DomainMailboxes": {
+        "properties": {
+          "catchAll": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/service.MailboxCatchAll"
+              }
+            ],
+            "description": "null when the domain has no catch-all",
+            "nullable": true
+          },
+          "domain": {
+            "$ref": "#/components/schemas/service.MailboxDomain"
+          },
+          "mailboxes": {
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/service.MailboxAccount"
+                }
+              ],
+              "nullable": true
+            },
+            "type": "array"
           }
         },
         "type": "object"
@@ -5839,6 +5936,105 @@
         },
         "type": "object"
       },
+      "service.MailboxAccessRequest": {
+        "properties": {
+          "inviteEmail": {
+            "description": "invite mode: the user's external address that gets the setup link",
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "password": {
+            "description": "password mode: 8-72 bytes",
+            "type": "string"
+          },
+          "senderIdentityUuid": {
+            "description": "invite mode: one of your sending identities; defaults to your default one",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "service.MailboxAccount": {
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "aliasCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "identityUuid": {
+            "type": "string"
+          },
+          "isCatchAll": {
+            "type": "boolean"
+          },
+          "lastLoginAt": {
+            "allOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "mayReceive": {
+            "type": "boolean"
+          },
+          "maySend": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "description": "active, invited, invite_expired, suspended or removed",
+            "type": "string"
+          },
+          "userUuid": {
+            "type": "string"
+          },
+          "wildcardSender": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "service.MailboxAlias": {
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "uuid": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "service.MailboxCatchAll": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "isMailbox": {
+            "description": "the catch-all belongs to a mailbox user",
+            "type": "boolean"
+          },
+          "ownerEmail": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "service.MailboxChange": {
         "properties": {
           "changedAt": {
@@ -5878,6 +6074,187 @@
           },
           "nextCursor": {
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "service.MailboxDetail": {
+        "properties": {
+          "aliases": {
+            "items": {
+              "$ref": "#/components/schemas/service.MailboxAlias"
+            },
+            "type": "array"
+          },
+          "domain": {
+            "$ref": "#/components/schemas/service.MailboxDomain"
+          },
+          "invite": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/service.MailboxLink"
+              }
+            ],
+            "description": "the latest open setup or reset link (possibly expired); null when none",
+            "nullable": true
+          },
+          "mailbox": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/service.MailboxAccount"
+              }
+            ],
+            "nullable": true
+          },
+          "overview": {
+            "$ref": "#/components/schemas/service.MailboxOverview"
+          }
+        },
+        "type": "object"
+      },
+      "service.MailboxDomain": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "receivingEnabled": {
+            "type": "boolean"
+          },
+          "sesVerified": {
+            "type": "boolean"
+          },
+          "uuid": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "service.MailboxImportResult": {
+        "properties": {
+          "dryRun": {
+            "type": "boolean"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/service.MailboxImportRow"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "service.MailboxImportRow": {
+        "properties": {
+          "address": {
+            "description": "the mailbox address, or the raw value when it is invalid",
+            "type": "string"
+          },
+          "line": {
+            "description": "line in the file (the header is line 1)",
+            "format": "int64",
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "result": {
+            "description": "ok (dry run), created or error",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "service.MailboxLink": {
+        "properties": {
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "purpose": {
+            "description": "mailbox_setup or password_reset",
+            "type": "string"
+          },
+          "sendCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "description": "pending, expired, accepted or revoked",
+            "type": "string"
+          },
+          "uuid": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "service.MailboxLinkResult": {
+        "properties": {
+          "invite": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/service.MailboxLink"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "type": "object"
+      },
+      "service.MailboxOverview": {
+        "properties": {
+          "autoReplyActive": {
+            "type": "boolean"
+          },
+          "forwardsActive": {
+            "type": "boolean"
+          },
+          "isCatchAll": {
+            "type": "boolean"
+          },
+          "mayReceive": {
+            "type": "boolean"
+          },
+          "maySend": {
+            "type": "boolean"
+          },
+          "recoveryEmail": {
+            "description": "empty when none is set",
+            "type": "string"
+          },
+          "twoFactor": {
+            "type": "boolean"
+          },
+          "wildcardSender": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "service.MailboxPasswordRequest": {
+        "properties": {
+          "email": {
+            "description": "mode link: send the link here instead of the recovery email",
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "password": {
+            "description": "mode set: 8-72 bytes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "service.MailboxPasswordResult": {
+        "properties": {
+          "sessionsRevoked": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "type": "object"
@@ -7091,6 +7468,56 @@
                 "type": "integer"
               }
             ],
+            "nullable": true
+          }
+        },
+        "type": "object"
+      },
+      "service.UpdateMailboxRequest": {
+        "properties": {
+          "mayReceive": {
+            "allOf": [
+              {
+                "type": "boolean"
+              }
+            ],
+            "description": "identity can_receive; off sends new mail to the catch-all",
+            "nullable": true
+          },
+          "maySend": {
+            "allOf": [
+              {
+                "type": "boolean"
+              }
+            ],
+            "description": "identity can_send",
+            "nullable": true
+          },
+          "name": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "description": "2-255 characters; also the identity's display name",
+            "nullable": true
+          },
+          "recoveryEmail": {
+            "allOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "description": "external address for reset links and notices; empty clears it",
+            "nullable": true
+          },
+          "wildcardSender": {
+            "allOf": [
+              {
+                "type": "boolean"
+              }
+            ],
+            "description": "send as any unused address on the domain",
             "nullable": true
           }
         },
@@ -53906,6 +54333,818 @@
         "x-mailat-mailbox-allowed": false
       }
     },
+    "/api/v1/org/domains/{domainUuid}/mailboxes": {
+      "get": {
+        "description": "List lists a domain's mailboxes with the domain's catch-all. Status is\nactive, invited, invite_expired, suspended or removed; removed mailboxes\nare included only with ?removed=true.\nGET /api/v1/org/domains/:domainUuid/mailboxes",
+        "operationId": "get_api_v1_org_domains_domainUuid_mailboxes",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domainUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "removed",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.DomainMailboxes"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Create creates a mailbox on an active, SES-verified domain. Invite mode\nmails a 72-hour setup link to an external address (the user stays pending,\nand mail to the address is kept for them); password mode creates an active\nlogin with the given password. Mailboxes use no seat but count toward the\nidentity limit. warnings has receiving_disabled when the domain does not\nreceive mail yet. 409 when the address is in use, an invite for it is\npending, invite mode has no sending identity, or the identity limit is\nreached.\nPOST /api/v1/org/domains/:domainUuid/mailboxes",
+        "operationId": "post_api_v1_org_domains_domainUuid_mailboxes",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domainUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/service.CreateMailboxRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.CreateMailboxResult"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Create",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/org/domains/{domainUuid}/mailboxes/import": {
+      "post": {
+        "description": "Import creates mailboxes from a text/csv body (UTF-8, at most 1 MiB and 200\nrows) with a header row of local_part or address, name, and optionally\ninvite_email, password, may_send and may_receive. Each row needs exactly one\nof invite_email or password. dryRun (default true) checks every row and\nwrites nothing; dryRun=false creates each valid row on its own and reports\ncreated or error per row. Passwords are never echoed.\nPOST /api/v1/org/domains/:domainUuid/mailboxes/import",
+        "operationId": "post_api_v1_org_domains_domainUuid_mailboxes_import",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domainUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dryRun",
+            "schema": {
+              "default": true,
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "text/csv": {
+              "example": "local_part,name,invite_email,password,may_send,may_receive\nibrahim,Ibrahim,ibrahim.personal@example.net,,true,true\nsales-desk,Sales desk,,an-initial-password,true,false\n",
+              "schema": {
+                "maxLength": 1048576,
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.MailboxImportResult"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Import",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      }
+    },
     "/api/v1/org/identities": {
       "get": {
         "description": "ListOrgIdentities lists every identity of the organization with its owner.\nIt never exposes mail.\nGET /api/v1/org/identities",
@@ -55439,6 +56678,2610 @@
         "x-human-session-required": true,
         "x-mailat-backend": "ses",
         "x-mailat-backend-note": "Invite links are emailed through SES from an owned sending identity using the durable send queue, suppression list and monthly quota. The single-use token travels in the link fragment and only its SHA-256 hash is stored; accepting creates the account in the inviting organization and signs it in.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/org/mailboxes/{userUuid}": {
+      "delete": {
+        "description": "Remove removes a pending, active or suspended mailbox: the login is\ndisabled, links and aliases end, and new mail to the address falls back to\nthe catch-all while old mail stays hidden. transferIdentitiesTo (an active\nuser; a mailbox user only for identities on its own domain) takes the\nidentities instead.\nDELETE /api/v1/org/mailboxes/:userUuid",
+        "operationId": "delete_api_v1_org_mailboxes_userUuid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/service.RemoveMemberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.RemoveMemberResult"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Remove",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      },
+      "get": {
+        "description": "Get returns a live mailbox with a yes/no overview (forwarding and\nauto-reply content is never shown), its send-as aliases and its open setup\nor reset link.\nGET /api/v1/org/mailboxes/:userUuid",
+        "operationId": "get_api_v1_org_mailboxes_userUuid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.MailboxDetail"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "Update changes the name, may send, may receive (off sends new mail to the\ncatch-all), the wildcard sender switch and the recovery email (empty clears\nit; the previous address is told).\nPUT /api/v1/org/mailboxes/:userUuid",
+        "operationId": "put_api_v1_org_mailboxes_userUuid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/service.UpdateMailboxRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.MailboxAccount"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Update",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/org/mailboxes/{userUuid}/2fa/reset": {
+      "post": {
+        "description": "ResetTwoFactor turns off the mailbox user's two-factor sign-in after a lost\ndevice; every session ends and the user enrolls again. 409 when it is off.\nPOST /api/v1/org/mailboxes/:userUuid/2fa/reset",
+        "operationId": "post_api_v1_org_mailboxes_userUuid_2fa_reset",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.MailboxAccount"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "ResetTwoFactor",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/org/mailboxes/{userUuid}/aliases": {
+      "post": {
+        "description": "AddAlias grants a send-as alias on the mailbox's domain (no '+'). Mail to\nthe alias is delivered to the mailbox. 409 when the address is an identity\nor another alias.\nPOST /api/v1/org/mailboxes/:userUuid/aliases",
+        "operationId": "post_api_v1_org_mailboxes_userUuid_aliases",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/service.AddSendAliasRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.MailboxAlias"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "AddAlias",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/org/mailboxes/{userUuid}/aliases/{aliasUuid}": {
+      "delete": {
+        "description": "DeleteAlias removes a send-as alias; mail to it falls back to the\ncatch-all. Answers 204.\nDELETE /api/v1/org/mailboxes/:userUuid/aliases/:aliasUuid",
+        "operationId": "delete_api_v1_org_mailboxes_userUuid_aliases_aliasUuid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "aliasUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Alias removed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "DeleteAlias",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/org/mailboxes/{userUuid}/invite/resend": {
+      "post": {
+        "description": "ResendInvite mails a fresh 72-hour setup link (the previous one stops\nworking) from your sending identity. 409 when the mailbox is already set\nup; 429 within 60 seconds of the last send or after 5 sends.\nPOST /api/v1/org/mailboxes/:userUuid/invite/resend",
+        "operationId": "post_api_v1_org_mailboxes_userUuid_invite_resend",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/service.MailboxLinkResult"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "ResendInvite",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/org/mailboxes/{userUuid}/password": {
+      "post": {
+        "description": "Password sets a new password (mode set: every session and open reset link\nends, two-factor stays on) or mails a 72-hour reset link (mode link, active\nmailboxes only) to the recovery email or the given email. The recovery\nemail is told either way. 409 while the mailbox is pending (resend the\nsetup link instead); 429 within 60 seconds of the last link or after 5\nlinks in 24 hours.\nPOST /api/v1/org/mailboxes/:userUuid/password",
+        "operationId": "post_api_v1_org_mailboxes_userUuid_password",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/service.MailboxPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "description": "mode set answers sessionsRevoked; mode link answers the mailed invite (reset link).",
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/service.MailboxPasswordResult"
+                        },
+                        {
+                          "$ref": "#/components/schemas/service.MailboxLinkResult"
+                        }
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Password",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/org/mailboxes/{userUuid}/reactivate": {
+      "post": {
+        "description": "Reactivate lets a suspended mailbox user sign in again.\nPOST /api/v1/org/mailboxes/:userUuid/reactivate",
+        "operationId": "post_api_v1_org_mailboxes_userUuid_reactivate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.MailboxAccount"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Reactivate",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/org/mailboxes/{userUuid}/suspend": {
+      "post": {
+        "description": "Suspend blocks sign-in while mail keeps arriving: sessions, API keys, push\nsubscriptions, OAuth connections and reset links end, forwards pause (and\nstay paused after reactivation) and auto-replies stop.\nPOST /api/v1/org/mailboxes/:userUuid/suspend",
+        "operationId": "post_api_v1_org_mailboxes_userUuid_suspend",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.MailboxAccount"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Suspend",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
         "x-mailat-mailbox-allowed": false,
         "x-mailat-role-required": [
           "owner",

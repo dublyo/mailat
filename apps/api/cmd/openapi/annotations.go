@@ -195,6 +195,8 @@ func annotateBackend(op object, controller, path string) {
 		backend, note = "ses", "Executed on SES arrival once the destination confirms the emailed link (POST /forwards/verify, 48 h, single use). Each copy is sent through SES from the identity as \"Original Name via Mailat\" with Reply-To set to the original sender; subject, body and attachments are unchanged. At most 5 forwards per identity, only to outside addresses. Spam, DMARC reports, loops (X-Mailat-Loop), messages over FORWARD_MAX_BYTES and mail beyond FORWARD_DAILY_LIMIT per forward are not forwarded. A complaint, permanent bounce or suppressed destination suspends the forward until it is verified again. keepCopy=false archives (never deletes) the local copy."
 	} else if strings.HasPrefix(path, "/org/invites") || strings.HasPrefix(path, "/auth/invites") {
 		backend, note = "ses", "Invite links are emailed through SES from an owned sending identity using the durable send queue, suppression list and monthly quota. The single-use token travels in the link fragment and only its SHA-256 hash is stored; accepting creates the account in the inviting organization and signs it in."
+	} else if strings.HasPrefix(path, "/org/mailboxes") || strings.HasPrefix(path, "/org/domains/") {
+		backend, note = "ses", "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session."
 	} else if strings.HasPrefix(path, "/org/") {
 		note = "Organization administration for owners and admins. Admins manage members and identities but never read another member's mail."
 	} else if strings.HasPrefix(path, "/shared-mailboxes") {
@@ -277,6 +279,18 @@ func customizeContract(op object, verb, path string) {
 		if req != "" {
 			op["requestBody"] = object{"required": true, "content": object{"application/json": object{"schema": ref(req)}}}
 		}
+	}
+	if path == "/org/domains/:domainUuid/mailboxes/import" {
+		op["requestBody"] = object{"required": true, "content": object{"text/csv": object{"schema": object{"type": "string", "maxLength": 1 << 20},
+			"example": "local_part,name,invite_email,password,may_send,may_receive\nibrahim,Ibrahim,ibrahim.personal@example.net,,true,true\nsales-desk,Sales desk,,an-initial-password,true,false\n"}}}
+	}
+	if path == "/org/mailboxes/:userUuid/password" {
+		ref := func(name string) object { return object{"$ref": "#/components/schemas/service." + name} }
+		dataSchema(object{"oneOf": []object{ref("MailboxPasswordResult"), ref("MailboxLinkResult")}, "description": "mode set answers sessionsRevoked; mode link answers the mailed invite (reset link)."})
+	}
+	if path == "/org/mailboxes/:userUuid/aliases/:aliasUuid" && verb == "DELETE" {
+		delete(responses, "200")
+		responses["204"] = object{"description": "Alias removed"}
 	}
 	if path == "/webhook-triggers/:id" && verb == "PUT" {
 		dataSchema(object{"$ref": "#/components/schemas/service.WebhookTrigger"})

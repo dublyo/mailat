@@ -297,3 +297,43 @@ func TestOrganizationRolesAndPublicInvites(t *testing.T) {
 		}
 	}
 }
+
+func TestMailboxAdminContract(t *testing.T) {
+	paths, _ := publishedContract(t)
+	n := 0
+	for path, methods := range paths {
+		if !strings.HasPrefix(path, "/api/v1/org/mailboxes") && !strings.HasPrefix(path, "/api/v1/org/domains/") {
+			continue
+		}
+		for method, value := range methods.(map[string]interface{}) {
+			n++
+			op := value.(map[string]interface{})
+			if fmt.Sprint(op["x-mailat-role-required"]) != "[owner admin]" || op["x-api-key-scope"] != nil || op["x-human-session-required"] != true || op["x-mailat-mailbox-allowed"] != false {
+				t.Errorf("%s %s must be an owner/admin session route", method, path)
+			}
+		}
+	}
+	if n != 13 {
+		t.Errorf("documented %d mailbox admin operations, want 13", n)
+	}
+	op := func(path, method string) map[string]interface{} {
+		return paths[path].(map[string]interface{})[method].(map[string]interface{})
+	}
+	body := fmt.Sprint(op("/api/v1/org/domains/{domainUuid}/mailboxes/import", "post")["requestBody"])
+	if !strings.Contains(body, "text/csv") || strings.Contains(body, "application/json") {
+		t.Errorf("import body: %s", body)
+	}
+	if !strings.Contains(fmt.Sprint(op("/api/v1/org/domains/{domainUuid}/mailboxes/import", "post")["parameters"]), "dryRun") {
+		t.Error("import must document dryRun")
+	}
+	responses := op("/api/v1/org/mailboxes/{userUuid}/aliases/{aliasUuid}", "delete")["responses"].(map[string]interface{})
+	if responses["204"] == nil || responses["200"] != nil {
+		t.Errorf("alias delete answers 204: %v", responses)
+	}
+	if op("/api/v1/org/domains/{domainUuid}/mailboxes", "post")["responses"].(map[string]interface{})["201"] == nil {
+		t.Error("create answers 201")
+	}
+	if !strings.Contains(fmt.Sprint(op("/api/v1/org/mailboxes/{userUuid}/password", "post")["responses"]), "MailboxLinkResult") {
+		t.Error("password link response undocumented")
+	}
+}
