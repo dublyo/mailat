@@ -451,9 +451,25 @@ func (s *ReceivingService) ProcessIncomingEmail(ctx context.Context, auth *Recei
 // delivers to its active readers; FOR SHARE makes a concurrent member removal
 // wait until this ingest commits, so the removal also deletes the new copy.
 // Zero readers means the message is acknowledged without a copy.
+//
+// A personal identity's owner is read again here under FOR SHARE: routing
+// read it before the transaction, and a transfer or member removal (which
+// lock the identity FOR UPDATE) may have committed since. The copy, filters,
+// events and push then all follow the owner the trigger will write. An
+// identity that stopped receiving gets no copy.
 func mailboxOwners(ctx context.Context, tx *sql.Tx, ident *recipientIdentity) ([]int64, error) {
 	if ident.Kind != "shared" {
-		return []int64{ident.UserID}, nil
+		var owner int64
+		err := tx.QueryRowContext(ctx, `SELECT i.user_id FROM identities i JOIN users u ON u.id=i.user_id
+   WHERE i.id=$1 AND i.kind='personal' AND i.can_receive AND u.status='active' FOR SHARE OF i`, ident.ID).Scan(&owner)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		ident.UserID = owner
+		return []int64{owner}, nil
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT m.user_id FROM shared_mailbox_members m JOIN shared_mailboxes sm ON sm.id=m.shared_mailbox_id
    JOIN users u ON u.id=m.user_id

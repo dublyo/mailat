@@ -612,3 +612,115 @@ func TestRemoveMemberLocksSharedMembershipsInIngestOrder(t *testing.T) {
 		t.Fatal("removal:", err)
 	}
 }
+
+// Ingest re-reads a personal identity's owner in its transaction, so mail
+// routed before a transfer committed follows the new owner.
+func TestIngestResolvesPersonalOwnerInsideTransaction(t *testing.T) {
+	f := newOrgFixture(t)
+	ctx := context.Background()
+	var personal int64
+	if err := f.db.QueryRow(`INSERT INTO identities(user_id,domain_id,email,can_send,updated_at) VALUES($1,50,'m1@acme.test',true,now()) RETURNING id`, f.member.UserID).Scan(&personal); err != nil {
+		t.Fatal(err)
+	}
+	// Routing read the member as owner; a transfer then commits.
+	stale := &recipientIdentity{ID: personal, Kind: "personal", UserID: f.member.UserID}
+	var adminUUID, identityUUID string
+	if err := f.db.QueryRow(`SELECT (SELECT uuid::text FROM users WHERE id=$1),(SELECT uuid::text FROM identities WHERE id=$2)`, f.admin.UserID, personal).Scan(&adminUUID, &identityUUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.TransferIdentity(ctx, f.owner, identityUUID, adminUUID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	owners, err := mailboxOwners(ctx, tx, stale)
+	if err != nil || len(owners) != 1 || owners[0] != f.admin.UserID || stale.UserID != f.admin.UserID {
+		t.Fatalf("owners %v (identity owner %d), err %v; want the new owner %d", owners, stale.UserID, err, f.admin.UserID)
+	}
+	_ = tx.Rollback()
+
+	// The ingest's share lock makes a concurrent transfer wait for its commit.
+	tx, err = f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = mailboxOwners(ctx, tx, stale); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocked.Rollback()
+	if _, err = blocked.Exec(`SET LOCAL lock_timeout='200ms'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = blocked.Exec(`SELECT id FROM identities WHERE id=$1 FOR UPDATE`, personal); err == nil {
+		t.Fatal("a transfer could lock the identity while ingest delivered to it")
+	}
+	_ = blocked.Rollback()
+	_ = tx.Rollback()
+
+	// An identity that stopped receiving, or whose owner left, gets no copy.
+	if _, err = f.db.Exec(`UPDATE identities SET can_receive=false WHERE id=$1`, personal); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if owners, err = mailboxOwners(ctx, tx, stale); err != nil || len(owners) != 0 {
+		t.Fatalf("disabled identity owners %v %v", owners, err)
+	}
+}
+
+// A personal identity with a lower id than a shared mailbox: ingest locks the
+// identity, then the memberships; removal must not take them the other way.
+func TestRemoveMemberLocksPersonalAndSharedInIngestOrder(t *testing.T) {
+	f := newOrgFixture(t)
+	ctx := context.Background()
+	m := f.member.UserID
+	var personal int64
+	if err := f.db.QueryRow(`INSERT INTO identities(user_id,domain_id,email,can_send,updated_at) VALUES($1,50,'m1@acme.test',true,now()) RETURNING id`, m).Scan(&personal); err != nil {
+		t.Fatal(err)
+	}
+	_, shared := f.sharedMailbox(t, "team@acme.test", [][2]any{{m, true}, {f.admin.UserID, true}})
+	if personal >= shared {
+		t.Fatal("identity ids out of order")
+	}
+	ingest, err := f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingest.Rollback()
+	if _, err = ingest.Exec(`SET LOCAL lock_timeout='5s'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = mailboxOwners(ctx, ingest, &recipientIdentity{ID: personal, Kind: "personal"}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.svc.RemoveMember(ctx, f.admin, f.memberUUID, "")
+		done <- err
+	}()
+	for i := 0; f.count(t, `SELECT count(*) FROM pg_locks WHERE NOT granted`) == 0; i++ {
+		if i > 500 {
+			t.Fatal("removal never waited for the ingest lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err = mailboxOwners(ctx, ingest, &recipientIdentity{ID: shared, Kind: "shared"}); err != nil {
+		t.Fatal("ingest could not lock the shared mailbox:", err)
+	}
+	if err = ingest.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-done; err != nil {
+		t.Fatal("removal:", err)
+	}
+}

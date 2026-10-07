@@ -305,9 +305,50 @@ func releaseIdentities(ctx context.Context, tx *sql.Tx, previousOwner int64, ids
 	return err
 }
 
+// lockIdentitiesInIngestOrder locks the user's personal identities and shared
+// memberships in one pass of ascending identity id. Ingest takes FOR SHARE on
+// exactly these rows (personal identity rows, shared membership rows) in that
+// same order, so removal and ingest wait for each other instead of deadlocking.
+func lockIdentitiesInIngestOrder(ctx context.Context, tx *sql.Tx, userID int64) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id,kind='shared' FROM identities WHERE user_id=$1 AND kind='personal'
+		UNION SELECT sm.identity_id,true FROM shared_mailboxes sm JOIN shared_mailbox_members m ON m.shared_mailbox_id=sm.id
+			WHERE m.user_id=$1 AND sm.identity_id IS NOT NULL
+		ORDER BY 1`, userID)
+	if err != nil {
+		return err
+	}
+	type identity struct {
+		id     int64
+		shared bool
+	}
+	var ids []identity
+	for rows.Next() {
+		var i identity
+		if err = rows.Scan(&i.id, &i.shared); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, i)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	for _, i := range ids {
+		q := `SELECT id FROM identities WHERE id=$1 AND user_id=$2 AND kind='personal' FOR UPDATE`
+		if i.shared {
+			q = `SELECT m.id FROM shared_mailboxes sm JOIN shared_mailbox_members m ON m.shared_mailbox_id=sm.id
+				WHERE sm.identity_id=$1 AND m.user_id=$2 FOR UPDATE OF sm, m`
+		}
+		if _, err = tx.ExecContext(ctx, q, i.id, userID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // releaseSharedMemberships locks the removed user's shared mailboxes and
-// membership rows in ascending identity order, the order ingest takes its
-// membership locks in, so the two never deadlock. Where the user is the only
+// membership rows (linked ones are already locked in ingest order). Where the user is the only
 // active reader of a linked mailbox, the org owner becomes a reader and
 // manager, so the mailbox keeps receiving instead of silently dropping mail.
 // It returns the UUIDs of the mailboxes handed over.
@@ -422,6 +463,9 @@ func (s *OrgMemberService) RemoveMember(ctx context.Context, a OrgActor, userUUI
 	}
 	// 3. Shared memberships go first, then that user's copies, so an ingest
 	// holding the membership lock finishes before its copy is deleted.
+	if err = lockIdentitiesInIngestOrder(ctx, tx, id); err != nil {
+		return nil, err
+	}
 	handedOver, err := releaseSharedMemberships(ctx, tx, id, owner)
 	if err != nil {
 		return nil, err
