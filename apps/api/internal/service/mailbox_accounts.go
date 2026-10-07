@@ -192,52 +192,18 @@ func (s *MailboxService) CreateMailbox(ctx context.Context, a OrgActor, domainUU
 		return nil, err
 	}
 
-	// The address must be free, or an identity left behind by a removed user.
-	var reuseID int64
-	var kind, ownerStatus string
-	var identityDomain int64
-	var live bool
-	err = tx.QueryRowContext(ctx, `SELECT i.id,i.kind,i.domain_id,u.status,EXISTS(SELECT 1 FROM mailbox_accounts ma WHERE ma.identity_id=i.id AND ma.removed_at IS NULL)
-		FROM identities i JOIN users u ON u.id=i.user_id WHERE lower(i.email)=$1 FOR UPDATE OF i`, address).Scan(&reuseID, &kind, &identityDomain, &ownerStatus, &live)
-	switch {
-	case err == sql.ErrNoRows:
-		reuseID = 0
-	case err != nil:
-		return nil, err
-	case kind != "personal" || ownerStatus != "disabled" || identityDomain != domainID || live:
-		return nil, orgError(http.StatusConflict, "That address is already in use; transfer the identity from Team → Identities instead")
-	}
-	var isAlias bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identity_send_aliases WHERE address=$1)`, address).Scan(&isAlias); err != nil {
+	reuseID, removedLogin, err := mailboxAddressFree(ctx, tx, a.OrgID, domainID, address, true)
+	if err != nil {
 		return nil, err
 	}
-	if isAlias {
-		return nil, orgError(http.StatusConflict, "That address is a send-as alias; remove the alias first")
-	}
-	var loginID, loginOrg int64
-	var loginStatus string
-	err = tx.QueryRowContext(ctx, `SELECT id,org_id,status FROM users WHERE email=$1 FOR NO KEY UPDATE`, address).Scan(&loginID, &loginOrg, &loginStatus)
-	switch {
-	case err == sql.ErrNoRows:
-	case err != nil:
-		return nil, err
-	case loginOrg != a.OrgID || loginStatus != "disabled":
-		return nil, orgError(http.StatusConflict, "This address already has a Mailat account")
-	default:
+	if removedLogin > 0 {
 		// The removed login keeps its history under a placeholder address.
-		if _, err = tx.ExecContext(ctx, `UPDATE users SET email='removed+'||uuid::text||'@invalid',updated_at=now() WHERE id=$1`, loginID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE users SET email='removed+'||uuid::text||'@invalid',updated_at=now() WHERE id=$1`, removedLogin); err != nil {
 			return nil, err
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE org_invites SET revoked_at=now() WHERE org_id=$1 AND email=$2 AND purpose='join' AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at<=now()`, a.OrgID, address); err != nil {
 		return nil, err
-	}
-	var open bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM org_invites WHERE org_id=$1 AND email=$2 AND accepted_at IS NULL AND revoked_at IS NULL)`, a.OrgID, address).Scan(&open); err != nil {
-		return nil, err
-	}
-	if open {
-		return nil, orgError(http.StatusConflict, "An invite for this address is pending")
 	}
 	if reuseID == 0 && !s.members.cfg.DisableAppLimits {
 		var limit, count int
@@ -314,6 +280,58 @@ func (s *MailboxService) CreateMailbox(ctx context.Context, a OrgActor, domainUU
 	return &CreateMailboxResult{Mailbox: mb, Warnings: warnings}, nil
 }
 
+// mailboxAddressFree checks that address can become a new mailbox on
+// domainID: it is unused, or an identity (and login) left behind by a removed
+// user of this org, which the new mailbox takes over. lock takes the row locks
+// CreateMailbox needs; the CSV dry run reads without them.
+func mailboxAddressFree(ctx context.Context, tx *sql.Tx, orgID, domainID int64, address string, lock bool) (reuseID, removedLogin int64, err error) {
+	identityLock, loginLock := "", ""
+	if lock {
+		identityLock, loginLock = " FOR UPDATE OF i", " FOR NO KEY UPDATE"
+	}
+	var kind, ownerStatus string
+	var identityDomain int64
+	var live bool
+	err = tx.QueryRowContext(ctx, `SELECT i.id,i.kind,i.domain_id,u.status,EXISTS(SELECT 1 FROM mailbox_accounts ma WHERE ma.identity_id=i.id AND ma.removed_at IS NULL)
+		FROM identities i JOIN users u ON u.id=i.user_id WHERE lower(i.email)=$1`+identityLock, address).Scan(&reuseID, &kind, &identityDomain, &ownerStatus, &live)
+	switch {
+	case err == sql.ErrNoRows:
+		reuseID = 0
+	case err != nil:
+		return 0, 0, err
+	case kind != "personal" || ownerStatus != "disabled" || identityDomain != domainID || live:
+		return 0, 0, orgError(http.StatusConflict, "That address is already in use; transfer the identity from Team → Identities instead")
+	}
+	var isAlias bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identity_send_aliases WHERE address=$1)`, address).Scan(&isAlias); err != nil {
+		return 0, 0, err
+	}
+	if isAlias {
+		return 0, 0, orgError(http.StatusConflict, "That address is a send-as alias; remove the alias first")
+	}
+	var loginOrg int64
+	var loginStatus string
+	err = tx.QueryRowContext(ctx, `SELECT id,org_id,status FROM users WHERE email=$1`+loginLock, address).Scan(&removedLogin, &loginOrg, &loginStatus)
+	switch {
+	case err == sql.ErrNoRows:
+		removedLogin = 0
+	case err != nil:
+		return 0, 0, err
+	case loginOrg != orgID || loginStatus != "disabled":
+		return 0, 0, orgError(http.StatusConflict, "This address already has a Mailat account")
+	}
+	// An expired join invite does not block: creating the mailbox revokes it.
+	var open bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM org_invites WHERE org_id=$1 AND email=$2 AND accepted_at IS NULL AND revoked_at IS NULL
+		AND NOT (purpose='join' AND expires_at<=now()))`, orgID, address).Scan(&open); err != nil {
+		return 0, 0, err
+	}
+	if open {
+		return 0, 0, orgError(http.StatusConflict, "An invite for this address is pending")
+	}
+	return reuseID, removedLogin, nil
+}
+
 // mailboxConflict maps a unique violation (a concurrent create, or the
 // identity/alias exclusion trigger) to 409.
 func mailboxConflict(err error) error {
@@ -353,6 +371,12 @@ type mailboxUser struct {
 // (the user -> org order). FOR NO KEY UPDATE leaves ingest's foreign-key
 // share locks on the user row free.
 func lockMailboxUser(ctx context.Context, tx *sql.Tx, a OrgActor, userUUID string) (*mailboxUser, error) {
+	return lockMailbox(ctx, tx, a, userUUID, false)
+}
+
+// lockMailbox is lockMailboxUser; withDomain also locks the mailbox's domain
+// between the user and the org (user -> domain -> org).
+func lockMailbox(ctx context.Context, tx *sql.Tx, a OrgActor, userUUID string, withDomain bool) (*mailboxUser, error) {
 	if !validUUID(userUUID) {
 		return nil, orgError(http.StatusNotFound, "Mailbox not found")
 	}
@@ -371,6 +395,11 @@ func lockMailboxUser(ctx context.Context, tx *sql.Tx, a OrgActor, userUUID strin
 	}
 	if !consistent {
 		return nil, errMailboxInconsistent
+	}
+	if withDomain {
+		if _, err = tx.ExecContext(ctx, `SELECT id FROM domains WHERE id=$1 FOR UPDATE`, m.domainID); err != nil {
+			return nil, err
+		}
 	}
 	return &m, lockOrg(ctx, tx, a.OrgID)
 }

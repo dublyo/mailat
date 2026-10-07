@@ -34,6 +34,7 @@ var ownershipGateAllowlist = map[string]string{
 	"mailbox_accounts.go: SELECT i.id,i.kind,i.domain_id,u.status":                                        "mailbox create reads the kind and only reuses a personal identity",
 	"mailbox_accounts.go: SELECT count(*) FROM identities i JOIN users u":                                 "org-wide identity count includes shared identities",
 	"mailbox_accounts.go: INSERT INTO identities(user_id,domain_id,email,display_name,kind":               "creates the row as a personal identity",
+	"mailbox_import.go: SELECT count(*) FROM identities i JOIN users u":                                   "org-wide identity count includes shared identities",
 	"receiving_events.go: COALESCE(t.system_user_id,i.user_id)":                                           "transactional API sends use personal identities only; system sends carry their acting user",
 }
 
