@@ -59,20 +59,24 @@ Every SES domain card shows **API sending readiness**, the same list as `GET /ap
 
 | Item | Done when | Fix |
 | --- | --- | --- |
-| Domain verified | The domain is active and SES reports it verified | Publish the sending DNS records, then **Verify now** |
+| Domain verified | The domain is active and SES reports it verified | Publish the sending DNS records, then **Verify now** (it says which records are still missing) |
 | DMARC policy | A policy is published on the domain or inherited from a parent | **Show DMARC setup** (Cloudflare add or the copyable `TXT _dmarc.<domain>` record) |
-| Sending resources | Attachment storage and SES delivery feedback are set up and the SNS subscription is confirmed | **Set up sending** / **Retry setup** (the existing setup below) |
-| Your sending identity | You own a sending identity on the domain | **Create noreply@&lt;domain&gt;** in one click, or **Use another address** |
-| Receiving (optional) | Receiving is on and the root MX is published | **Show receiving**; never required for sending |
+| Sending resources | Attachment storage and SES delivery feedback are set up and the SNS subscription is confirmed | **Set up sending resources** / **Retry sending setup** (the existing setup below); nothing to do while it waits for SES to confirm |
+| Your sending identity | You own a sending identity on the domain | **Create noreply@&lt;domain&gt;** in one click, or **Use another address** (**Add identity** when noreply is taken) |
+| Receiving (optional) | Receiving is on and the root MX is published | **Show receiving**; never required for sending. The root MX is shown for copying only once receiving is on |
 
-Setup, Verify and identity actions are for owners and admins; members see the list and are told to ask one. An API send from a domain where the caller has no identity fails with `you have no sending identity on <domain>; add one (e.g. noreply@<domain>) under Domains → <domain> → Add identity`.
+Setup, Verify and identity actions are for owners and admins; members see the list and are told to ask one. Sending resources and the identity can only be fixed after the domain is verified. DMARC and MX answers are cached for about a minute; **Re-check** (`?refresh=true`) looks again. A failed DMARC lookup shows **Unknown** and keeps `ready` false until a re-check succeeds.
 
-**What happens automatically.** The first time a domain becomes active and SES verified (on **Verify**, or when the SES status check finds it verified), Mailat, once and in the background:
+An API send from a domain where the caller has no identity fails with `you have no sending identity on <domain>; add one (e.g. noreply@<domain>) under Domains → <domain> → Add identity` for owners, admins and their keys, and `you have no sending identity on <domain>; ask an organization owner or admin to add one for you (e.g. noreply@<domain>) under Domains → <domain> → Add identity` for members and their keys.
 
-1. runs the sending setup described in [Delivery, bounces, and complaints](#delivery-bounces-and-complaints). If it cannot finish (for example `API_URL` is not HTTPS, AWS permissions are missing, or a feedback channel already publishes to another topic), the reason is shown on the domain's sending status and the checklist marks it **Needs attention**; it is not retried on its own, and **Set up sending** still works;
-2. creates `noreply@<domain>` (can send and receive, not a catch-all, default only when the person has no default identity) for the person who added the domain, or the organization owner when that person is unknown or no longer active, but only if they have no identity on the domain yet, `noreply@<domain>` is not already an identity, mailbox, send-as alias or pending invite address, and the identity limit allows it. Otherwise nothing is created and the checklist shows the missing identity. An existing catch-all is never changed.
+**What happens automatically.** The first time a domain becomes active and SES verified (on **Verify**, or when an owner or admin's SES status check finds it verified; a member's or API key's status check only reads), Mailat, once and in the background:
 
-It never publishes DNS (no root MX, SPF or DMARC) and never turns on receiving. Domains that were already active and verified before this release are left as they are.
+1. creates `noreply@<domain>` (can send and receive, not a catch-all, default only when the person has no default identity) for the person who added the domain, or the organization owner when that person is unknown or no longer active, but only if they are still an active owner, admin or member when it runs, have no identity on the domain yet, `noreply@<domain>` is not already an identity, mailbox, send-as alias, pending invite address or another person's Mailat login, and the identity limit allows it. Otherwise nothing is created and the checklist shows the missing identity. An existing catch-all is never changed;
+2. runs the sending setup described in [Delivery, bounces, and complaints](#delivery-bounces-and-complaints). If it cannot finish (for example `API_URL` is not HTTPS, AWS permissions are missing, or a feedback channel already publishes to another topic), the reason is shown on the domain's sending status and the checklist marks it **Needs attention**; it is not retried on its own, and **Retry sending setup** (or **Set up sending resources** in the sending panel) still works.
+
+While this runs the checklist shows **Setting up automatically…** with no buttons (`automaticSetup: true` in the API) and re-reads itself until it is done.
+
+It never publishes DNS (no root MX, SPF or DMARC) and never turns on receiving. Domains that were already active before this release (even if their last SES check failed) or were ever verified are left as they are.
 
 ### Receiving MX for mailboxes
 

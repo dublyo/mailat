@@ -820,10 +820,10 @@ func (s *TransactionalService) chooseSendIdentity(ctx context.Context, orgID, do
 	if err = rows.Err(); err != nil {
 		return 0, 0, "", err
 	}
-	if len(candidates) == 0 {
-		return 0, 0, "", &provider.MailValidationError{Message: noSendingIdentityMessage(addr[strings.LastIndex(addr, "@")+1:])}
-	}
 	admin := actor.Admin || actor.UserID == 0
+	if len(candidates) == 0 {
+		return 0, 0, "", &provider.MailValidationError{Message: noSendingIdentityMessage(addr[strings.LastIndex(addr, "@")+1:], admin)}
+	}
 	for _, c := range candidates {
 		ok, err := senderAllowed(ctx, s.db, c.id, c.email, c.kind, c.wildcard, addr, admin)
 		if err != nil {

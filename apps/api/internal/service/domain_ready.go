@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,20 +48,89 @@ type DomainReadiness struct {
 	Ready             bool                  `json:"ready"`
 	Items             []DomainReadinessItem `json:"items"`
 	SuggestedIdentity string                `json:"suggestedIdentity"` // noreply@<domain> while that address is free, else empty.
+	AutomaticSetup    bool                  `json:"automaticSetup"`    // The one-time setup after verification is still running; re-read shortly.
 	CheckedAt         time.Time             `json:"checkedAt"`
+}
+
+// ReadinessOptions describe the reader: Admin owners and admins (or keys they
+// own) get the fix wording for themselves; Refresh re-checks DNS now.
+type ReadinessOptions struct {
+	Admin   bool
+	Refresh bool
+}
+
+// readyAutomationWindow is how long after verification the checklist reports
+// the one-time setup as running instead of offering manual fixes.
+const readyAutomationWindow = 2 * time.Minute
+
+// dmarcCacheTTL keeps the checklist from running a live DMARC lookup for every
+// card on every render. A Re-check (refresh) bypasses it.
+const dmarcCacheTTL = 60 * time.Second
+
+type dmarcInspectionCache struct {
+	mu      sync.Mutex
+	entries map[string]dmarcCacheEntry
+}
+
+type dmarcCacheEntry struct {
+	inspection provider.DMARCInspection
+	at         time.Time
+}
+
+func (c *dmarcInspectionCache) put(name string, inspection provider.DMARCInspection) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil || len(c.entries) > 1000 {
+		c.entries = map[string]dmarcCacheEntry{}
+	}
+	c.entries[name] = dmarcCacheEntry{inspection: inspection, at: time.Now()}
+}
+
+func (c *dmarcInspectionCache) forget(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, name)
+}
+
+// inspectDMARC returns a recent definite DMARC answer from the cache, or looks
+// it up. Failed (unknown) lookups are not cached so the next read retries.
+func (s *DomainService) inspectDMARC(ctx context.Context, name string, refresh bool) provider.DMARCInspection {
+	c := &s.dmarcCache
+	c.mu.Lock()
+	if e, ok := c.entries[name]; ok {
+		age := time.Since(e.at)
+		if age <= dmarcCacheTTL && (!refresh || age < mxRefreshMinAge) {
+			c.mu.Unlock()
+			return e.inspection
+		}
+	}
+	c.mu.Unlock()
+	return s.rememberDMARC(name, provider.InspectDMARC(ctx, name, s.dmarcResolver))
+}
+
+func (s *DomainService) rememberDMARC(name string, inspection provider.DMARCInspection) provider.DMARCInspection {
+	if inspection.Status == "unknown" {
+		s.dmarcCache.forget(name)
+	} else {
+		s.dmarcCache.put(name, inspection)
+	}
+	return inspection
 }
 
 // GetDomainReadiness builds the checklist for userID (the caller, or an API
 // key's owner) on one of the organization's domains. It only reads state.
-func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID int64, domainUUID string) (*DomainReadiness, error) {
+func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID int64, domainUUID string, opts ReadinessOptions) (*DomainReadiness, error) {
 	if _, err := uuid.Parse(domainUUID); err != nil {
 		return nil, ErrDomainNotFound
 	}
 	var domainID int64
 	var name, status, setupError string
-	var sesVerified bool
-	err := s.db.QueryRowContext(ctx, `SELECT id,name,status,COALESCE(ses_verified,false),sending_setup_error FROM domains WHERE uuid=$1 AND org_id=$2`, domainUUID, orgID).
-		Scan(&domainID, &name, &status, &sesVerified, &setupError)
+	var sesVerified, automationRecent bool
+	var createdBy sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT id,name,status,COALESCE(ses_verified,false),sending_setup_error,created_by,
+		COALESCE(email_provider,'ses')='ses' AND COALESCE(ready_automation_at > now() - $3::int * interval '1 second', ready_automation_at IS NULL AND verified_at > now() - $3::int * interval '1 second', false)
+		FROM domains WHERE uuid=$1 AND org_id=$2`, domainUUID, orgID, int(readyAutomationWindow/time.Second)).
+		Scan(&domainID, &name, &status, &sesVerified, &setupError, &createdBy, &automationRecent)
 	if err == sql.ErrNoRows {
 		return nil, ErrDomainNotFound
 	}
@@ -77,7 +147,7 @@ func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID in
 	}
 	out.Items = append(out.Items, item)
 
-	dmarc := provider.InspectDMARC(ctx, name, s.dmarcResolver)
+	dmarc := s.inspectDMARC(ctx, name, opts.Refresh)
 	item = DomainReadinessItem{Key: "dmarc", Label: "DMARC policy", Detail: dmarc.Reason}
 	switch dmarc.Status {
 	case "existing":
@@ -94,6 +164,9 @@ func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID in
 		item.Status, item.State, item.Fix = ReadinessAttention, "conflict", "dmarc"
 	default:
 		item.Status, item.State = ReadinessUnknown, "unknown"
+		if item.Detail == "" {
+			item.Detail = "The DMARC lookup did not finish; choose Re-check."
+		}
 	}
 	out.Items = append(out.Items, item)
 
@@ -101,20 +174,33 @@ func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID in
 	if err != nil {
 		return nil, err
 	}
+	// The one-time setup after verification is still running: it has been
+	// claimed (or is about to be) and has neither configured feedback nor
+	// recorded a failure yet.
+	automating := verified && automationRecent && s.cfg != nil && s.cfg.EmailProvider == "ses" &&
+		!sending.FeedbackConfigured && !sending.FeedbackReady && setupError == ""
+	out.AutomaticSetup = automating
 	item = DomainReadinessItem{Key: "sending_resources", Label: "Sending resources", Status: ReadinessOK, State: "ready", Detail: "Attachment storage and delivery feedback are ready."}
 	switch {
 	case sending.FeedbackReady:
+	case automating:
+		item.Status, item.State = ReadinessPending, "automatic_setup"
+		item.Detail = "Setting up automatically…"
 	case sending.FeedbackConfigured && sending.SubscriptionStatus == "pending":
+		// Nothing to fix: SES confirms the subscription on its own. Re-check shows it.
 		item.Status, item.State = ReadinessPending, "awaiting_confirmation"
 		item.Detail = "Waiting for SES to confirm the delivery feedback subscription."
 	case setupError != "":
-		item.Status, item.State, item.Detail = ReadinessAttention, "needs_attention", setupError
-	default:
+		item.Status, item.State, item.Detail, item.Fix = ReadinessAttention, "needs_attention", setupError, "setup_sending"
+	case !verified:
 		item.Status, item.State = ReadinessMissing, "not_set_up"
+		item.Detail = "Attachment storage and delivery feedback are set up after the domain is verified."
+	default:
+		item.Status, item.State, item.Fix = ReadinessMissing, "not_set_up", "setup_sending"
 		item.Detail = "Set up attachment storage and delivery feedback."
 	}
-	if item.Status != ReadinessOK && verified {
-		item.Fix = "setup_sending"
+	if !verified {
+		item.Fix = ""
 	}
 	out.Items = append(out.Items, item)
 
@@ -123,7 +209,7 @@ func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID in
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
-	free, err := addressFree(ctx, s.db, orgID, "noreply@"+name)
+	free, err := addressFree(ctx, s.db, orgID, "noreply@"+name, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -133,14 +219,32 @@ func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID in
 	item = DomainReadinessItem{Key: "sending_identity", Label: "Your sending identity", Status: ReadinessOK, State: "present", Value: own, Detail: "You send from " + name + " as " + own + "."}
 	if own == "" {
 		item.Status, item.State, item.Value = ReadinessMissing, "missing", out.SuggestedIdentity
-		item.Detail = noSendingIdentityMessage(name)
-		if verified {
+		target := int64(0)
+		if automating && free {
+			if target, err = readyAutomationUser(ctx, s.db, orgID, createdBy); err != nil {
+				return nil, err
+			}
+		}
+		switch {
+		case target != 0 && target == userID:
+			item.Status, item.State = ReadinessPending, "automatic_setup"
+			item.Detail = "Creating " + out.SuggestedIdentity + " for you automatically…"
+		case !verified:
+			item.Detail = "You have no sending identity on " + name + " yet. You can add one after the domain is verified."
+		case !opts.Admin:
 			item.Fix = "create_identity"
+			item.Detail = "You have no sending identity on " + name + ". Ask an organization owner or admin to add one for you."
+		case free:
+			item.Fix = "create_identity"
+			item.Detail = "You have no sending identity on " + name + ". Create " + out.SuggestedIdentity + " or use another address."
+		default:
+			item.Fix = "create_identity"
+			item.Detail = "You have no sending identity on " + name + ". Add one with Add Identity."
 		}
 	}
 	out.Items = append(out.Items, item)
 
-	receiving, err := s.GetReceivingStatus(ctx, orgID, domainUUID, false)
+	receiving, err := s.GetReceivingStatus(ctx, orgID, domainUUID, opts.Refresh)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +254,9 @@ func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID in
 		item.Status, item.Fix = ReadinessOK, ""
 		item.Detail = "Receiving is on and the MX record is published."
 	case MXStatusNotEnabled:
-		item.Status = ReadinessOff
+		// No copyable root MX while receiving is off: publishing one would
+		// move the domain's mail away from its current inbox provider.
+		item.Status, item.Value = ReadinessOff, ""
 		item.Detail = "Receiving is off. Sending works without it."
 	case MXStatusMissing:
 		item.Status = ReadinessMissing
@@ -171,8 +277,12 @@ func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID in
 }
 
 // noSendingIdentityMessage tells an API caller exactly how to fix a send that
-// has no identity of theirs on the From domain.
-func noSendingIdentityMessage(domain string) string {
+// has no identity of theirs on the From domain. Only owners and admins can add
+// identities, so members are told whom to ask.
+func noSendingIdentityMessage(domain string, admin bool) string {
+	if !admin {
+		return fmt.Sprintf("you have no sending identity on %[1]s; ask an organization owner or admin to add one for you (e.g. noreply@%[1]s) under Domains → %[1]s → Add identity", domain)
+	}
 	return fmt.Sprintf("you have no sending identity on %[1]s; add one (e.g. noreply@%[1]s) under Domains → %[1]s → Add identity", domain)
 }
 
@@ -180,14 +290,30 @@ type queryRower interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-// addressFree reports whether addr is not an identity, a send-as alias or the
-// address of an open invite or mailbox setup link. Mailboxes are identities.
-func addressFree(ctx context.Context, q queryRower, orgID int64, addr string) (bool, error) {
+// addressFree reports whether addr is not an identity, a send-as alias, the
+// address of an open invite or mailbox setup link, or another person's Mailat
+// login (in any organization). Mailboxes are identities. forUser's own login
+// address does not count as taken.
+func addressFree(ctx context.Context, q queryRower, orgID int64, addr string, forUser int64) (bool, error) {
 	var taken bool
 	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE lower(email)=$1)
 		OR EXISTS(SELECT 1 FROM identity_send_aliases WHERE address=$1)
-		OR EXISTS(SELECT 1 FROM org_invites WHERE org_id=$2 AND accepted_at IS NULL AND revoked_at IS NULL AND (email=$1 OR delivery_email=$1))`, addr, orgID).Scan(&taken)
+		OR EXISTS(SELECT 1 FROM org_invites WHERE org_id=$2 AND accepted_at IS NULL AND revoked_at IS NULL AND (email=$1 OR delivery_email=$1))
+		OR EXISTS(SELECT 1 FROM users WHERE lower(email)=$1 AND id<>$3)`, addr, orgID, forUser).Scan(&taken)
 	return !taken, err
+}
+
+// readyAutomationUser is who gets the noreply identity: the person who added
+// the domain while they are still an active staff member, otherwise the
+// organization owner, never another admin or member. 0 means nobody.
+func readyAutomationUser(ctx context.Context, q queryRower, orgID int64, createdBy sql.NullInt64) (int64, error) {
+	var userID int64
+	err := q.QueryRowContext(ctx, `SELECT id FROM users WHERE org_id=$1 AND status='active' AND removed_at IS NULL
+		AND ((id=$2 AND role IN ('owner','admin','member')) OR role='owner') ORDER BY (id=$2) DESC,id LIMIT 1`, orgID, createdBy.Int64).Scan(&userID)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return userID, err
 }
 
 // afterDomainCheck runs the one-time ready automation when a check has just
@@ -213,8 +339,9 @@ func (s *DomainService) afterDomainCheck(domainID int64) {
 	})
 }
 
-// runReadyAutomation claims the domain's single automation run, then sets up
-// sending resources and gives the person who added it a noreply identity.
+// runReadyAutomation claims the domain's single automation run, gives the
+// person who added it a noreply identity (a quick database step, so the
+// checklist shows it at once), then sets up sending resources.
 // Failures are recorded for the sending status and never retried here; the
 // manual Set up action still works. DNS (root MX, SPF) is never touched.
 func (s *DomainService) runReadyAutomation(ctx context.Context, domainID int64) {
@@ -230,8 +357,11 @@ func (s *DomainService) runReadyAutomation(ctx context.Context, domainID int64) 
 		log.Printf("domain %d ready automation: claim failed: %v", domainID, err)
 		return
 	}
+	if err = s.ensureOwnerIdentity(ctx, orgID, domainID, name, createdBy); err != nil {
+		log.Printf("domain %d ready automation: owner identity skipped: %v", domainID, err)
+	}
 	if _, err = s.EnsureDomainSendingResources(ctx, orgID, domainID); err != nil {
-		reason := "Automatic sending setup did not finish; choose Set up sending resources to retry"
+		reason := "Automatic sending setup did not finish; choose Retry sending setup to try again"
 		var validation *provider.MailValidationError
 		if errors.As(err, &validation) {
 			reason = "Automatic sending setup did not finish: " + validation.Error()
@@ -240,9 +370,6 @@ func (s *DomainService) runReadyAutomation(ctx context.Context, domainID int64) 
 			log.Printf("domain %d ready automation: record setup error: %v", domainID, e)
 		}
 	}
-	if err = s.ensureOwnerIdentity(ctx, orgID, domainID, name, createdBy); err != nil {
-		log.Printf("domain %d ready automation: owner identity skipped: %v", domainID, err)
-	}
 }
 
 // ensureOwnerIdentity creates noreply@<domain> for the user who added the
@@ -250,25 +377,32 @@ func (s *DomainService) runReadyAutomation(ctx context.Context, domainID int64) 
 // it, the address is free and the identity cap allows it. Otherwise it does
 // nothing; the readiness checklist shows the missing identity.
 func (s *DomainService) ensureOwnerIdentity(ctx context.Context, orgID, domainID int64, domainName string, createdBy sql.NullInt64) error {
-	// The person who added the domain while they are still an active staff
-	// member; otherwise the organization owner, never another admin or member.
-	var userID int64
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM users WHERE org_id=$1 AND status='active' AND removed_at IS NULL
-		AND ((id=$2 AND role IN ('owner','admin','member')) OR role='owner') ORDER BY (id=$2) DESC,id LIMIT 1`, orgID, createdBy.Int64).Scan(&userID)
-	if err == sql.ErrNoRows {
-		return nil
-	}
-	if err != nil {
+	userID, err := readyAutomationUser(ctx, s.db, orgID, createdBy)
+	if err != nil || userID == 0 {
 		return err
 	}
+	return s.createOwnerIdentity(ctx, orgID, domainID, domainName, userID)
+}
+
+// createOwnerIdentity gives userID noreply@<domain> unless, under the locks,
+// the user is no longer an active staff member, already has an identity on
+// the domain, the address is taken or the identity cap is reached.
+func (s *DomainService) createOwnerIdentity(ctx context.Context, orgID, domainID int64, domainName string, userID int64) error {
 	addr := "noreply@" + strings.ToLower(domainName)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	// Same lock order as CreateIdentity: user, domain, then organization.
-	if _, err = tx.ExecContext(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID); err != nil {
+	// Same lock order as CreateIdentity: user, domain, then organization. The
+	// user is re-checked under the lock: removed, disabled or demoted to a
+	// mailbox since they were chosen means no identity.
+	var role string
+	err = tx.QueryRowContext(ctx, `SELECT role FROM users WHERE id=$1 AND org_id=$2 AND status='active' AND removed_at IS NULL FOR UPDATE`, userID, orgID).Scan(&role)
+	if err == sql.ErrNoRows || (err == nil && role != "owner" && role != "admin" && role != "member") {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `SELECT id FROM domains WHERE id=$1 FOR UPDATE`, domainID); err != nil {
@@ -284,7 +418,7 @@ func (s *DomainService) ensureOwnerIdentity(ctx context.Context, orgID, domainID
 	if hasOwn {
 		return nil
 	}
-	free, err := addressFree(ctx, tx, orgID, addr)
+	free, err := addressFree(ctx, tx, orgID, addr, userID)
 	if err != nil || !free {
 		return err
 	}

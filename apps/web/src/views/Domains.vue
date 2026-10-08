@@ -141,13 +141,18 @@ function downloadDNSZoneFile(domain: any) {
   URL.revokeObjectURL(url)
 }
 
-// Checklist buttons that are fixed elsewhere on the card bring that part into view.
+// Checklist buttons that are fixed elsewhere on the card bring that part into
+// view and move keyboard focus there. Verify runs inside the checklist.
 async function handleReadinessAction(domainUuid: string, action: ReadinessAction) {
   if (action.kind === 'verify') return handleVerifyDomain(domainUuid)
   if (action.kind === 'choose_identity') return openAddIdentityModal(domainUuid)
   if (action.kind === 'dmarc' && !expandedDomains.value.has(domainUuid)) toggleDomainExpand(domainUuid)
   await nextTick()
-  document.getElementById(`${action.kind === 'dmarc' ? 'dmarc' : 'receiving'}-${domainUuid}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  const target = document.getElementById(`${action.kind === 'dmarc' ? 'dmarc' : 'receiving'}-${domainUuid}`)
+  if (!target) return
+  if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1')
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  target.focus({ preventScroll: true })
 }
 
 function toggleDomainExpand(uuid: string) {
@@ -675,6 +680,7 @@ async function handleSetupReceiving(domain: any) {
                   :domain-name="domain.name || domain.domain || ''"
                   :can-manage="canManage"
                   :refresh-key="`${domain.status}|${domain.sesVerified}|${getDomainIdentities(domain.uuid).length}`"
+                  :verify="() => domainsStore.verifyDomain(domain.uuid)"
                   @action="handleReadinessAction(domain.uuid, $event)"
                   @changed="domainsStore.fetchIdentities()"
                 />

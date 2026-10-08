@@ -299,7 +299,10 @@ func (c *DomainController) CheckSESStatus(r *ghttp.Request) {
 		return
 	}
 
-	status, err := c.domainService.CheckSESVerificationStatus(r.Context(), domain.ID)
+	// A verified result starts the one-time sending setup only for an owner or
+	// admin session; members and API keys reach this read-only GET too.
+	runSetup := claims.Role == "owner" || claims.Role == "admin"
+	status, err := c.domainService.CheckSESVerificationStatus(r.Context(), domain.ID, runSetup)
 	if err != nil {
 		response.BadRequest(r, domainOperationMessage(err))
 		return

@@ -8,8 +8,9 @@ import (
 	"github.com/dublyo/mailat/api/internal/testutil"
 )
 
-// Domains that were already active and SES verified before 018 must never get
-// the one-time ready automation; pending ones still can.
+// Domains that were already active (SES verified or not at that moment) or
+// verified once before 018/019 must never get the one-time ready automation;
+// never-verified pending ones still can.
 func TestDomainReadyAutomationMigration(t *testing.T) {
 	db := testutil.EmptyDatabase(t)
 	ctx := context.Background()
@@ -18,7 +19,11 @@ func TestDomainReadyAutomationMigration(t *testing.T) {
 	}
 	if _, err := db.Exec(`INSERT INTO organizations(id,name,slug,updated_at) VALUES(1,'Org','org',now());
 		INSERT INTO domains(id,org_id,name,verification_token,status,ses_verified,updated_at) VALUES
-			(1,1,'ready.test','t','active',true,now()),(2,1,'pending.test','t','pending',false,now()),(3,1,'smtp.test','t','active',false,now());`); err != nil {
+			(1,1,'ready.test','t','active',true,now()),(2,1,'pending.test','t','pending',false,now()),(3,1,'smtp.test','t','active',false,now()),
+			(4,1,'lapsed.test','t','active',false,now());
+		UPDATE domains SET email_provider='ses',verified_at=now()-interval '30 days' WHERE id=4;
+		INSERT INTO domains(id,org_id,name,verification_token,status,ses_verified,verified_at,updated_at) VALUES
+			(5,1,'was-active.test','t','pending',false,now()-interval '30 days',now());`); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Migrate(ctx, db); err != nil {
@@ -32,7 +37,9 @@ func TestDomainReadyAutomationMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	want := map[int64]bool{1: true, 2: false, 3: false}
+	// 4 is a long-active SES domain whose last SES check failed (ses_verified
+	// false); 5 was verified once and later fell back to pending.
+	want := map[int64]bool{1: true, 2: false, 3: true, 4: true, 5: true}
 	for rows.Next() {
 		var id int64
 		var stamped, noCreator bool

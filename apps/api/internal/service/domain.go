@@ -32,6 +32,7 @@ type DomainService struct {
 	sendingProvider sendingSetupProvider
 	mxResolver      MXResolver
 	mxCache         mxLookupCache
+	dmarcCache      dmarcInspectionCache
 	// async runs the one-time ready automation; nil means a new goroutine.
 	// Tests replace it to run the work inline.
 	async func(func())
@@ -438,7 +439,7 @@ func (s *DomainService) GetDMARC(ctx context.Context, orgID int64, domainUUID st
 	if err != nil {
 		return provider.DMARCInspection{}, err
 	}
-	return provider.InspectDMARC(ctx, domain.Name, s.dmarcResolver), nil
+	return s.rememberDMARC(domain.Name, provider.InspectDMARC(ctx, domain.Name, s.dmarcResolver)), nil
 }
 
 // VerifyDNS checks DNS records and updates verification status
@@ -784,8 +785,11 @@ func (s *DomainService) InitiateSESVerification(ctx context.Context, domainID in
 	return sesRecords, nil
 }
 
-// CheckSESVerificationStatus checks the SES verification status for a domain
-func (s *DomainService) CheckSESVerificationStatus(ctx context.Context, domainID int64) (map[string]interface{}, error) {
+// CheckSESVerificationStatus checks the SES verification status for a domain.
+// runSetup lets a verified result start the one-time ready automation; the
+// controller passes it only for owner and admin sessions, since this is a GET
+// that members and read-only keys may call.
+func (s *DomainService) CheckSESVerificationStatus(ctx context.Context, domainID int64, runSetup bool) (map[string]interface{}, error) {
 	var domainName string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT name FROM domains WHERE id = $1
@@ -809,7 +813,7 @@ func (s *DomainService) CheckSESVerificationStatus(ctx context.Context, domainID
 	`, identity.Verified, domainID)
 	if err != nil {
 		fmt.Printf("Warning: Failed to update SES status: %v\n", err)
-	} else if identity.Verified {
+	} else if identity.Verified && runSetup {
 		s.afterDomainCheck(domainID)
 	}
 
@@ -980,6 +984,7 @@ func (s *DomainService) AddDNSToCloudflareScoped(ctx context.Context, domainID i
 				// Always use the approved default when missing, including domains
 				// whose stored suggestions predate conditional DMARC onboarding.
 				status, inspection, ensureErr := provider.CloudflareEnsureDMARC(ctx, apiToken, zoneID, domainName, s.dmarcResolver)
+				s.dmarcCache.forget(domainName)
 				result["status"], result["dmarc"] = status, inspection
 				result["value"] = inspection.Value
 				if inspection.Value == "" {

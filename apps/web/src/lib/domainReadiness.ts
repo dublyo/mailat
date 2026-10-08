@@ -26,7 +26,8 @@ export const ASK_ADMIN = 'Ask an organization owner or admin to fix this.'
 // Members can see every item, but only owners and admins change domains,
 // sending resources or identities. Viewing DMARC or receiving is for everyone.
 export function readinessActions(item: DomainReadinessItem, opts: { canManage: boolean; suggestedIdentity: string }): ReadinessAction[] {
-  if (item.status === 'ok' || !item.fix) return []
+  // Nothing to do while the one-time setup runs or SES confirms on its own.
+  if (item.status === 'ok' || !item.fix || item.state === 'automatic_setup') return []
   switch (item.fix) {
     case 'dmarc': return [{ kind: 'dmarc', label: 'Show DMARC setup' }]
     case 'receiving': return [{ kind: 'receiving', label: 'Show receiving' }]
@@ -34,7 +35,8 @@ export function readinessActions(item: DomainReadinessItem, opts: { canManage: b
   if (!opts.canManage) return []
   switch (item.fix) {
     case 'verify': return [{ kind: 'verify', label: 'Verify now' }]
-    case 'setup_sending': return [{ kind: 'setup_sending', label: item.status === 'missing' ? 'Set up sending' : 'Retry setup' }]
+    // Named like the sending panel's button, not the card's DNS "Set up sending" wizard.
+    case 'setup_sending': return [{ kind: 'setup_sending', label: item.status === 'missing' ? 'Set up sending resources' : 'Retry sending setup' }]
     case 'create_identity':
       return opts.suggestedIdentity
         ? [{ kind: 'create_identity', label: `Create ${opts.suggestedIdentity}`, address: opts.suggestedIdentity }, { kind: 'choose_identity', label: 'Use another address' }]
@@ -44,8 +46,9 @@ export function readinessActions(item: DomainReadinessItem, opts: { canManage: b
 }
 
 // A member sees why they cannot act on an item an admin must fix.
+// The missing-identity detail already tells members whom to ask.
 export function needsAdmin(item: DomainReadinessItem, canManage: boolean): boolean {
-  return !canManage && item.status !== 'ok' && ['verify', 'setup_sending', 'create_identity'].includes(item.fix)
+  return !canManage && item.status !== 'ok' && item.key !== 'sending_identity' && ['verify', 'setup_sending', 'create_identity'].includes(item.fix)
 }
 
 export function readinessSummary(r: DomainReadiness | null | undefined): string {
@@ -60,6 +63,21 @@ export function readinessSummary(r: DomainReadiness | null | undefined): string 
 export function readinessCopy(item: DomainReadinessItem, domain: string): { label: string; value: string } | null {
   if (!item.value || item.status === 'ok') return null
   if (item.key === 'dmarc') return { label: `TXT _dmarc.${domain}`, value: item.value }
-  if (item.key === 'receiving') return { label: 'MX @', value: item.value }
+  // A root MX moves the domain's mail to Mailat; only offer it once receiving
+  // is on, where the Receiving section explains what it replaces.
+  if (item.key === 'receiving' && item.status !== 'off') return { label: 'MX @', value: item.value }
   return null
+}
+
+// How long to wait before each re-read while the one-time setup after
+// verification runs (about two minutes in all), then stop.
+export const AUTOMATIC_SETUP_POLL_MS = [2000, 5000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000]
+
+// What to say after Verify now when the domain is still not verified.
+export function verifyOutcome(domain: { status?: string; sesVerified?: boolean; dnsRecords?: { hostname: string; verified: boolean }[] } | null | undefined): string {
+  if (!domain || (domain.status === 'active' && domain.sesVerified)) return ''
+  const waiting = [...new Set((domain.dnsRecords || []).filter(r => !r.verified).map(r => r.hostname))]
+  return waiting.length
+    ? `Not verified yet. Still waiting for DNS: ${waiting.join(', ')}. New records can take a while to appear.`
+    : 'Not verified yet. DNS and SES can take a while to confirm; try again in a few minutes.'
 }

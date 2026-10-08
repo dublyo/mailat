@@ -618,6 +618,8 @@ export interface DomainReadiness {
   ready: boolean
   items: DomainReadinessItem[]
   suggestedIdentity: string
+  // The one-time setup after verification is still running; re-read shortly.
+  automaticSetup: boolean
   checkedAt: string
 }
 
@@ -660,8 +662,8 @@ export const domainApi = {
   setupSending: (uuid: string) =>
     api.post<DomainSendingReadiness>(`/api/v1/domains/${uuid}/setup-sending`),
 
-  readiness: (uuid: string, signal?: AbortSignal) =>
-    api.get<DomainReadiness>(`/api/v1/domains/${uuid}/readiness`, signal),
+  readiness: (uuid: string, signal?: AbortSignal, refresh = false) =>
+    api.get<DomainReadiness>(`/api/v1/domains/${uuid}/readiness${refresh ? '?refresh=true' : ''}`, signal),
 
   // SES Integration
   initiateSES: async (uuid: string): Promise<{ domain: Domain; dnsRecords: DNSRecord[]; sesRecords: Array<{ type: string; name: string; value: string }> }> => {

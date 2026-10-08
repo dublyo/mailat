@@ -4,18 +4,18 @@ Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mail
 
 ## Domain readiness and automatic setup on verification
 
-Not yet deployed; migration `018_domain_ready_automation`. OpenAPI `contractVersion` is `2026-10-10`.
+Not yet deployed; migrations `018_domain_ready_automation` and `019_domain_ready_backfill`. OpenAPI `contractVersion` is `2026-10-10`.
 
 ### Added
 
-- **API sending readiness** on every SES domain card: domain verified, DMARC (published, inherited or missing), sending resources, your sending identity and optional receiving, each with a fix (Verify now, Show DMARC setup with the copyable record, Set up sending, Create `noreply@<domain>` or Use another address, Show receiving). Members see the list; owners and admins fix it.
-- `GET /api/v1/domains/:uuid/readiness` (members, `domains:read`): `ready`, ordered `items` (`key`, `status` `ok`/`missing`/`pending`/`attention`/`unknown`/`off`, `state`, `optional`, `detail`, `fix`, `value`) and `suggestedIdentity`.
-- When a domain first becomes active and SES verified, Mailat runs the existing sending setup once in the background and creates `noreply@<domain>` for the person who added it (or the owner) if they have no identity on the domain, the address is free and the identity limit allows it. Failures show on the sending status; nothing is retried automatically. No DNS is published and receiving stays off.
+- **API sending readiness** on every SES domain card: domain verified, DMARC (published, inherited or missing), sending resources, your sending identity and optional receiving, each with a fix (Verify now, Show DMARC setup with the copyable record, Set up sending resources, Create `noreply@<domain>` or Use another address, Show receiving). Members see the list; owners and admins fix it. While the automatic setup runs it shows **Setting up automatically…** and re-reads itself.
+- `GET /api/v1/domains/:uuid/readiness` (members, `domains:read`): `ready`, ordered `items` (`key`, `status` `ok`/`missing`/`pending`/`attention`/`unknown`/`off`, `state`, `optional`, `detail`, `fix`, `value`), `suggestedIdentity` and `automaticSetup`; `refresh=true` re-checks the briefly cached DMARC and MX lookups.
+- When a domain first becomes active and SES verified (Verify, or an owner or admin's SES status check), Mailat creates `noreply@<domain>` for the person who added it (or the owner) if they have no identity on the domain, the address is free (not an identity, alias, invite or another person's login) and the identity limit allows it, then runs the existing sending setup once in the background. Failures show on the sending status; nothing is retried automatically. No DNS is published and receiving stays off.
 
 ### Changed
 
-- A send from a domain where the caller has no identity now fails with `you have no sending identity on <domain>; add one (e.g. noreply@<domain>) under Domains → <domain> → Add identity`.
-- Migration 018 records who added a domain (`domains.created_by`) and when the one-time setup ran (`ready_automation_at`). Domains already active and verified are marked as done, so the upgrade creates no identities and runs no setup for them.
+- A send from a domain where the caller has no identity now fails with `you have no sending identity on <domain>; add one (e.g. noreply@<domain>) under Domains → <domain> → Add identity`; members and their keys are told to ask an organization owner or admin.
+- Migration 018 records who added a domain (`domains.created_by`) and when the one-time setup ran (`ready_automation_at`). Migration 019 also marks every domain that was ever active or verified (including active domains whose last SES check failed) as done, so the upgrade creates no identities and runs no setup for them.
 
 ## Receiving MX visibility
 

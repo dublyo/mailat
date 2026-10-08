@@ -4,6 +4,7 @@ import (
 	"github.com/gogf/gf/v2/net/ghttp"
 
 	"github.com/dublyo/mailat/api/internal/middleware"
+	"github.com/dublyo/mailat/api/internal/service"
 	"github.com/dublyo/mailat/api/pkg/response"
 )
 
@@ -15,7 +16,8 @@ func (c *DomainController) Readiness(r *ghttp.Request) {
 		response.Unauthorized(r, "Not authenticated")
 		return
 	}
-	result, err := c.domainService.GetDomainReadiness(r.Context(), claims.OrgID, claims.UserID, r.Get("uuid").String())
+	opts := service.ReadinessOptions{Admin: middleware.IsOrgAdmin(claims), Refresh: r.Get("refresh").Bool()}
+	result, err := c.domainService.GetDomainReadiness(r.Context(), claims.OrgID, claims.UserID, r.Get("uuid").String(), opts)
 	if err != nil {
 		domainReadError(r, err)
 		return
