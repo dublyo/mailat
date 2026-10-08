@@ -9,6 +9,8 @@ import Spinner from '@/components/common/Spinner.vue'
 import DomainDmarcStatus from '@/components/settings/DomainDmarcStatus.vue'
 import DomainSendingReadiness from '@/components/settings/DomainSendingReadiness.vue'
 import DomainReceivingStatus from '@/components/settings/DomainReceivingStatus.vue'
+import DomainApiReadiness from '@/components/settings/DomainApiReadiness.vue'
+import type { ReadinessAction } from '@/lib/domainReadiness'
 import { useDomainsStore } from '@/stores/domains'
 import { useAuthStore } from '@/stores/auth'
 import { isOrgAdmin, type CloudflareZone, type CloudflareDNSResult, type DomainDMARCStatus } from '@/lib/api'
@@ -137,6 +139,15 @@ function downloadDNSZoneFile(domain: any) {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+// Checklist buttons that are fixed elsewhere on the card bring that part into view.
+async function handleReadinessAction(domainUuid: string, action: ReadinessAction) {
+  if (action.kind === 'verify') return handleVerifyDomain(domainUuid)
+  if (action.kind === 'choose_identity') return openAddIdentityModal(domainUuid)
+  if (action.kind === 'dmarc' && !expandedDomains.value.has(domainUuid)) toggleDomainExpand(domainUuid)
+  await nextTick()
+  document.getElementById(`${action.kind === 'dmarc' ? 'dmarc' : 'receiving'}-${domainUuid}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
 function toggleDomainExpand(uuid: string) {
@@ -658,6 +669,15 @@ async function handleSetupReceiving(domain: any) {
                   </div>
                 </div>
                 <p v-if="domain.emailProvider === 'ses'" class="text-xs text-gray-500 mt-3">Sending setup preserves your existing inbox provider. The MX record at bounce.{{ domain.name || domain.domain }} is for SES MAIL FROM, not inbox routing.</p>
+                <DomainApiReadiness
+                  v-if="domain.emailProvider === 'ses'"
+                  :domain-uuid="domain.uuid"
+                  :domain-name="domain.name || domain.domain || ''"
+                  :can-manage="canManage"
+                  :refresh-key="`${domain.status}|${domain.sesVerified}|${getDomainIdentities(domain.uuid).length}`"
+                  @action="handleReadinessAction(domain.uuid, $event)"
+                  @changed="domainsStore.fetchIdentities()"
+                />
                 <DomainReceivingStatus
                   v-if="domain.emailProvider === 'ses'"
                   :domain-uuid="domain.uuid"
@@ -708,7 +728,7 @@ async function handleSetupReceiving(domain: any) {
                     </button>
                   </div>
                   <DomainSendingReadiness v-if="domain.emailProvider === 'ses'" :domain-uuid="domain.uuid" :domain-name="domain.name || domain.domain || ''" :can-setup="domain.sesVerified && domain.status === 'active'" class="mb-4" />
-                  <DomainDmarcStatus v-if="domain.emailProvider === 'ses'" :domain-uuid="domain.uuid" :domain-name="domain.name || domain.domain || ''" :known-configured="configuredDmarc[domain.uuid]" class="mb-4" />
+                  <DomainDmarcStatus v-if="domain.emailProvider === 'ses'" :id="`dmarc-${domain.uuid}`" :domain-uuid="domain.uuid" :domain-name="domain.name || domain.domain || ''" :known-configured="configuredDmarc[domain.uuid]" class="mb-4" />
                   <div v-if="sendingDNSRecords(domain).length > 0" class="space-y-2">
                     <div
                       v-for="record in sendingDNSRecords(domain)"

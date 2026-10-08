@@ -596,6 +596,31 @@ export interface DomainDMARCStatus {
   suggestedValue: string
 }
 
+export type DomainReadinessKey = 'verified' | 'dmarc' | 'sending_resources' | 'sending_identity' | 'receiving'
+export type DomainReadinessStatus = 'ok' | 'missing' | 'pending' | 'attention' | 'unknown' | 'off'
+export type DomainReadinessFix = '' | 'verify' | 'dmarc' | 'setup_sending' | 'create_identity' | 'receiving'
+
+export interface DomainReadinessItem {
+  key: DomainReadinessKey
+  label: string
+  status: DomainReadinessStatus
+  state: string
+  optional: boolean
+  detail: string
+  fix: DomainReadinessFix
+  value: string
+}
+
+// GET /domains/:uuid/readiness: the caller's API sending checklist.
+export interface DomainReadiness {
+  domainUuid: string
+  domain: string
+  ready: boolean
+  items: DomainReadinessItem[]
+  suggestedIdentity: string
+  checkedAt: string
+}
+
 export interface DomainSendingReadiness {
   domainUuid: string
   storageReady: boolean
@@ -634,6 +659,9 @@ export const domainApi = {
 
   setupSending: (uuid: string) =>
     api.post<DomainSendingReadiness>(`/api/v1/domains/${uuid}/setup-sending`),
+
+  readiness: (uuid: string, signal?: AbortSignal) =>
+    api.get<DomainReadiness>(`/api/v1/domains/${uuid}/readiness`, signal),
 
   // SES Integration
   initiateSES: async (uuid: string): Promise<{ domain: Domain; dnsRecords: DNSRecord[]; sesRecords: Array<{ type: string; name: string; value: string }> }> => {
