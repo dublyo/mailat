@@ -2,6 +2,21 @@
 
 Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web` tagged `sha-<full commit SHA>`; there are no version tags. Upgrade notes, backups and rollback are in [docs/self-hosting-ses.md](docs/self-hosting-ses.md).
 
+## Domain readiness and automatic setup on verification
+
+Not yet deployed; migration `018_domain_ready_automation`. OpenAPI `contractVersion` is `2026-10-10`.
+
+### Added
+
+- **API sending readiness** on every SES domain card: domain verified, DMARC (published, inherited or missing), sending resources, your sending identity and optional receiving, each with a fix (Verify now, Show DMARC setup with the copyable record, Set up sending, Create `noreply@<domain>` or Use another address, Show receiving). Members see the list; owners and admins fix it.
+- `GET /api/v1/domains/:uuid/readiness` (members, `domains:read`): `ready`, ordered `items` (`key`, `status` `ok`/`missing`/`pending`/`attention`/`unknown`/`off`, `state`, `optional`, `detail`, `fix`, `value`) and `suggestedIdentity`.
+- When a domain first becomes active and SES verified, Mailat runs the existing sending setup once in the background and creates `noreply@<domain>` for the person who added it (or the owner) if they have no identity on the domain, the address is free and the identity limit allows it. Failures show on the sending status; nothing is retried automatically. No DNS is published and receiving stays off.
+
+### Changed
+
+- A send from a domain where the caller has no identity now fails with `you have no sending identity on <domain>; add one (e.g. noreply@<domain>) under Domains → <domain> → Add identity`.
+- Migration 018 records who added a domain (`domains.created_by`) and when the one-time setup ran (`ready_automation_at`). Domains already active and verified are marked as done, so the upgrade creates no identities and runs no setup for them.
+
 ## Receiving MX visibility
 
 Not yet deployed; no new migrations. OpenAPI `contractVersion` is `2026-10-08`.
