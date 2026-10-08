@@ -55,6 +55,9 @@ func TestAlertDigestUsesOwnerIdentityOncePerDay(t *testing.T) {
 	}
 	fake.mu.Lock()
 	body := fake.last.HTMLBody
+	if !strings.Contains(fake.last.TextBody, "unacknowledged alerts") {
+		t.Fatalf("digest has no plain-text alternative: %q", fake.last.TextBody)
+	}
 	fake.mu.Unlock()
 	if !strings.Contains(body, "&lt;b&gt;Acme&lt;/b&gt;") || strings.Contains(body, "<b>Acme") || !strings.Contains(body, "https://mail.digest.test/health") {
 		t.Fatalf("digest body not escaped or missing link: %s", body)

@@ -300,10 +300,13 @@ func (h *ScheduledTaskHandler) HandleAlertDigest(ctx context.Context, task *asyn
 <p><a href="%s/health">Review sending health</a></p>`, html.EscapeString(d.orgName), d.alertCount, d.criticalCount, html.EscapeString(h.cfg.WebUrl))
 
 		req := &model.SendEmailRequest{
-			From:           from,
-			To:             []string{d.adminEmail},
-			Subject:        subject,
-			HTML:           htmlBody,
+			From:    from,
+			To:      []string{d.adminEmail},
+			Subject: subject,
+			HTML:    htmlBody,
+			// A plain-text alternative keeps the digest multipart/alternative.
+			Text: fmt.Sprintf("Alert summary for %s\n\nYou have %d unacknowledged alerts in the last 24 hours.\nCritical alerts: %d\n\nReview sending health: %s/health\n",
+				d.orgName, d.alertCount, d.criticalCount, h.cfg.WebUrl),
 			IdempotencyKey: fmt.Sprintf("alert-digest:%d:%s", d.orgID, day),
 		}
 		_, err = h.digest(ctx, d.orgID, d.ownerID, req)

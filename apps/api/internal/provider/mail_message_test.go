@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net/mail"
 	"strings"
 	"testing"
@@ -104,5 +105,93 @@ func TestMailMIMEHeaderAllowlist(t *testing.T) {
 	}
 	if _, _, err = BuildMailMIME(&EmailMessage{From: "a@example.test", To: []string{"b@example.test"}, Subject: "s", TextBody: "x", Headers: map[string]string{"Auto-Submitted": "no\r\nBcc: evil@example.test"}}); err == nil {
 		t.Fatal("CR/LF in an allowed header accepted")
+	}
+}
+
+// Without attachments a message is what mail clients send: one text part on
+// its own, or text+HTML as multipart/alternative. multipart/mixed is only
+// used when there are attachments.
+func TestMailMIMEStructureFollowsContent(t *testing.T) {
+	read := func(t *testing.T, m *EmailMessage) (string, map[string]string, *mail.Message) {
+		t.Helper()
+		raw, _, err := BuildMailMIME(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg, err := mail.ReadMessage(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		media, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return media, params, msg
+	}
+	base := func() *EmailMessage {
+		return &EmailMessage{From: "a@example.test", To: []string{"b@example.test"}, Subject: "Hello there"}
+	}
+
+	// Text only: a single quoted-printable text/plain body.
+	m := base()
+	m.TextBody = "héllo = world " + strings.Repeat("long ", 40)
+	media, params, msg := read(t, m)
+	if media != "text/plain" || params["charset"] != "UTF-8" || msg.Header.Get("Content-Transfer-Encoding") != "quoted-printable" {
+		t.Fatalf("text only: %s %v %q", media, params, msg.Header.Get("Content-Transfer-Encoding"))
+	}
+	if body, _ := io.ReadAll(quotedprintable.NewReader(msg.Body)); string(body) != m.TextBody {
+		t.Fatalf("text only body: %q", body)
+	}
+
+	// HTML only: a single text/html body.
+	m = base()
+	m.HTMLBody = "<p>hello</p>"
+	if media, _, _ = read(t, m); media != "text/html" {
+		t.Fatalf("html only: %s", media)
+	}
+
+	// Text and HTML: multipart/alternative with exactly those two parts, in order.
+	m = base()
+	m.TextBody, m.HTMLBody = "hello", "<p>hello</p>"
+	media, params, msg = read(t, m)
+	if media != "multipart/alternative" {
+		t.Fatalf("text+html: %s", media)
+	}
+	r := multipart.NewReader(msg.Body, params["boundary"])
+	var types []string
+	for {
+		part, err := r.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		pt, _, _ := mime.ParseMediaType(part.Header.Get("Content-Type"))
+		types = append(types, pt)
+	}
+	if strings.Join(types, ",") != "text/plain,text/html" {
+		t.Fatalf("alternative parts: %v", types)
+	}
+
+	// With an attachment: multipart/mixed holding the alternative part first.
+	m.Attachments = []Attachment{{Filename: "a.txt", ContentType: "text/plain", Data: []byte("x")}}
+	media, params, msg = read(t, m)
+	if media != "multipart/mixed" {
+		t.Fatalf("with attachment: %s", media)
+	}
+	first, err := multipart.NewReader(msg.Body, params["boundary"]).NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pt, _, _ := mime.ParseMediaType(first.Header.Get("Content-Type")); pt != "multipart/alternative" {
+		t.Fatalf("first mixed part: %s", pt)
+	}
+
+	// An attachment with no text keeps the empty text/plain part inside mixed.
+	m = base()
+	m.Attachments = []Attachment{{Filename: "a.txt", ContentType: "text/plain", Data: []byte("x")}}
+	if media, _, _ = read(t, m); media != "multipart/mixed" {
+		t.Fatalf("attachment only: %s", media)
 	}
 }

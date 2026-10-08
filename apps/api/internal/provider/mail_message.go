@@ -192,15 +192,34 @@ func BuildMailMIME(msg *EmailMessage) ([]byte, []string, error) {
 			writeMailHeader(&output, k, v)
 		}
 	}
+	type textPart struct{ media, data string }
+	var parts []textPart
+	for _, part := range []textPart{{"text/plain", msg.TextBody}, {"text/html", msg.HTMLBody}} {
+		if part.data == "" && !(part.media == "text/plain" && msg.TextBody == "" && msg.HTMLBody == "") {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	// Without attachments, send what mail clients send: one text part on its
+	// own, or text and HTML as multipart/alternative. multipart/mixed wrapping
+	// a lone alternative part is valid but unusual, and filters notice it.
+	if len(msg.Attachments) == 0 && len(parts) == 1 {
+		fmt.Fprintf(&output, "Content-Type: %s; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n", parts[0].media)
+		q := quotedprintable.NewWriter(&output)
+		if _, err := q.Write([]byte(parts[0].data)); err != nil {
+			return nil, nil, err
+		}
+		if err := q.Close(); err != nil {
+			return nil, nil, err
+		}
+		return finishMailMIME(&output, recipients)
+	}
 	var body bytes.Buffer
 	mixed := multipart.NewWriter(&body)
 	textHeaders := textproto.MIMEHeader{}
 	var alternative bytes.Buffer
 	alternatives := multipart.NewWriter(&alternative)
-	for _, part := range []struct{ media, data string }{{"text/plain", msg.TextBody}, {"text/html", msg.HTMLBody}} {
-		if part.data == "" && !(part.media == "text/plain" && msg.TextBody == "" && msg.HTMLBody == "") {
-			continue
-		}
+	for _, part := range parts {
 		headers := textproto.MIMEHeader{}
 		headers.Set("Content-Type", part.media+"; charset=UTF-8")
 		headers.Set("Content-Transfer-Encoding", "quoted-printable")
@@ -218,6 +237,11 @@ func BuildMailMIME(msg *EmailMessage) ([]byte, []string, error) {
 	}
 	if err := alternatives.Close(); err != nil {
 		return nil, nil, err
+	}
+	if len(msg.Attachments) == 0 {
+		fmt.Fprintf(&output, "Content-Type: %s\r\n\r\n", mime.FormatMediaType("multipart/alternative", map[string]string{"boundary": alternatives.Boundary()}))
+		output.Write(alternative.Bytes())
+		return finishMailMIME(&output, recipients)
 	}
 	textHeaders.Set("Content-Type", mime.FormatMediaType("multipart/alternative", map[string]string{"boundary": alternatives.Boundary()}))
 	w, err := mixed.CreatePart(textHeaders)
@@ -270,6 +294,11 @@ func BuildMailMIME(msg *EmailMessage) ([]byte, []string, error) {
 	}
 	fmt.Fprintf(&output, "Content-Type: %s\r\n\r\n", mime.FormatMediaType("multipart/mixed", map[string]string{"boundary": mixed.Boundary()}))
 	output.Write(body.Bytes())
+	return finishMailMIME(&output, recipients)
+}
+
+// finishMailMIME applies the RFC 5322 998-octet line limit to the whole message.
+func finishMailMIME(output *bytes.Buffer, recipients []string) ([]byte, []string, error) {
 	for _, line := range bytes.Split(output.Bytes(), []byte("\r\n")) {
 		if len(line) > 998 {
 			return nil, nil, &MailValidationError{"message contains an excessively long header line"}
