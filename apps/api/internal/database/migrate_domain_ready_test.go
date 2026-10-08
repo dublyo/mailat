@@ -10,7 +10,7 @@ import (
 
 // Domains that were already active (SES verified or not at that moment) or
 // verified once before 018/019 must never get the one-time ready automation;
-// never-verified pending ones still can.
+// never-verified pending ones still can. Stamps are the epoch, never recent.
 func TestDomainReadyAutomationMigration(t *testing.T) {
 	db := testutil.EmptyDatabase(t)
 	ctx := context.Background()
@@ -32,7 +32,7 @@ func TestDomainReadyAutomationMigration(t *testing.T) {
 	if err := database.Migrate(ctx, db); err != nil {
 		t.Fatal("rerun:", err)
 	}
-	rows, err := db.Query(`SELECT id,ready_automation_at IS NOT NULL,created_by IS NULL FROM domains ORDER BY id`)
+	rows, err := db.Query(`SELECT id,ready_automation_at IS NOT NULL,created_by IS NULL,COALESCE(ready_automation_at=timestamptz 'epoch',true) FROM domains ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,9 +42,13 @@ func TestDomainReadyAutomationMigration(t *testing.T) {
 	want := map[int64]bool{1: true, 2: false, 3: true, 4: true, 5: true}
 	for rows.Next() {
 		var id int64
-		var stamped, noCreator bool
-		if err := rows.Scan(&id, &stamped, &noCreator); err != nil {
+		var stamped, noCreator, epoch bool
+		if err := rows.Scan(&id, &stamped, &noCreator, &epoch); err != nil {
 			t.Fatal(err)
+		}
+		// A recent stamp would make the checklist report the setup as running.
+		if !epoch {
+			t.Fatal("domain", id, "stamped with a recent time")
 		}
 		if stamped != want[id] || !noCreator {
 			t.Fatal("domain", id, "stamped", stamped, "creator unknown", noCreator)

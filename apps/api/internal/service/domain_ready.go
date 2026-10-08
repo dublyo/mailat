@@ -128,7 +128,7 @@ func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID in
 	var sesVerified, automationRecent bool
 	var createdBy sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `SELECT id,name,status,COALESCE(ses_verified,false),sending_setup_error,created_by,
-		COALESCE(email_provider,'ses')='ses' AND COALESCE(ready_automation_at > now() - $3::int * interval '1 second', ready_automation_at IS NULL AND verified_at > now() - $3::int * interval '1 second', false)
+		COALESCE(email_provider,'ses')='ses' AND COALESCE(ready_automation_at > now() - $3::int * interval '1 second', false)
 		FROM domains WHERE uuid=$1 AND org_id=$2`, domainUUID, orgID, int(readyAutomationWindow/time.Second)).
 		Scan(&domainID, &name, &status, &sesVerified, &setupError, &createdBy, &automationRecent)
 	if err == sql.ErrNoRows {
@@ -174,9 +174,10 @@ func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID in
 	if err != nil {
 		return nil, err
 	}
-	// The one-time setup after verification is still running: it has been
-	// claimed (or is about to be) and has neither configured feedback nor
-	// recorded a failure yet.
+	// The one-time setup after verification is still running: it was claimed
+	// within the window and has neither configured feedback nor recorded a
+	// failure yet. Unclaimed domains and ones the migrations stamped (with the
+	// epoch) are never reported as running.
 	automating := verified && automationRecent && s.cfg != nil && s.cfg.EmailProvider == "ses" &&
 		!sending.FeedbackConfigured && !sending.FeedbackReady && setupError == ""
 	out.AutomaticSetup = automating
@@ -224,11 +225,23 @@ func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID in
 			if target, err = readyAutomationUser(ctx, s.db, orgID, createdBy); err != nil {
 				return nil, err
 			}
+			// Only report it as being created when the run would not skip it.
+			if target == userID {
+				allowed, err := ownerIdentityAllowed(ctx, s.db, orgID, domainID, out.SuggestedIdentity, userID, s.appLimits())
+				if err != nil {
+					return nil, err
+				}
+				if !allowed {
+					target = 0
+				}
+			}
 		}
 		switch {
 		case target != 0 && target == userID:
 			item.Status, item.State = ReadinessPending, "automatic_setup"
 			item.Detail = "Creating " + out.SuggestedIdentity + " for you automatically…"
+		case !verified && !opts.Admin:
+			item.Detail = "You have no sending identity on " + name + " yet. An organization owner or admin can add one after the domain is verified."
 		case !verified:
 			item.Detail = "You have no sending identity on " + name + " yet. You can add one after the domain is verified."
 		case !opts.Admin:
@@ -317,10 +330,17 @@ func readyAutomationUser(ctx context.Context, q queryRower, orgID int64, created
 }
 
 // afterDomainCheck runs the one-time ready automation when a check has just
-// left the domain active and SES verified. It returns at once; the work runs
-// after the caller's writes have committed.
+// left the domain active and SES verified. The caller's writes are already
+// committed. The run is claimed here, so the checklist reports it from the
+// moment the check returns; the work itself runs in the background.
 func (s *DomainService) afterDomainCheck(domainID int64) {
 	if s.cfg == nil || s.cfg.EmailProvider != "ses" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	orgID, name, createdBy, claimed := s.claimReadyAutomation(ctx, domainID)
+	cancel()
+	if !claimed {
 		return
 	}
 	run := s.async
@@ -335,33 +355,37 @@ func (s *DomainService) afterDomainCheck(domainID int64) {
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		s.runReadyAutomation(ctx, domainID)
+		s.runReadyAutomation(ctx, orgID, domainID, name, createdBy)
 	})
 }
 
-// runReadyAutomation claims the domain's single automation run, gives the
-// person who added it a noreply identity (a quick database step, so the
-// checklist shows it at once), then sets up sending resources.
-// Failures are recorded for the sending status and never retried here; the
-// manual Set up action still works. DNS (root MX, SPF) is never touched.
-func (s *DomainService) runReadyAutomation(ctx context.Context, domainID int64) {
-	var orgID int64
-	var name string
-	var createdBy sql.NullInt64
+// claimReadyAutomation takes the domain's single automation run. false means
+// it already ran (or was stamped by the migrations) or the domain is not
+// ready for it.
+func (s *DomainService) claimReadyAutomation(ctx context.Context, domainID int64) (orgID int64, name string, createdBy sql.NullInt64, claimed bool) {
 	err := s.db.QueryRowContext(ctx, `UPDATE domains SET ready_automation_at=now() WHERE id=$1 AND status='active' AND COALESCE(ses_verified,false)
 		AND COALESCE(email_provider,'ses')='ses' AND ready_automation_at IS NULL RETURNING org_id,name,created_by`, domainID).Scan(&orgID, &name, &createdBy)
-	if err == sql.ErrNoRows {
-		return
-	}
-	if err != nil {
+	if err != nil && err != sql.ErrNoRows {
 		log.Printf("domain %d ready automation: claim failed: %v", domainID, err)
-		return
 	}
-	if err = s.ensureOwnerIdentity(ctx, orgID, domainID, name, createdBy); err != nil {
+	return orgID, name, createdBy, err == nil
+}
+
+// automaticSetupFailed is recorded when the one-time setup cannot finish. It
+// names no button: the checklist and the sending panel label theirs differently.
+const automaticSetupFailed = "Automatic sending setup did not finish. Set up sending resources again to retry."
+
+// runReadyAutomation gives the person who added the claimed domain a noreply
+// identity (a quick database step, so the checklist shows it at once), then
+// sets up sending resources. Failures are recorded for the sending status and
+// never retried here; the manual Set up action still works. DNS (root MX,
+// SPF) is never touched.
+func (s *DomainService) runReadyAutomation(ctx context.Context, orgID, domainID int64, name string, createdBy sql.NullInt64) {
+	if err := s.ensureOwnerIdentity(ctx, orgID, domainID, name, createdBy); err != nil {
 		log.Printf("domain %d ready automation: owner identity skipped: %v", domainID, err)
 	}
-	if _, err = s.EnsureDomainSendingResources(ctx, orgID, domainID); err != nil {
-		reason := "Automatic sending setup did not finish; choose Retry sending setup to try again"
+	if _, err := s.EnsureDomainSendingResources(ctx, orgID, domainID); err != nil {
+		reason := automaticSetupFailed
 		var validation *provider.MailValidationError
 		if errors.As(err, &validation) {
 			reason = "Automatic sending setup did not finish: " + validation.Error()
@@ -384,9 +408,27 @@ func (s *DomainService) ensureOwnerIdentity(ctx context.Context, orgID, domainID
 	return s.createOwnerIdentity(ctx, orgID, domainID, domainName, userID)
 }
 
+func (s *DomainService) appLimits() bool { return s.cfg == nil || !s.cfg.DisableAppLimits }
+
+// ownerIdentityAllowed reports whether the ready automation would give userID
+// addr on the domain: the user is an active staff member with no personal
+// identity on the domain, the address is free and (with limits) the
+// organization's identity cap is not reached. createOwnerIdentity runs it
+// under its locks; the checklist runs it to say whether the address is coming.
+func ownerIdentityAllowed(ctx context.Context, q queryRower, orgID, domainID int64, addr string, userID int64, limits bool) (bool, error) {
+	var ok bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND org_id=$2 AND status='active' AND removed_at IS NULL AND role IN ('owner','admin','member'))
+		AND NOT EXISTS(SELECT 1 FROM identities WHERE user_id=$1 AND domain_id=$3 AND kind='personal')
+		AND (NOT $4 OR (SELECT max_identities <= 0 OR max_identities > (SELECT count(*) FROM identities i JOIN users u ON u.id=i.user_id WHERE u.org_id=$2) FROM organizations WHERE id=$2))`,
+		userID, orgID, domainID, limits).Scan(&ok)
+	if err != nil || !ok {
+		return false, err
+	}
+	return addressFree(ctx, q, orgID, addr, userID)
+}
+
 // createOwnerIdentity gives userID noreply@<domain> unless, under the locks,
-// the user is no longer an active staff member, already has an identity on
-// the domain, the address is taken or the identity cap is reached.
+// ownerIdentityAllowed says no.
 func (s *DomainService) createOwnerIdentity(ctx context.Context, orgID, domainID int64, domainName string, userID int64) error {
 	addr := "noreply@" + strings.ToLower(domainName)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -397,42 +439,27 @@ func (s *DomainService) createOwnerIdentity(ctx context.Context, orgID, domainID
 	// Same lock order as CreateIdentity: user, domain, then organization. The
 	// user is re-checked under the lock: removed, disabled or demoted to a
 	// mailbox since they were chosen means no identity.
-	var role string
-	err = tx.QueryRowContext(ctx, `SELECT role FROM users WHERE id=$1 AND org_id=$2 AND status='active' AND removed_at IS NULL FOR UPDATE`, userID, orgID).Scan(&role)
-	if err == sql.ErrNoRows || (err == nil && role != "owner" && role != "admin" && role != "member") {
-		return nil
-	}
-	if err != nil {
+	if _, err = tx.ExecContext(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `SELECT id FROM domains WHERE id=$1 FOR UPDATE`, domainID); err != nil {
 		return err
 	}
-	var hasOwn, hasDefault bool
+	limits := s.appLimits()
+	if limits {
+		if _, err = tx.ExecContext(ctx, `SELECT id FROM organizations WHERE id=$1 FOR UPDATE`, orgID); err != nil {
+			return err
+		}
+	}
+	allowed, err := ownerIdentityAllowed(ctx, tx, orgID, domainID, addr, userID, limits)
+	if err != nil || !allowed {
+		return err
+	}
+	var hasDefault bool
 	var count int
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE user_id=$1 AND domain_id=$2 AND kind='personal'),
-		EXISTS(SELECT 1 FROM identities WHERE user_id=$1 AND kind='personal' AND is_default),
-		(SELECT count(*) FROM identities WHERE user_id=$1 AND kind='personal')`, userID, domainID).Scan(&hasOwn, &hasDefault, &count); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM identities WHERE user_id=$1 AND kind='personal' AND is_default),
+		(SELECT count(*) FROM identities WHERE user_id=$1 AND kind='personal')`, userID).Scan(&hasDefault, &count); err != nil {
 		return err
-	}
-	if hasOwn {
-		return nil
-	}
-	free, err := addressFree(ctx, tx, orgID, addr, userID)
-	if err != nil || !free {
-		return err
-	}
-	if s.cfg == nil || !s.cfg.DisableAppLimits {
-		var limit, total int
-		if err = tx.QueryRowContext(ctx, `SELECT max_identities FROM organizations WHERE id=$1 FOR UPDATE`, orgID).Scan(&limit); err != nil {
-			return err
-		}
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM identities i JOIN users u ON u.id=i.user_id WHERE u.org_id=$1`, orgID).Scan(&total); err != nil {
-			return err
-		}
-		if limit > 0 && total >= limit {
-			return nil
-		}
 	}
 	var orgName string
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(name,''),$2) FROM organizations WHERE id=$1`, orgID, domainName).Scan(&orgName); err != nil {

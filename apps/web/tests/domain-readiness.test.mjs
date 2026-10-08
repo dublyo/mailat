@@ -61,8 +61,12 @@ test('admins get one-click fixes; members only see where to look', () => {
     assert.deepEqual(lib.readinessActions(item('x', 'missing', fix), member), [])
     assert.equal(lib.needsAdmin(item('x', 'missing', fix), false), true)
   }
-  // The identity detail already says whom to ask.
-  assert.equal(lib.needsAdmin(item('sending_identity', 'missing', 'create_identity'), false), false)
+  // Only admins add identities: members get the hint, also before verification (no fix yet).
+  assert.equal(lib.needsAdmin(item('sending_identity', 'missing', 'create_identity'), false), true)
+  assert.equal(lib.needsAdmin(item('sending_identity', 'missing', ''), false), true)
+  assert.equal(lib.needsAdmin(item('sending_identity', 'missing', ''), true), false)
+  assert.equal(lib.needsAdmin({ ...item('sending_identity', 'pending', ''), state: 'automatic_setup' }, false), false)
+  assert.equal(lib.needsAdmin(item('sending_identity', 'ok', ''), false), false)
   assert.deepEqual(lib.readinessActions(item('dmarc', 'missing', 'dmarc'), member), [{ kind: 'dmarc', label: 'Show DMARC setup' }])
   assert.deepEqual(lib.readinessActions(item('receiving', 'off', 'receiving'), member), [{ kind: 'receiving', label: 'Show receiving' }])
   assert.deepEqual(lib.readinessActions(item('dmarc', 'ok', 'dmarc'), admin), [])

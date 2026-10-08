@@ -442,7 +442,7 @@ func TestReadinessShowsAutomaticSetupInProgress(t *testing.T) {
 		}
 		return r
 	}
-	// Verified, not yet claimed: already reported as running.
+	// Claimed when the check returned, still running: reported as running.
 	r := check(f.admin, true)
 	res, id := readinessItem(t, r, "sending_resources"), readinessItem(t, r, "sending_identity")
 	if !r.AutomaticSetup || res.State != "automatic_setup" || res.Fix != "" || id.State != "automatic_setup" || id.Fix != "" {
@@ -533,5 +533,119 @@ func TestReadinessCachesDMARC(t *testing.T) {
 	f.svc.dmarcCache.mu.Unlock()
 	if it := read(true); it.State != "published" {
 		t.Fatal("refresh did not re-check", it)
+	}
+}
+
+// Only a run claimed within the window is reported as running: a recently
+// verified domain that was never claimed, or one the migrations stamped, shows
+// the normal missing state with fixes.
+func TestReadinessAutomaticSetupNeedsARecentClaim(t *testing.T) {
+	f := newReadyFixture(t, "unclaimed.example.test")
+	ctx := context.Background()
+	for _, stamp := range []string{"NULL", "timestamptz 'epoch'", "now() - interval '3 minutes'"} {
+		if _, err := f.db.Exec(`UPDATE domains SET status='active',ses_verified=true,verified_at=now(),updated_at=now(),ready_automation_at=`+stamp+` WHERE id=$1`, f.domain); err != nil {
+			t.Fatal(err)
+		}
+		r, err := f.svc.GetDomainReadiness(ctx, f.org, f.admin, f.domainUUID, ReadinessOptions{Admin: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, id := readinessItem(t, r, "sending_resources"), readinessItem(t, r, "sending_identity")
+		if r.AutomaticSetup || res.State != "not_set_up" || res.Fix != "setup_sending" || id.State != "missing" || id.Fix != "create_identity" {
+			t.Fatal(stamp, "reported as automatic", r.AutomaticSetup, res, id)
+		}
+	}
+}
+
+// When the claimed run would skip the chosen user's noreply identity, their
+// item shows the normal missing state with its fix, not "Creating…".
+func TestReadinessAutomaticIdentityOnlyWhenItWillBeCreated(t *testing.T) {
+	cases := map[string]func(t *testing.T, f *readyFixture){
+		"identity cap": func(t *testing.T, f *readyFixture) {
+			f.svc.cfg = &config.Config{EmailProvider: "ses"}
+			if _, err := f.db.Exec(`UPDATE organizations SET max_identities=1 WHERE id=$1`, f.org); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.db.Exec(`INSERT INTO identities(user_id,domain_id,email,display_name,updated_at) VALUES($1,$2,'first@'||$3,'First',now())`, f.owner, f.domain, f.name); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"identity that cannot send": func(t *testing.T, f *readyFixture) {
+			if _, err := f.db.Exec(`INSERT INTO identities(user_id,domain_id,email,display_name,can_send,updated_at) VALUES($1,$2,'hello@'||$3,'Hello',false,now())`, f.admin, f.domain, f.name); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, prepare := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newReadyFixture(t, strings.ReplaceAll(name, " ", "-")+".auto.test")
+			prepare(t, f)
+			var queued []func()
+			f.svc.async = func(run func()) { queued = append(queued, run) }
+			f.verify(t)
+			if len(queued) == 0 {
+				t.Fatal("automation was not claimed")
+			}
+			r, err := f.svc.GetDomainReadiness(context.Background(), f.org, f.admin, f.domainUUID, ReadinessOptions{Admin: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := readinessItem(t, r, "sending_identity")
+			if !r.AutomaticSetup || id.State != "missing" || id.Fix != "create_identity" || strings.Contains(id.Detail, "automatically") {
+				t.Fatal("skipped identity shown as automatic", r.AutomaticSetup, id)
+			}
+		})
+	}
+	// A chosen user who is no longer eligible gets nothing either.
+	f := newReadyFixture(t, "ineligible.auto.test")
+	var queued []func()
+	f.svc.async = func(run func()) { queued = append(queued, run) }
+	f.verify(t)
+	if _, err := f.db.Exec(`UPDATE users SET role='mailbox' WHERE id=$1`, f.admin); err != nil {
+		t.Fatal(err)
+	}
+	// readyAutomationUser now picks the owner, who did not add the domain but is eligible.
+	r, err := f.svc.GetDomainReadiness(context.Background(), f.org, f.owner, f.domainUUID, ReadinessOptions{Admin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id := readinessItem(t, r, "sending_identity"); id.State != "automatic_setup" {
+		t.Fatal("the eligible fallback owner gets the identity", id)
+	}
+	if _, err := f.db.Exec(`UPDATE users SET status='disabled' WHERE id=$1`, f.owner); err != nil {
+		t.Fatal(err)
+	}
+	r, err = f.svc.GetDomainReadiness(context.Background(), f.org, f.owner, f.domainUUID, ReadinessOptions{Admin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id := readinessItem(t, r, "sending_identity"); id.State != "missing" {
+		t.Fatal("ineligible user shown as automatic", id)
+	}
+}
+
+// Before verification a member is told an admin adds identities, not that
+// they can.
+func TestReadinessMemberIdentityBeforeVerification(t *testing.T) {
+	f := newReadyFixture(t, "member.example.test")
+	var member int64
+	if err := f.db.QueryRow(`INSERT INTO users(org_id,email,password_hash,role,updated_at) VALUES($1,'m@people.test','unused','member',now()) RETURNING id`, f.org).Scan(&member); err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.svc.GetDomainReadiness(context.Background(), f.org, member, f.domainUUID, ReadinessOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id := readinessItem(t, r, "sending_identity"); id.Status != ReadinessMissing || id.Fix != "" ||
+		id.Detail != "You have no sending identity on member.example.test yet. An organization owner or admin can add one after the domain is verified." {
+		t.Fatal("member identity before verification", id)
+	}
+}
+
+// The recorded failure names no button: the checklist offers "Retry sending
+// setup" and the sending panel "Set up sending resources".
+func TestAutomaticSetupFailureWording(t *testing.T) {
+	if strings.Contains(automaticSetupFailed, "Retry sending setup") || !strings.Contains(automaticSetupFailed, "Set up sending resources again") {
+		t.Fatal(automaticSetupFailed)
 	}
 }

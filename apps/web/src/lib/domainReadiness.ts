@@ -45,10 +45,12 @@ export function readinessActions(item: DomainReadinessItem, opts: { canManage: b
   return []
 }
 
-// A member sees why they cannot act on an item an admin must fix.
-// The missing-identity detail already tells members whom to ask.
+// A member sees why they cannot act on an item an admin must fix. Only owners
+// and admins add identities, so a missing identity always gets the hint, also
+// before verification when it has no fix yet.
 export function needsAdmin(item: DomainReadinessItem, canManage: boolean): boolean {
-  return !canManage && item.status !== 'ok' && item.key !== 'sending_identity' && ['verify', 'setup_sending', 'create_identity'].includes(item.fix)
+  if (canManage || item.status === 'ok' || item.state === 'automatic_setup') return false
+  return item.key === 'sending_identity' || ['verify', 'setup_sending', 'create_identity'].includes(item.fix)
 }
 
 export function readinessSummary(r: DomainReadiness | null | undefined): string {

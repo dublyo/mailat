@@ -4,5 +4,7 @@ ALTER TABLE domains ADD COLUMN IF NOT EXISTS created_by integer REFERENCES users
 ALTER TABLE domains ADD COLUMN IF NOT EXISTS ready_automation_at timestamptz;
 -- Domains that are already ready keep their current setup: the automation is
 -- only for a domain's first transition to active + SES verified.
-UPDATE domains SET ready_automation_at = COALESCE(verified_at, updated_at, now())
+-- The stamp is the epoch, never a recent time, so the readiness checklist
+-- never reports these domains as running the setup.
+UPDATE domains SET ready_automation_at = timestamptz 'epoch'
 WHERE status = 'active' AND COALESCE(ses_verified, false) AND ready_automation_at IS NULL;
