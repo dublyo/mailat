@@ -158,7 +158,7 @@ export function overviewRows(o: OverviewFlags) {
     { label: 'May send', value: o.maySend, section: 'settings' },
     { label: 'May receive', value: o.mayReceive, section: 'settings' },
     { label: 'Wildcard sender', value: o.wildcardSender, section: 'send-as' },
-    { label: 'Catch-all', value: o.isCatchAll, section: '' },
+    { label: 'Catch-all', value: o.isCatchAll, section: 'settings' },
     { label: 'Forwarding active', value: o.forwardsActive, section: '' },
     { label: 'Auto-reply active', value: o.autoReplyActive, section: '' },
     { label: '2FA', value: o.twoFactor, section: 'access' },

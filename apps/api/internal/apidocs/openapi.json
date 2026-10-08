@@ -5531,6 +5531,17 @@
             "description": "null when the domain has no catch-all",
             "nullable": true
           },
+          "catchAllOptions": {
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/service.MailboxCatchAll"
+                }
+              ],
+              "nullable": true
+            },
+            "type": "array"
+          },
           "domain": {
             "$ref": "#/components/schemas/service.MailboxDomain"
           },
@@ -6058,6 +6069,9 @@
       "service.MailboxCatchAll": {
         "properties": {
           "email": {
+            "type": "string"
+          },
+          "identityUuid": {
             "type": "string"
           },
           "isMailbox": {
@@ -6885,6 +6899,14 @@
             "type": "boolean"
           },
           "subscriptionStatus": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "service.SetDomainCatchAllRequest": {
+        "properties": {
+          "identityUuid": {
             "type": "string"
           }
         },
@@ -54667,6 +54689,275 @@
         "x-mailat-backend": "mailat",
         "x-mailat-backend-note": "Mailat application, account or shared resource API. Individual operations can require configured external services; this label is not a runtime-readiness guarantee.",
         "x-mailat-mailbox-allowed": false
+      }
+    },
+    "/api/v1/org/domains/{domainUuid}/catch-all": {
+      "put": {
+        "description": "SetCatchAll makes one receiving identity on the domain (a mailbox or a\nstaff identity) the catch-all for addresses with no mailbox, moving it from\nthe previous one; an empty identityUuid removes the catch-all. Returns the\nnew catch-all, or null when removed. 404 for an identity not on the domain,\n409 when it cannot receive mail.\nPUT /api/v1/org/domains/:domainUuid/catch-all",
+        "operationId": "put_api_v1_org_domains_domainUuid_catch_all",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domainUuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/service.SetDomainCatchAllRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.MailboxCatchAll"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "SetCatchAll",
+        "tags": [
+          "org"
+        ],
+        "x-human-session-required": true,
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "Mailbox users: a login for one address on an active, SES-verified domain that sees only its own mail, compose and settings. Mail to the address (and its local+tag forms and send-as aliases) is kept for the user from creation, even while the setup link is pending; removing the mailbox sends new mail to the catch-all. Setup and reset links (72 h, single use) and notices go through SES from your sending identity. Password, reset-link, recovery-email and two-factor changes are an audited exception to admins never controlling another user's access: they apply to mailbox users only and end every session.",
+        "x-mailat-mailbox-allowed": false,
+        "x-mailat-role-required": [
+          "owner",
+          "admin"
+        ]
       }
     },
     "/api/v1/org/domains/{domainUuid}/mailboxes": {

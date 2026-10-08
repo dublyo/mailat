@@ -294,3 +294,26 @@ func (c *MailboxController) Remove(r *ghttp.Request) {
 	}
 	response.Success(r, result)
 }
+
+// SetCatchAll makes one receiving identity on the domain (a mailbox or a
+// staff identity) the catch-all for addresses with no mailbox, moving it from
+// the previous one; an empty identityUuid removes the catch-all. Returns the
+// new catch-all, or null when removed. 404 for an identity not on the domain,
+// 409 when it cannot receive mail.
+// PUT /api/v1/org/domains/:domainUuid/catch-all
+func (c *MailboxController) SetCatchAll(r *ghttp.Request) {
+	a, ok := orgActor(r)
+	if !ok {
+		return
+	}
+	var req service.SetDomainCatchAllRequest
+	if !decodeBody(r, &req) {
+		return
+	}
+	catchAll, err := c.mailboxes.SetDomainCatchAll(r.Context(), a, r.Get("domainUuid").String(), req.IdentityUUID)
+	if err != nil {
+		writeOrgError(r, err)
+		return
+	}
+	response.Success(r, catchAll)
+}

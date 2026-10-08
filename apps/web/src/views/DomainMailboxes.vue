@@ -88,6 +88,37 @@ watch(selectedDomain, (uuid, previous) => {
 })
 const formatDate = (value: string | null) => value ? new Date(value).toLocaleDateString() : 'Never'
 
+// ---- Catch-all (Migadu "Catchall Recipients", one inbox per domain) ----
+const catchAllEditing = ref(false)
+const catchAllDraft = ref('')
+const catchAllBusy = ref(false)
+const catchAllError = ref('')
+function editCatchAll() {
+  catchAllDraft.value = data.value?.catchAll?.identityUuid ?? ''
+  catchAllError.value = ''
+  catchAllEditing.value = true
+}
+async function saveCatchAll() {
+  if (!data.value || catchAllBusy.value) return
+  const next = data.value.catchAllOptions.find(o => o.identityUuid === catchAllDraft.value)
+  const message = next
+    ? `Send mail for every ${domainName.value} address that has no mailbox to ${next.email}? The current catch-all stops getting it; mail already received stays where it is.`
+    : `Remove the catch-all for ${domainName.value}? Mail to addresses with no mailbox will no longer be delivered.`
+  if (!confirm(message)) return
+  catchAllBusy.value = true
+  catchAllError.value = ''
+  try {
+    await mailboxAdminApi.setCatchAll(domainUuid.value, catchAllDraft.value)
+    catchAllEditing.value = false
+    notice.value = next ? `${next.email} is now the catch-all for ${domainName.value}.` : `${domainName.value} no longer has a catch-all.`
+    await load()
+  } catch (e) {
+    catchAllError.value = e instanceof Error ? e.message : 'Could not change the catch-all.'
+  } finally {
+    catchAllBusy.value = false
+  }
+}
+
 // ---- New mailbox ----
 const senderIdentities = computed(() => domains.identities.filter(i => !i.shared && i.kind !== 'shared' && i.canSend !== false))
 const blankForm = () => ({ localPart: '', name: '', mode: 'invite' as 'invite' | 'password', inviteEmail: '', senderIdentityUuid: '', password: '', maySend: true, mayReceive: true })
@@ -244,10 +275,25 @@ async function runImport(dryRun: boolean) {
       <p v-if="loading && !data" role="status" class="text-sm text-gmail-gray">Loading mailboxes…</p>
 
       <template v-if="data">
-        <p class="text-sm text-gmail-gray mb-4 break-words">
-          <template v-if="data.catchAll">Catch-all: <strong class="text-gray-900">{{ data.catchAll.email }}</strong><span v-if="data.catchAll.ownerEmail !== data.catchAll.email"> (owned by {{ data.catchAll.ownerEmail }})</span> → gets mail for addresses with no mailbox.</template>
-          <template v-else>No catch-all: mail to addresses with no mailbox is not delivered.</template>
-        </p>
+        <div class="text-sm text-gmail-gray mb-4 break-words">
+          <div v-if="!catchAllEditing" class="flex flex-wrap items-center gap-2">
+            <span v-if="data.catchAll">Catch-all: <strong class="text-gray-900">{{ data.catchAll.email }}</strong><span v-if="data.catchAll.ownerEmail !== data.catchAll.email"> (owned by {{ data.catchAll.ownerEmail }})</span> → gets mail for addresses with no mailbox.</span>
+            <span v-else>No catch-all: mail to addresses with no mailbox is not delivered.</span>
+            <Button size="sm" variant="secondary" :disabled="!data.catchAllOptions.length" @click="editCatchAll">{{ data.catchAll ? 'Change' : 'Set catch-all' }}</Button>
+          </div>
+          <form v-else class="flex flex-wrap items-center gap-2" @submit.prevent="saveCatchAll">
+            <label class="flex flex-wrap items-center gap-2"><span class="font-medium text-gray-900">Catch-all inbox</span>
+              <select v-model="catchAllDraft" class="border border-gmail-border rounded-lg px-2 py-1.5 bg-white min-w-56">
+                <option value="">No catch-all (don't deliver)</option>
+                <option v-for="option in data.catchAllOptions" :key="option.identityUuid" :value="option.identityUuid">{{ option.email }}{{ option.isMailbox ? ' (mailbox)' : '' }}</option>
+              </select>
+            </label>
+            <Button size="sm" type="submit" :loading="catchAllBusy" :disabled="catchAllDraft === (data.catchAll?.identityUuid ?? '')">Save</Button>
+            <Button size="sm" variant="secondary" @click="catchAllEditing = false">Cancel</Button>
+            <span class="basis-full text-xs">Mail to any {{ domainName }} address without a mailbox, identity or alias goes to this inbox.</span>
+            <p v-if="catchAllError" role="alert" class="basis-full text-red-700">{{ catchAllError }}</p>
+          </form>
+        </div>
 
         <div class="overflow-x-auto border border-gmail-border rounded-lg">
           <table class="w-full text-sm">

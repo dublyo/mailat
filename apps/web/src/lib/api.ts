@@ -1725,9 +1725,13 @@ export interface MailboxDomainInfo { uuid: string; name: string; sesVerified: bo
 
 export interface DomainMailboxes {
   domain: MailboxDomainInfo
-  catchAll: { email: string; ownerEmail: string; isMailbox: boolean } | null
+  catchAll: MailboxCatchAllInfo | null
   mailboxes: MailboxAccount[]
+  /** Receiving personal identities on the domain that can be the catch-all. */
+  catchAllOptions: MailboxCatchAllInfo[]
 }
+
+export interface MailboxCatchAllInfo { identityUuid: string; email: string; ownerEmail: string; isMailbox: boolean }
 
 export interface MailboxLink {
   uuid: string
@@ -1775,6 +1779,9 @@ export const mailboxAdminApi = {
   resendInvite: (userUuid: string) => api.post<{ invite: MailboxLink }>(`${mailboxPath(userUuid)}/invite/resend`),
   suspend: (userUuid: string) => api.post<MailboxAccount>(`${mailboxPath(userUuid)}/suspend`),
   reactivate: (userUuid: string) => api.post<MailboxAccount>(`${mailboxPath(userUuid)}/reactivate`),
+  /** Moves the domain catch-all to one receiving identity, or removes it with ''. */
+  setCatchAll: (domainUuid: string, identityUuid: string) =>
+    api.put<MailboxCatchAllInfo | null>(`/api/v1/org/domains/${encodeURIComponent(domainUuid)}/catch-all`, { identityUuid }),
   remove: (userUuid: string, transferIdentitiesTo?: string) =>
     api.delete<{ removed: boolean; identitiesTransferred: number; identitiesDisabled: number }>(mailboxPath(userUuid), transferIdentitiesTo ? { transferIdentitiesTo } : {}),
 }

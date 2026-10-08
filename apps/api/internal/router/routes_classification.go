@@ -32,7 +32,7 @@ func init() {
 	add("staff", "DELETE", "/automations/:uuid /campaigns/:uuid /contacts/:uuid /contacts/:uuid/gdpr /emails/:id /lists/:uuid /lists/:uuid/contacts /oauth/:provider /rules/:id /shared-mailboxes/:id/members/:userId /signup-forms/:uuid /templates/:uuid /webhook-triggers/:id /webhooks/:uuid")
 	add("admin", "GET", "/health/alerts /health/logs /health/quota /health/reputation /health/ses-limits /health/summary /health/warmup/:ip /health/warmup/schedules /org/domains/:domainUuid/mailboxes /org/identities /org/invites /org/mailboxes/:userUuid /org/members")
 	add("admin", "POST", "/branding/verify-domain /domains /domains/:uuid/dns/cloudflare /domains/:uuid/ses-verify /domains/:uuid/setup-sending /domains/:uuid/verify /domains/cloudflare/zones /health/alerts/:id/acknowledge /health/blacklist-check /health/warmup /identities /identities/:uuid/catch-all /inbox/setup /org/domains/:domainUuid/mailboxes /org/domains/:domainUuid/mailboxes/import /org/invites /org/invites/:uuid/resend /org/mailboxes/:userUuid/2fa/reset /org/mailboxes/:userUuid/aliases /org/mailboxes/:userUuid/invite/resend /org/mailboxes/:userUuid/password /org/mailboxes/:userUuid/reactivate /org/mailboxes/:userUuid/suspend /shared-mailboxes")
-	add("admin", "PUT", "/branding /org/identities/:uuid/owner /org/mailboxes/:userUuid /org/members/:uuid")
+	add("admin", "PUT", "/branding /org/domains/:domainUuid/catch-all /org/identities/:uuid/owner /org/mailboxes/:userUuid /org/members/:uuid")
 	add("admin", "DELETE", "/domains/:uuid /identities/:uuid /org/invites/:uuid /org/mailboxes/:userUuid /org/mailboxes/:userUuid/aliases/:aliasUuid /org/members/:uuid /shared-mailboxes/:id")
 	add("humanAdmin", "GET", "/api-keys")
 	add("humanAdmin", "POST", "/api-keys")

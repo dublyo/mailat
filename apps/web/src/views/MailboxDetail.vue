@@ -98,6 +98,20 @@ const switchWarnings: Record<string, string> = {
   'maySend:false': 'Stop this mailbox from sending? Compose, auto-replies and forward confirmations from it will fail.',
   'wildcardSender:true': 'Let this user send as any unused address on the domain? Other people\'s addresses and aliases stay blocked.',
 }
+function setCatchAll(event: Event) {
+  const box = event.target as HTMLInputElement
+  const on = box.checked
+  const mailboxRow = detail.value?.mailbox
+  if (!mailboxRow) return
+  const message = on
+    ? `Make ${mailboxRow.address} the catch-all for ${domainName.value}? It gets mail for every address on the domain that has no mailbox; the current catch-all stops getting it.`
+    : `Remove the catch-all for ${domainName.value}? Mail to addresses with no mailbox will no longer be delivered.`
+  if (!confirm(message)) { box.checked = !on; return }
+  return run('catchAll', async () => {
+    await mailboxAdminApi.setCatchAll(domainUuid, on ? mailboxRow.identityUuid : '')
+    return on ? `${mailboxRow.address} is now the catch-all for ${domainName.value}.` : `${domainName.value} no longer has a catch-all.`
+  }, 'Could not change the catch-all.').then(() => { if (detail.value) box.checked = detail.value.overview.isCatchAll })
+}
 function setSwitch(key: 'maySend' | 'mayReceive' | 'wildcardSender', event: Event) {
   const box = event.target as HTMLInputElement
   const value = box.checked
@@ -273,6 +287,8 @@ async function remove() {
               <span><span class="font-medium">May send</span><span class="block text-gmail-gray">Off blocks compose, auto-replies and forward confirmations from this address.</span></span></label>
             <label class="flex items-start gap-3"><input type="checkbox" class="w-4 h-4 mt-0.5" :checked="detail.overview.mayReceive" :disabled="!!busy" @change="setSwitch('mayReceive', $event)" />
               <span><span class="font-medium">May receive</span><span class="block text-gmail-gray">Off sends new mail for this address to the catch-all.</span></span></label>
+            <label class="flex items-start gap-3"><input type="checkbox" class="w-4 h-4 mt-0.5" :checked="detail.overview.isCatchAll" :disabled="!!busy || (!detail.overview.isCatchAll && !detail.overview.mayReceive)" @change="setCatchAll" />
+              <span><span class="font-medium">Catch-all for {{ domainName }}</span><span class="block text-gmail-gray">Also gets mail for every {{ domainName }} address that has no mailbox. Only one inbox per domain can be the catch-all.</span></span></label>
           </div>
         </div>
 

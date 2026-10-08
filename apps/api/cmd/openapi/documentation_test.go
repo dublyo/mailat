@@ -313,8 +313,8 @@ func TestMailboxAdminContract(t *testing.T) {
 			}
 		}
 	}
-	if n != 13 {
-		t.Errorf("documented %d mailbox admin operations, want 13", n)
+	if n != 14 {
+		t.Errorf("documented %d mailbox admin operations, want 14", n)
 	}
 	op := func(path, method string) map[string]interface{} {
 		return paths[path].(map[string]interface{})[method].(map[string]interface{})

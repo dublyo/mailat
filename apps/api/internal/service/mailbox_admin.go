@@ -22,15 +22,26 @@ type MailboxDomain struct {
 // MailboxCatchAll is the identity that gets mail for addresses on the domain
 // with no mailbox, identity or alias.
 type MailboxCatchAll struct {
-	Email      string `json:"email"`
-	OwnerEmail string `json:"ownerEmail"`
-	IsMailbox  bool   `json:"isMailbox"` // the catch-all belongs to a mailbox user
+	IdentityUUID string `json:"identityUuid"`
+	Email        string `json:"email"`
+	OwnerEmail   string `json:"ownerEmail"`
+	IsMailbox    bool   `json:"isMailbox"` // the catch-all belongs to a mailbox user
 }
 
 type DomainMailboxes struct {
 	Domain    MailboxDomain     `json:"domain"`
 	CatchAll  *MailboxCatchAll  `json:"catchAll"` // null when the domain has no catch-all
 	Mailboxes []*MailboxAccount `json:"mailboxes"`
+	// CatchAllOptions are the receiving personal identities on the domain
+	// (mailboxes and staff identities) that can be made the catch-all.
+	CatchAllOptions []*MailboxCatchAll `json:"catchAllOptions"`
+}
+
+// SetDomainCatchAllRequest picks the identity that gets mail for addresses on
+// the domain with no mailbox, identity or alias; an empty identityUuid
+// removes the catch-all, so such mail is no longer delivered.
+type SetDomainCatchAllRequest struct {
+	IdentityUUID string `json:"identityUuid"`
 }
 
 // MailboxOverview says yes/no only: forwarding and auto-reply destinations or
@@ -104,13 +115,16 @@ func (s *MailboxService) ListDomainMailboxes(ctx context.Context, orgID int64, d
 		return nil, err
 	}
 	var ca MailboxCatchAll
-	err = tx.QueryRowContext(ctx, `SELECT i.email,u.email,u.role='mailbox' FROM identities i JOIN users u ON u.id=i.user_id
+	err = tx.QueryRowContext(ctx, `SELECT i.uuid::text,i.email,u.email,u.role='mailbox' FROM identities i JOIN users u ON u.id=i.user_id
 		WHERE i.domain_id=$1 AND i.is_catch_all AND i.can_receive AND i.kind='personal' AND `+deliverableOwnerSQL+` ORDER BY i.id LIMIT 1`, domainID).
-		Scan(&ca.Email, &ca.OwnerEmail, &ca.IsMailbox)
+		Scan(&ca.IdentityUUID, &ca.Email, &ca.OwnerEmail, &ca.IsMailbox)
 	switch {
 	case err == nil:
 		out.CatchAll = &ca
 	case err != sql.ErrNoRows:
+		return nil, err
+	}
+	if out.CatchAllOptions, err = catchAllOptions(ctx, tx, domainID); err != nil {
 		return nil, err
 	}
 	// A removed mailbox keeps its row, but its identity may since belong to
@@ -359,4 +373,99 @@ func (s *MailboxService) DeleteSendAlias(ctx context.Context, a OrgActor, userUU
 		return err
 	}
 	return tx.Commit()
+}
+
+// catchAllOptions lists the personal identities on the domain whose owner
+// receives mail, which are the identities a catch-all can point to.
+func catchAllOptions(ctx context.Context, q *sql.Tx, domainID int64) ([]*MailboxCatchAll, error) {
+	rows, err := q.QueryContext(ctx, `SELECT i.uuid::text,i.email,u.email,u.role='mailbox' FROM identities i JOIN users u ON u.id=i.user_id
+		WHERE i.domain_id=$1 AND i.can_receive AND i.kind='personal' AND `+deliverableOwnerSQL+` ORDER BY lower(i.email)`, domainID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*MailboxCatchAll{}
+	for rows.Next() {
+		var o MailboxCatchAll
+		if err = rows.Scan(&o.IdentityUUID, &o.Email, &o.OwnerEmail, &o.IsMailbox); err != nil {
+			return nil, err
+		}
+		out = append(out, &o)
+	}
+	return out, rows.Err()
+}
+
+// SetDomainCatchAll makes one receiving identity on the domain the catch-all
+// (moving it from the previous one in the same transaction), or removes the
+// catch-all when identityUUID is empty. Mail that already arrived stays where
+// it is. Locks follow the identity -> domain order used by UpdateIdentity.
+func (s *MailboxService) SetDomainCatchAll(ctx context.Context, a OrgActor, domainUUID, identityUUID string) (*MailboxCatchAll, error) {
+	if !validUUID(domainUUID) {
+		return nil, orgError(http.StatusNotFound, "Domain not found")
+	}
+	if identityUUID != "" && !validUUID(identityUUID) {
+		return nil, orgError(http.StatusNotFound, "Identity not found on this domain")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var domainID int64
+	var domainName string
+	err = tx.QueryRowContext(ctx, `SELECT id,name FROM domains WHERE uuid=$1 AND org_id=$2`, domainUUID, a.OrgID).Scan(&domainID, &domainName)
+	if err == sql.ErrNoRows {
+		return nil, orgError(http.StatusNotFound, "Domain not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `SELECT id FROM identities WHERE domain_id=$1 AND (is_catch_all OR uuid::text=$2) ORDER BY id FOR UPDATE`, domainID, identityUUID); err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `SELECT id FROM domains WHERE id=$1 FOR UPDATE`, domainID); err != nil {
+		return nil, err
+	}
+	var previous sql.NullString
+	if err = tx.QueryRowContext(ctx, `SELECT email FROM identities WHERE domain_id=$1 AND is_catch_all ORDER BY id LIMIT 1`, domainID).Scan(&previous); err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+	var out *MailboxCatchAll
+	targetID := int64(0)
+	if identityUUID != "" {
+		var o MailboxCatchAll
+		var canReceive bool
+		err = tx.QueryRowContext(ctx, `SELECT i.id,i.uuid::text,i.email,u.email,u.role='mailbox',i.can_receive FROM identities i JOIN users u ON u.id=i.user_id
+			WHERE i.uuid=$1 AND i.domain_id=$2 AND i.kind='personal' AND u.org_id=$3 AND `+deliverableOwnerSQL, identityUUID, domainID, a.OrgID).
+			Scan(&targetID, &o.IdentityUUID, &o.Email, &o.OwnerEmail, &o.IsMailbox, &canReceive)
+		if err == sql.ErrNoRows {
+			return nil, orgError(http.StatusNotFound, "Identity not found on this domain")
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !canReceive {
+			return nil, orgError(http.StatusConflict, "That address cannot receive mail; turn on May receive first")
+		}
+		out = &o
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE identities SET is_catch_all=false,updated_at=now() WHERE domain_id=$1 AND is_catch_all AND id<>$2`, domainID, targetID); err != nil {
+		return nil, err
+	}
+	description := "Removed the catch-all for " + domainName
+	values := map[string]any{"domain": domainName, "previous": previous.String}
+	if out != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE identities SET is_catch_all=true,updated_at=now() WHERE id=$1 AND NOT is_catch_all`, targetID); err != nil {
+			return nil, err
+		}
+		description = "Set the catch-all for " + domainName + " to " + out.Email
+		values["catchAll"] = out.Email
+	}
+	if err = auditTx(ctx, tx, a, "domain_catch_all", "domain", domainUUID, description, values); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
