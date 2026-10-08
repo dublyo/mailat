@@ -381,7 +381,9 @@ type Webhook struct {
 // Transactional API Request DTOs
 
 type SendEmailRequest struct {
-	From           string            `json:"from" v:"required|email"`
+	// "Name <address>" or a bare address; parsed and checked by the service
+	// (net/mail, no CR/LF), so the gf email rule would wrongly reject names.
+	From           string            `json:"from" v:"required"`
 	To             []string          `json:"to"`
 	Cc             []string          `json:"cc"`
 	Bcc            []string          `json:"bcc"`

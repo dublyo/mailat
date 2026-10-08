@@ -39,6 +39,10 @@ func TestTransactionalHTTPRequiresStableRequestKeys(t *testing.T) {
 		{"mismatch", "/emails", "header-key-123", `{"from":"from@test.test","to":["to@test.test"],"subject":"Test","text":"body","idempotencyKey":"body-key-123"}`, "must match"},
 		{"batch-body-is-not-header", "/emails/batch", "", `{"idempotencyKey":"batch-body-key","emails":[{"from":"from@test.test","to":["to@test.test"],"subject":"Test","text":"body","idempotencyKey":"item-key-123"}]}`, "header"},
 		{"bcc-only-reaches-key-check", "/emails", "", `{"from":"from@test.test","bcc":["hidden@test.test"],"subject":"Test","text":"body"}`, "Idempotency-Key"},
+		// A display name is valid and must reach the next check, not fail validation.
+		{"display-name-from-reaches-key-check", "/emails", "", `{"from":"Support Team <from@test.test>","to":["to@test.test"],"subject":"Test","text":"body"}`, "Idempotency-Key"},
+		{"plus-from-reaches-key-check", "/emails", "", `{"from":"from+tag@test.test","to":["to@test.test"],"subject":"Test","text":"body"}`, "Idempotency-Key"},
+		{"empty-from-fails-validation", "/emails", "valid-key-123", `{"from":"","to":["to@test.test"],"subject":"Test","text":"body"}`, "rom"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d%s", s.GetListenedPort(), tc.path), strings.NewReader(tc.body))

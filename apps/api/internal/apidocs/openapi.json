@@ -3661,7 +3661,6 @@
             "type": "array"
           },
           "from": {
-            "format": "email",
             "type": "string"
           },
           "html": {
@@ -8116,7 +8115,7 @@
   "info": {
     "description": "Self-hosted SES email automation. API keys use Authorization: Bearer ue_… and explicit per-operation scopes. Human-only administration is marked. Roles are owner, admin, member and mailbox; x-mailat-role-required marks owner/admin routes, and x-mailat-mailbox-allowed marks the routes a mailbox user (a login that only uses its own mailbox) may call. API keys owned by a mailbox user are rejected. Inbox detail is non-mutating. Webhooks use version 1 events and HMAC-SHA256 over timestamp + '.' + raw body. Cursor retention is 90 days.",
     "title": "Mailat API",
-    "version": "2026-10-08"
+    "version": "2026-10-09"
   },
   "openapi": "3.0.3",
   "paths": {
