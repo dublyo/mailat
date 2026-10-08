@@ -5591,6 +5591,67 @@
         },
         "type": "object"
       },
+      "service.DomainReadiness": {
+        "properties": {
+          "checkedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "domain": {
+            "type": "string"
+          },
+          "domainUuid": {
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/service.DomainReadinessItem"
+            },
+            "type": "array"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "suggestedIdentity": {
+            "description": "noreply@\u003cdomain\u003e while that address is free, else empty.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "service.DomainReadinessItem": {
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "fix": {
+            "type": "string"
+          },
+          "key": {
+            "description": "verified, dmarc, sending_resources, sending_identity or receiving.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "state": {
+            "description": "Item-specific detail, e.g. published, inherited or missing for DMARC.",
+            "type": "string"
+          },
+          "status": {
+            "description": "ok, missing, pending, attention, unknown or off.",
+            "type": "string"
+          },
+          "value": {
+            "description": "A copyable value, such as the DMARC record or the caller's sending address.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "service.DomainReceivingStatus": {
         "properties": {
           "checkedAt": {
@@ -8115,7 +8176,7 @@
   "info": {
     "description": "Self-hosted SES email automation. API keys use Authorization: Bearer ue_… and explicit per-operation scopes. Human-only administration is marked. Roles are owner, admin, member and mailbox; x-mailat-role-required marks owner/admin routes, and x-mailat-mailbox-allowed marks the routes a mailbox user (a login that only uses its own mailbox) may call. API keys owned by a mailbox user are rejected. Inbox detail is non-mutating. Webhooks use version 1 events and HMAC-SHA256 over timestamp + '.' + raw body. Cursor retention is 90 days.",
     "title": "Mailat API",
-    "version": "2026-10-09"
+    "version": "2026-10-10"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -30786,6 +30847,270 @@
           "owner",
           "admin"
         ]
+      }
+    },
+    "/api/v1/domains/{uuid}/readiness": {
+      "get": {
+        "description": "Read-only API sending checklist for the caller (or the API key's owner) on an organization domain. items, in order: verified (active and SES verified), dmarc (state published, inherited, missing, conflict or unknown; value is the policy or the suggested record), sending_resources (attachment storage and SES feedback; pending while the SNS subscription awaits confirmation), sending_identity (the caller has a personal can_send identity on the domain; value is that address, or the suggested noreply address) and receiving (optional; enabled plus the live root MX status, never blocks ready). status is ok, missing, pending, attention, unknown or off. fix names the action that resolves an item: verify, dmarc, setup_sending, create_identity or receiving. ready is true when every required item is ok. suggestedIdentity is noreply@\u003cdomain\u003e while that address is not an identity, send-as alias or open invite. When a domain first becomes active and SES verified, Mailat sets up sending resources and creates noreply@\u003cdomain\u003e for the person who added it (if free and within the identity cap); it never publishes DNS.",
+        "operationId": "get_api_v1_domains_uuid_readiness",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 0,
+                      "type": "integer"
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/service.DomainReadiness"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in this API key's current minute window (present for API-key authentication).",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 400,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid input"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 401,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Missing, expired or revoked authentication"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 403,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Insufficient permission"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 404,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 409,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict or changed idempotency payload"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 410,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Recovery cursor expired; resynchronize"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 429,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Rate limit exceeded; respect Retry-After",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next fixed-minute request window.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "example": 500,
+                      "type": "integer"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal failure; retain the idempotency key"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Readiness",
+        "tags": [
+          "domains"
+        ],
+        "x-api-key-scope": "domains:read",
+        "x-mailat-backend": "ses",
+        "x-mailat-backend-note": "SES email workflow and its stored mailbox/configuration data. Provider actions require configured AWS permissions and verified owned domains; receiving is opt-in.",
+        "x-mailat-mailbox-allowed": false
       }
     },
     "/api/v1/domains/{uuid}/receiving": {

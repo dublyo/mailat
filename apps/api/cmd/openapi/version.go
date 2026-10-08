@@ -14,7 +14,7 @@ import (
 // generated paths or components sets it to the date (YYYY-MM-DD) the change
 // merges to main. Generation and --check refuse a changed contract whose
 // version was not bumped, using the digest in versionPath.
-const contractVersion = "2026-10-09"
+const contractVersion = "2026-10-10"
 
 const versionPath = "internal/apidocs/openapi.version.json"
 

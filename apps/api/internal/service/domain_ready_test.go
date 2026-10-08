@@ -1,0 +1,370 @@
+package service
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/dublyo/mailat/api/internal/config"
+	"github.com/dublyo/mailat/api/internal/model"
+	"github.com/dublyo/mailat/api/internal/provider"
+	"github.com/dublyo/mailat/api/internal/testutil"
+)
+
+// sesStatusProvider answers SES verification checks without AWS.
+type sesStatusProvider struct {
+	domainOnboardingProvider
+	verified bool
+	err      error
+}
+
+func (p *sesStatusProvider) CheckDomainVerification(_ context.Context, domain string) (*provider.DomainIdentity, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &provider.DomainIdentity{Domain: domain, Verified: p.verified}, nil
+}
+
+type readyFixture struct {
+	db                *sql.DB
+	org, owner, admin int64
+	domain            int64
+	domainUUID, name  string
+	svc               *DomainService
+	ses               *sesStatusProvider
+	setup             *fakeSendingSetup
+	dmarc             *serviceDMARCResolver
+}
+
+// newReadyFixture adds a pending SES domain created by an admin, with fakes
+// for SES, the SNS/S3 setup and DNS. Automation runs inline.
+func newReadyFixture(t *testing.T, name string) *readyFixture {
+	t.Helper()
+	db := testutil.Database(t)
+	f := &readyFixture{db: db, name: name}
+	if err := db.QueryRow(`INSERT INTO organizations(name,slug,updated_at) VALUES('Acme',$1,now()) RETURNING id`, name).Scan(&f.org); err != nil {
+		t.Fatal(err)
+	}
+	for role, id := range map[string]*int64{"owner": &f.owner, "admin": &f.admin} {
+		if err := db.QueryRow(`INSERT INTO users(org_id,email,password_hash,role,updated_at) VALUES($1,$2,'unused',$3,now()) RETURNING id`, f.org, role+"@people.test", role).Scan(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.ses = &sesStatusProvider{}
+	f.setup = &fakeSendingSetup{db: db, org: f.org}
+	f.dmarc = &serviceDMARCResolver{txt: map[string][]string{}}
+	f.svc = &DomainService{db: db, cfg: &config.Config{EmailProvider: "ses", DisableAppLimits: true}, emailProvider: f.ses,
+		sendingProvider: f.setup, dmarcResolver: f.dmarc, mxResolver: &fakeMXResolver{}, async: func(run func()) { run() }}
+	d, err := f.svc.CreateDomainBy(context.Background(), f.org, f.admin, &model.CreateDomainRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.domain, f.domainUUID = d.ID, d.UUID
+	return f
+}
+
+func (f *readyFixture) identities(t *testing.T) []string {
+	t.Helper()
+	rows, err := f.db.Query(`SELECT i.email||':'||u.role||':'||i.can_send||':'||i.can_receive||':'||i.is_catch_all||':'||i.is_default FROM identities i JOIN users u ON u.id=i.user_id WHERE i.domain_id=$1 ORDER BY i.id`, f.domain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// verify makes the domain active (as VerifyDNS would after its DNS checks)
+// and then runs the SES status check, which is the transition under test.
+func (f *readyFixture) verify(t *testing.T) {
+	t.Helper()
+	if _, err := f.db.Exec(`UPDATE domains SET status='active',verified_at=now() WHERE id=$1`, f.domain); err != nil {
+		t.Fatal(err)
+	}
+	f.ses.verified = true
+	if _, err := f.svc.CheckSESVerificationStatus(context.Background(), f.domain); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readinessItem(t *testing.T, r *DomainReadiness, key string) DomainReadinessItem {
+	t.Helper()
+	for _, it := range r.Items {
+		if it.Key == key {
+			return it
+		}
+	}
+	t.Fatalf("readiness item %s missing: %+v", key, r.Items)
+	return DomainReadinessItem{}
+}
+
+func TestReadyAutomationRunsOnceOnVerification(t *testing.T) {
+	f := newReadyFixture(t, "fresh.example.test")
+	ctx := context.Background()
+	var createdBy sql.NullInt64
+	if err := f.db.QueryRow(`SELECT created_by FROM domains WHERE id=$1`, f.domain).Scan(&createdBy); err != nil || createdBy.Int64 != f.admin {
+		t.Fatal("creator not recorded", createdBy, err)
+	}
+	// Not yet SES verified: nothing runs.
+	if _, err := f.svc.CheckSESVerificationStatus(ctx, f.domain); err != nil {
+		t.Fatal(err)
+	}
+	if f.setup.creates != 0 || len(f.identities(t)) != 0 {
+		t.Fatal("automation ran before verification")
+	}
+	f.verify(t)
+	if f.setup.creates != 1 || f.setup.subscribes != 1 {
+		t.Fatal("sending setup did not run once", f.setup.creates, f.setup.subscribes)
+	}
+	got := f.identities(t)
+	if len(got) != 1 || got[0] != "noreply@fresh.example.test:admin:true:true:false:true" {
+		t.Fatal("owner identity", got)
+	}
+	var name string
+	if err := f.db.QueryRow(`SELECT display_name FROM identities WHERE domain_id=$1`, f.domain).Scan(&name); err != nil || name != "Acme" {
+		t.Fatal("display name", name, err)
+	}
+	// Re-checks are idempotent: no second setup, no second identity.
+	f.svc.afterDomainCheck(f.domain)
+	if _, err := f.svc.CheckSESVerificationStatus(ctx, f.domain); err != nil {
+		t.Fatal(err)
+	}
+	if f.setup.creates != 1 || f.setup.subscribes != 1 || len(f.identities(t)) != 1 {
+		t.Fatal("automation ran twice")
+	}
+	// DNS and receiving are never changed.
+	var receiving bool
+	var rootMX int
+	if err := f.db.QueryRow(`SELECT receiving_enabled,(SELECT count(*) FROM domain_dns_records WHERE domain_id=$1 AND record_type='MX' AND hostname=$2) FROM domains WHERE id=$1`, f.domain, f.name).Scan(&receiving, &rootMX); err != nil || receiving || rootMX != 0 {
+		t.Fatal("receiving or root MX changed", receiving, rootMX, err)
+	}
+	r, err := f.svc.GetDomainReadiness(ctx, f.org, f.admin, f.domainUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := readinessItem(t, r, "sending_identity"); it.Status != ReadinessOK || it.Value != "noreply@fresh.example.test" {
+		t.Fatal("admin identity not ready", it)
+	}
+	if it := readinessItem(t, r, "sending_resources"); it.Status != ReadinessPending || it.Fix != "setup_sending" {
+		t.Fatal("pending subscription", it)
+	}
+	// The owner did not add the domain and gets no identity; the checklist says so.
+	r, err = f.svc.GetDomainReadiness(ctx, f.org, f.owner, f.domainUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := readinessItem(t, r, "sending_identity"); it.Status != ReadinessMissing || it.Fix != "create_identity" || r.SuggestedIdentity != "" ||
+		it.Detail != "you have no sending identity on fresh.example.test; add one (e.g. noreply@fresh.example.test) under Domains → fresh.example.test → Add identity" {
+		t.Fatal("owner identity item", it, r.SuggestedIdentity)
+	}
+}
+
+func TestReadyAutomationRecordsSetupFailureAndFallsBackToOwner(t *testing.T) {
+	f := newReadyFixture(t, "fail.example.test")
+	ctx := context.Background()
+	// The adder was removed: the owner gets the identity. Setup has no provider
+	// and an http API_URL, so it fails and is recorded, not retried.
+	if _, err := f.db.Exec(`UPDATE users SET status='disabled',removed_at=now() WHERE id=$1`, f.admin); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.sendingProvider = nil
+	f.svc.cfg = &config.Config{EmailProvider: "ses", AWSAccessKeyID: "test", APIUrl: "http://api.example.test", DisableAppLimits: true}
+	f.verify(t)
+	var reason string
+	var ready bool
+	if err := f.db.QueryRow(`SELECT sending_setup_error,sending_feedback_ready FROM domains WHERE id=$1`, f.domain).Scan(&reason, &ready); err != nil || ready ||
+		!strings.Contains(reason, "API_URL must be a public HTTPS URL") {
+		t.Fatal("setup failure not recorded", reason, ready, err)
+	}
+	status, err := f.svc.GetSendingStatus(ctx, f.org, f.domainUUID)
+	if err != nil || status.Reason != reason {
+		t.Fatal("sending status does not show the failure", status, err)
+	}
+	got := f.identities(t)
+	if len(got) != 1 || got[0] != "noreply@fail.example.test:owner:true:true:false:true" {
+		t.Fatal("owner fallback identity", got)
+	}
+	r, err := f.svc.GetDomainReadiness(ctx, f.org, f.owner, f.domainUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := readinessItem(t, r, "sending_resources"); it.Status != ReadinessAttention || it.Detail != reason || it.Fix != "setup_sending" {
+		t.Fatal("needs attention item", it)
+	}
+	// A manual Set up still works afterwards.
+	f.svc.sendingProvider = f.setup
+	if s, err := f.svc.EnsureDomainSendingResources(ctx, f.org, f.domain); err != nil || !s.StorageReady || s.Reason == reason {
+		t.Fatal("manual setup after failure", s, err)
+	}
+}
+
+func TestReadyAutomationForeignTopicLeavesNeedsAttention(t *testing.T) {
+	f := newReadyFixture(t, "foreign.example.test")
+	f.setup.feedbackErr = provider.ErrSendingFeedbackConflict
+	f.verify(t)
+	status, err := f.svc.GetSendingStatus(context.Background(), f.org, f.domainUUID)
+	if err != nil || status.FeedbackReady || status.Reason != provider.ErrSendingFeedbackConflict.Error() {
+		t.Fatal("foreign topic not left as needs attention", status, err)
+	}
+}
+
+func TestReadyAutomationSkipsTakenAddressesAndCaps(t *testing.T) {
+	cases := map[string]func(t *testing.T, f *readyFixture){
+		"existing identity": func(t *testing.T, f *readyFixture) {
+			if _, err := f.db.Exec(`INSERT INTO identities(user_id,domain_id,email,display_name,updated_at) VALUES($1,$2,'noreply@'||$3,'Other',now())`, f.owner, f.domain, f.name); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"send-as alias": func(t *testing.T, f *readyFixture) {
+			var id int64
+			if err := f.db.QueryRow(`INSERT INTO identities(user_id,domain_id,email,display_name,updated_at) VALUES($1,$2,'sales@'||$3,'Sales',now()) RETURNING id`, f.owner, f.domain, f.name).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.db.Exec(`INSERT INTO identity_send_aliases(identity_id,address) VALUES($1,'noreply@'||$2)`, id, f.name); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"pending invite": func(t *testing.T, f *readyFixture) {
+			if _, err := f.db.Exec(`INSERT INTO org_invites(org_id,email,role,token_hash,expires_at) VALUES($1,'noreply@'||$2,'member',repeat('a',64),now()+interval '1 day')`, f.org, f.name); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"identity cap": func(t *testing.T, f *readyFixture) {
+			f.svc.cfg = &config.Config{EmailProvider: "ses"}
+			if _, err := f.db.Exec(`UPDATE organizations SET max_identities=1 WHERE id=$1`, f.org); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.db.Exec(`INSERT INTO identities(user_id,domain_id,email,display_name,updated_at) VALUES($1,$2,'first@'||$3,'First',now())`, f.owner, f.domain, f.name); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"adder already has one": func(t *testing.T, f *readyFixture) {
+			if _, err := f.db.Exec(`INSERT INTO identities(user_id,domain_id,email,display_name,can_send,updated_at) VALUES($1,$2,'hello@'||$3,'Hello',false,now())`, f.admin, f.domain, f.name); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, prepare := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newReadyFixture(t, strings.ReplaceAll(name, " ", "-")+".skip.test")
+			prepare(t, f)
+			before := f.identities(t)
+			f.verify(t)
+			if after := f.identities(t); len(after) != len(before) {
+				t.Fatal("identity created although it should be skipped", before, after)
+			}
+			if f.setup.creates != 1 {
+				t.Fatal("sending setup must still run")
+			}
+		})
+	}
+}
+
+func TestReadyAutomationNeverAppliesToAlreadyReadyDomainsOrSMTP(t *testing.T) {
+	f := newReadyFixture(t, "legacy.example.test")
+	// The migration stamps already-ready domains, so a later check does nothing.
+	if _, err := f.db.Exec(`UPDATE domains SET status='active',ses_verified=true,ready_automation_at=now() WHERE id=$1`, f.domain); err != nil {
+		t.Fatal(err)
+	}
+	f.verify(t)
+	if f.setup.creates != 0 || len(f.identities(t)) != 0 {
+		t.Fatal("automation ran for an already-ready domain")
+	}
+	g := newReadyFixture(t, "smtp.example.test")
+	g.svc.cfg = &config.Config{EmailProvider: "smtp", DisableAppLimits: true}
+	g.verify(t)
+	if g.setup.creates != 0 || len(g.identities(t)) != 0 {
+		t.Fatal("automation ran in SMTP mode")
+	}
+}
+
+func TestDomainReadinessChecklist(t *testing.T) {
+	f := newReadyFixture(t, "check.example.test")
+	ctx := context.Background()
+	if _, err := f.svc.GetDomainReadiness(ctx, f.org+1, f.owner, f.domainUUID); !errors.Is(err, ErrDomainNotFound) {
+		t.Fatal("another organization read the checklist", err)
+	}
+	if _, err := f.svc.GetDomainReadiness(ctx, f.org, f.owner, "not-a-uuid"); !errors.Is(err, ErrDomainNotFound) {
+		t.Fatal(err)
+	}
+	r, err := f.svc.GetDomainReadiness(ctx, f.org, f.owner, f.domainUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for _, it := range r.Items {
+		keys = append(keys, it.Key+"="+it.Status+"/"+it.Fix)
+	}
+	want := "verified=missing/verify dmarc=missing/dmarc sending_resources=missing/ sending_identity=missing/ receiving=off/receiving"
+	if strings.Join(keys, " ") != want || r.Ready || r.SuggestedIdentity != "noreply@check.example.test" {
+		t.Fatal("pending checklist", strings.Join(keys, " "), r.Ready, r.SuggestedIdentity)
+	}
+	if it := readinessItem(t, r, "dmarc"); it.Value != provider.DefaultDMARCValue {
+		t.Fatal("copyable DMARC record", it)
+	}
+	if !readinessItem(t, r, "receiving").Optional {
+		t.Fatal("receiving must be optional")
+	}
+
+	// Verified with a published policy, confirmed feedback and an own identity: ready,
+	// even though receiving is still off.
+	f.verify(t)
+	f.dmarc.txt["_dmarc.check.example.test"] = []string{"v=DMARC1; p=quarantine"}
+	if _, err = f.db.Exec(`UPDATE sending_configs SET status='active' WHERE org_id=$1`, f.org); err != nil {
+		t.Fatal(err)
+	}
+	r, err = f.svc.GetDomainReadiness(ctx, f.org, f.admin, f.domainUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys = nil
+	for _, it := range r.Items {
+		keys = append(keys, it.Key+"="+it.Status+"/"+it.State)
+	}
+	want = "verified=ok/verified dmarc=ok/published sending_resources=ok/ready sending_identity=ok/present receiving=off/not_enabled"
+	if strings.Join(keys, " ") != want || !r.Ready || r.SuggestedIdentity != "" {
+		t.Fatal("ready checklist", strings.Join(keys, " "), r.Ready, r.SuggestedIdentity)
+	}
+	// An inherited policy also counts; a member without an identity is not ready.
+	delete(f.dmarc.txt, "_dmarc.check.example.test")
+	f.dmarc.txt["_dmarc.example.test"] = []string{"v=DMARC1; p=reject"}
+	var member int64
+	if err = f.db.QueryRow(`INSERT INTO users(org_id,email,password_hash,role,updated_at) VALUES($1,'member@people.test','unused','member',now()) RETURNING id`, f.org).Scan(&member); err != nil {
+		t.Fatal(err)
+	}
+	r, err = f.svc.GetDomainReadiness(ctx, f.org, member, f.domainUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := readinessItem(t, r, "dmarc"); it.Status != ReadinessOK || it.State != "inherited" {
+		t.Fatal("inherited DMARC", it)
+	}
+	if it := readinessItem(t, r, "sending_identity"); r.Ready || it.Status != ReadinessMissing || it.Fix != "create_identity" {
+		t.Fatal("member without identity", it, r.Ready)
+	}
+}
+
+// An API send from a domain where the caller has no identity says how to fix it.
+func TestNoSendingIdentityErrorSaysWhatToDo(t *testing.T) {
+	db := testutil.Database(t)
+	org, _, _, _, _, _, _ := sendAsFixture(t, db)
+	var admin int64
+	if err := db.QueryRow(`INSERT INTO users(org_id,email,password_hash,role,updated_at) VALUES($1,'noid@people.test','unused','admin',now()) RETURNING id`, org).Scan(&admin); err != nil {
+		t.Fatal(err)
+	}
+	svc := &TransactionalService{db: db, cfg: &config.Config{EmailProvider: "ses", DisableAppLimits: true}, emailProvider: &mailboxTestProvider{}}
+	_, err := svc.SendEmailForUser(context.Background(), org, SendActor{UserID: admin, Admin: true}, &model.SendEmailRequest{From: "noreply@send.test", To: []string{"r@external.test"}, Subject: "s", Text: "t", IdempotencyKey: "no-identity-key"})
+	want := "you have no sending identity on send.test; add one (e.g. noreply@send.test) under Domains → send.test → Add identity"
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v, want %q", err, want)
+	}
+}

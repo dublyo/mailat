@@ -34,7 +34,7 @@ func (c *DomainController) Create(r *ghttp.Request) {
 		return
 	}
 
-	domain, err := c.domainService.CreateDomain(r.Context(), claims.OrgID, &req)
+	domain, err := c.domainService.CreateDomainBy(r.Context(), claims.OrgID, claims.UserID, &req)
 	if err != nil {
 		response.BadRequest(r, domainOperationMessage(err))
 		return

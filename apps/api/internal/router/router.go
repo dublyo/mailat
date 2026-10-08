@@ -281,6 +281,7 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			protectedGroup.GET("/domains/:uuid", domainCtrl.Get)
 			protectedGroup.GET("/domains/:uuid/dmarc", domainCtrl.DMARC)
 			protectedGroup.GET("/domains/:uuid/receiving", domainCtrl.Receiving)
+			protectedGroup.GET("/domains/:uuid/readiness", domainCtrl.Readiness)
 			protectedGroup.GET("/domains/:uuid/sending-status", domainCtrl.SendingStatus)
 			protectedGroup.GET("/domains/:uuid/ses-status", domainCtrl.CheckSESStatus)
 

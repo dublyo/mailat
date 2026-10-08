@@ -821,7 +821,7 @@ func (s *TransactionalService) chooseSendIdentity(ctx context.Context, orgID, do
 		return 0, 0, "", err
 	}
 	if len(candidates) == 0 {
-		return 0, 0, "", &provider.MailValidationError{Message: "no authorized sending identity for this domain"}
+		return 0, 0, "", &provider.MailValidationError{Message: noSendingIdentityMessage(addr[strings.LastIndex(addr, "@")+1:])}
 	}
 	admin := actor.Admin || actor.UserID == 0
 	for _, c := range candidates {

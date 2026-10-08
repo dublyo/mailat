@@ -32,6 +32,9 @@ type DomainService struct {
 	sendingProvider sendingSetupProvider
 	mxResolver      MXResolver
 	mxCache         mxLookupCache
+	// async runs the one-time ready automation; nil means a new goroutine.
+	// Tests replace it to run the work inline.
+	async func(func())
 }
 
 func NewDomainService(db *sql.DB, cfg *config.Config) *DomainService {
@@ -59,6 +62,12 @@ func NewDomainService(db *sql.DB, cfg *config.Config) *DomainService {
 
 // CreateDomain adds a new domain with verification records
 func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *model.CreateDomainRequest) (*model.Domain, error) {
+	return s.CreateDomainBy(ctx, orgID, 0, req)
+}
+
+// CreateDomainBy adds a domain and records userID (0 for unknown) as the
+// person who added it; they get its noreply identity once it verifies.
+func (s *DomainService) CreateDomainBy(ctx context.Context, orgID, userID int64, req *model.CreateDomainRequest) (*model.Domain, error) {
 	domainName := strings.ToLower(req.Name)
 	if s.cfg.EmailProvider == "ses" && s.emailProvider == nil {
 		return nil, fmt.Errorf("SES is not configured; domain creation is unavailable")
@@ -167,12 +176,12 @@ func (s *DomainService) CreateDomain(ctx context.Context, orgID int64, req *mode
 	domainUUID := uuid.New().String()
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO domains (uuid, org_id, name, verification_token, dkim_selector,
-		                     dkim_public_key, dkim_private_key, ses_dkim_tokens, email_provider, status, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', NOW())
+		                     dkim_public_key, dkim_private_key, ses_dkim_tokens, email_provider, status, updated_at, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', NOW(), NULLIF($10, 0)::integer)
 		RETURNING id, uuid, org_id, name, status, verification_token, dkim_selector,
 		          dkim_public_key, email_provider, ses_dkim_tokens, verified_at, created_at, updated_at
 	`, domainUUID, orgID, domainName, verificationToken, selector,
-		publicKeyB64, string(privateKeyPEM), pq.Array(sesDkimTokens), emailProvider).Scan(
+		publicKeyB64, string(privateKeyPEM), pq.Array(sesDkimTokens), emailProvider, userID).Scan(
 		&domain.ID, &domain.UUID, &domain.OrgID, &domain.Name, &domain.Status,
 		&domain.VerificationToken, &domain.DKIMSelector, &domain.DKIMPublicKey,
 		&domain.EmailProvider, pq.Array(&domain.SESDKIMTokens),
@@ -538,6 +547,11 @@ func (s *DomainService) VerifyDNS(ctx context.Context, domainID int64) (map[stri
 			WHERE id = $1 AND status = 'pending'
 		`, domainID)
 	}
+	// A domain that has just become active and SES verified gets its sending
+	// setup and owner identity once, after these writes are visible.
+	if sesVerified {
+		s.afterDomainCheck(domainID)
+	}
 
 	return results, nil
 }
@@ -795,6 +809,8 @@ func (s *DomainService) CheckSESVerificationStatus(ctx context.Context, domainID
 	`, identity.Verified, domainID)
 	if err != nil {
 		fmt.Printf("Warning: Failed to update SES status: %v\n", err)
+	} else if identity.Verified {
+		s.afterDomainCheck(domainID)
 	}
 
 	return map[string]interface{}{
