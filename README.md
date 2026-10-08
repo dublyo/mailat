@@ -159,7 +159,20 @@ The idempotency key (8–128 characters) is required. For live updates, the brow
 
 ### SDKs
 
-Client libraries live in `packages/`: [JavaScript/TypeScript](packages/sdk-js/README.md) (`@mailat/sdk`), [Python](packages/sdk-python/README.md) (`mailat`) and [Go](packages/sdk-go/README.md) (`github.com/dublyo/mailat-go`). Version 0.2.0 requires your instance's base URL; there is no default host.
+The recommended way to send from your own apps is the published client **[`@dublyo/mailat`](https://www.npmjs.com/package/@dublyo/mailat)** (Node 18+, Bun, Deno, Cloudflare Workers, Next.js, Nuxt; zero dependencies) and its Go module `github.com/dublyo/mailat-npm/go`, both from [dublyo/mailat-npm](https://github.com/dublyo/mailat-npm):
+
+```bash
+npm i @dublyo/mailat
+go get github.com/dublyo/mailat-npm/go
+```
+
+```ts
+import { Mailat } from '@dublyo/mailat'
+const mailat = new Mailat({ url: 'https://mail.example.com', apiKey: process.env.MAILAT_API_KEY, from: 'Support <support@example.com>' })
+await mailat.send({ to: 'customer@example.net', subject: 'Hello', text: 'Hi!' })
+```
+
+They cover sending (single and batch, with safe retries), email status and cancel, templates and webhook verification. The broader in-repo SDKs in `packages/` ([JavaScript/TypeScript](packages/sdk-js/README.md), [Python](packages/sdk-python/README.md), [Go](packages/sdk-go/README.md)) are unpublished and also cover the inbox, domains and webhook management; they require your instance's base URL.
 
 ## Deployment
 
@@ -195,9 +208,9 @@ mailat/
 │   │       └── worker/               # Asynq jobs and send recovery
 │   └── web/                          # Vue 3 front end (nginx image)
 ├── packages/
-│   ├── sdk-js/                       # @mailat/sdk
+│   ├── sdk-js/                       # in-repo JS SDK (unpublished)
 │   ├── sdk-python/                   # mailat
-│   └── sdk-go/                       # github.com/dublyo/mailat-go
+│   └── sdk-go/                       # in-repo Go SDK (unpublished)
 ├── docker/caddy/Caddyfile            # Reverse proxy for docker-compose.prod.yml
 ├── docker-compose.prod.yml           # Production stack (stalwart profile is legacy)
 ├── docker-compose.yml                # Legacy Stalwart server only
