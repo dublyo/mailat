@@ -1,7 +1,7 @@
 # Build stage
 # Base images are pinned by digest; Dependabot (.github/dependabot.yml) bumps them.
 # Keep the Go line in step with the toolchain directive in go.mod.
-FROM golang:1.27.1-alpine3.24@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
+FROM golang:1.27.3-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
 
 WORKDIR /app
 
