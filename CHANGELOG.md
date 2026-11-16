@@ -4,7 +4,7 @@ Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mail
 
 ## Bounce notices out of the Inbox
 
-Not yet deployed; migration `020_file_existing_reports`. No API, DTO or IAM changes (OpenAPI `contractVersion` stays `2026-10-10`).
+Deployed to mail.dublyo.com on 2026-11-16 (c44e3eb, then the cache fix); migration `020_file_existing_reports`. No API, DTO or IAM changes (OpenAPI `contractVersion` stays `2026-10-10`).
 
 ### Added
 
@@ -19,6 +19,7 @@ Not yet deployed; migration `020_file_existing_reports`. No API, DTO or IAM chan
 
 ### Fixed
 
+- The web app's HTML is sent with `Cache-Control: no-cache`, so browsers load a new release right after a deploy instead of running the old bundle from a heuristic cache. Hashed assets stay cached for a year.
 - Health → sending by domain counted display-name senders (`"Name <a@example.com>"`, accepted since 89a348b) as a separate `example.com>` domain.
 
 ## Domain readiness and automatic setup on verification

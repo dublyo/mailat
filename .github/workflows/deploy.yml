@@ -173,6 +173,12 @@ jobs:
           done
           curl -fsS -o /dev/null http://localhost:8080/
           curl -fsS http://localhost:8080/nginx-health
+          # The SPA HTML revalidates so a deploy reaches open browsers; hashed assets stay immutable.
+          for path in / /inbox /domains; do
+            curl -fsSI "http://localhost:8080$path" | grep -qi '^cache-control: no-cache' || { echo "$path must send Cache-Control: no-cache" >&2; exit 1; }
+          done
+          asset=$(curl -fsS http://localhost:8080/ | grep -o 'assets/index-[^"]*\.js' | head -1)
+          curl -fsSI "http://localhost:8080/$asset" | grep -qi '^cache-control:.*immutable' || { echo "hashed assets must stay immutable" >&2; exit 1; }
           headers=$(curl -fsSI http://localhost:8080/subscribe/x)
           echo "$headers"
           echo "$headers" | grep -qi '^content-security-policy:.*frame-ancestors \*'

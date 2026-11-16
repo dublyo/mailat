@@ -109,9 +109,13 @@ server {
         return 200 "OK";
     }
 
-    # SPA routing - fallback to index.html
+    # SPA routing - fallback to index.html. The HTML must revalidate on every
+    # load: it names the hashed bundles, and without Cache-Control browsers
+    # cache it heuristically (from Last-Modified) and keep running the old app
+    # after a deploy. The hashed assets above stay immutable.
     location / {
         try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache" always;
         include /etc/nginx/snippets/spa-headers.conf;
     }
 }
