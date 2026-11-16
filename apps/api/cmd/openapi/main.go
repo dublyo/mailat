@@ -615,7 +615,13 @@ func customize(op object, verb, path string) {
 	}
 	if path == "/inbox/received/counts" {
 		op["description"] = "Counts for the caller's owned mailbox. inboxUnread is the main Inbox unread badge; dmarcReports and dmarcReportsUnread count the dedicated folder. unread retains its global non-trash meaning and includes unread reports."
-		op["parameters"] = []object{{"name": "identityId", "in": "query", "required": false, "schema": object{"type": "integer", "minimum": 0}, "description": "Omit or use zero for the unified mailbox; otherwise count an owned identity."}}
+		op["parameters"] = []object{
+			{"name": "identityId", "in": "query", "required": false, "schema": object{"type": "integer", "minimum": 0}, "description": "Omit or use zero for the unified mailbox; otherwise count an owned identity."},
+			{"name": "domainId", "in": "query", "required": false, "schema": object{"type": "integer", "minimum": 0}, "description": "Omit or use zero for every domain; otherwise count one domain the caller has a readable address on."},
+		}
+	}
+	if path == "/inbox/received/scopes" {
+		op["description"] = "The caller's Inbox split by domain and address, for a mailbox sidebar. total and unread count the Inbox folder only (not archived or trashed). Only domains with an address the caller can read (their own, or a shared mailbox they belong to) are listed; each domainId and identityId is a valid domainId/identityId filter for /inbox/received and /inbox/received/counts. A domain's counts include all of the caller's Inbox mail on it. Other users' mailboxes are never included."
 	}
 	if path == "/inbox/received/move" {
 		op["description"] = "Move owned messages to inbox, archive, spam, trash or dmarc-reports. The report folder is not archived, spam or trash. A manual move back to Inbox is not undone by recurring classification."

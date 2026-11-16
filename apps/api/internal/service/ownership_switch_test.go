@@ -75,11 +75,11 @@ func TestMailboxOwnershipFollowsMailboxOwner(t *testing.T) {
 	if got := listSubjects(t, inbox, 2); len(got) != 1 || got[0] != "shared copy" {
 		t.Fatalf("member list = %v", got)
 	}
-	counts, err := inbox.GetReceivedEmailCounts(ctx, 2, 10)
+	counts, err := inbox.GetReceivedEmailCounts(ctx, 2, 10, 0)
 	if err != nil || counts.Inbox != 1 {
 		t.Fatalf("member counts for shared identity: %+v %v", counts, err)
 	}
-	if _, err = inbox.GetReceivedEmailCounts(ctx, 1, 10); err == nil {
+	if _, err = inbox.GetReceivedEmailCounts(ctx, 1, 10, 0); err == nil {
 		t.Fatal("steward scoped counts to a shared identity it is not a member of")
 	}
 	var attachment string

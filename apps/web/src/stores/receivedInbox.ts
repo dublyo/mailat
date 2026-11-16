@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api, receivedInboxApi, inboxSSE, type ReceivedEmail, type InboxCounts, type InboxListResponse, type InboxListOptions, type MailboxEvent } from '@/lib/api'
 import { applyMailboxEvent } from '@/lib/mailboxSync'
+import type { MailboxScopes } from '@/lib/mailboxScopes'
 
 export const useReceivedInboxStore = defineStore('receivedInbox', () => {
   const emails = ref<ReceivedEmail[]>([])
@@ -17,6 +18,9 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
   const totalPages = ref(0)
   const currentFolder = ref('inbox')
   const currentIdentityId = ref(0)
+  const currentDomainId = ref(0)
+  // The Inbox split by domain and address for the sidebar tree.
+  const scopes = ref<MailboxScopes | null>(null)
   const searchQuery = ref('')
   const selectedEmailUuids = ref<string[]>([])
   const sseConnected = ref(false)
@@ -43,8 +47,15 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
   // Cache is memory-only, short lived, and cleared on account changes and mutations.
   const listCache = new Map<string, { at: number; data: InboxListResponse }>()
   const detailCache = new Map<string, ReceivedEmail>()
-  const countCache = new Map<number, { at: number; data: InboxCounts }>()
-  const countRequests = new Map<number, Promise<InboxCounts>>()
+  // Keyed by "identity|domain"; "0|0" is every inbox.
+  const countCache = new Map<string, { at: number; data: InboxCounts }>()
+  const countRequests = new Map<string, Promise<InboxCounts>>()
+  let scopesSequence = 0
+  let scopesAt = 0
+  let scopesTimer: ReturnType<typeof setTimeout> | undefined
+  let scopesRequest: Promise<void> | null = null
+  // Live events can arrive per message; the tree re-reads at most this often.
+  const SCOPES_MIN_INTERVAL = 5000
   const unreadCount = computed(() => counts.value?.unread ?? 0)
   const hasMore = computed(() => page.value < totalPages.value)
   const allSelected = computed(() => emails.value.length > 0 && emails.value.every(e => selectedEmailUuids.value.includes(e.uuid)))
@@ -62,6 +73,7 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
     listCache.clear()
     detailCache.clear()
     countCache.clear()
+    scopesAt = 0
   }
 
   function applyList(data: InboxListResponse) {
@@ -80,6 +92,7 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
       selectedEmailUuids.value = []
     }
     currentIdentityId.value = identityId
+    currentDomainId.value = identityId ? 0 : filters.domainId || 0
     currentFolder.value = filters.folder || 'inbox'
     searchQuery.value = filters.search || ''
     page.value = filters.page || 1
@@ -169,31 +182,64 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
     detailLoading.value = false
   }
 
-  async function fetchCounts(identityId = currentIdentityId.value, force = false) {
+  async function fetchCounts(identityId = currentIdentityId.value, force = false, domainId = currentDomainId.value) {
     ensureOwner()
     const sequence = ++countSequence
     const token = ownerToken
-    const cached = countCache.get(identityId)
+    const scopeKey = `${identityId}|${identityId ? 0 : domainId}`
+    const cached = countCache.get(scopeKey)
     if (!force && cached && Date.now() - cached.at < 15000) {
       counts.value = cached.data
       return
     }
     // A post-event refresh must not reuse counts requested before that event.
-    let request = force ? undefined : countRequests.get(identityId)
+    let request = force ? undefined : countRequests.get(scopeKey)
     try {
       if (!request) {
-        request = receivedInboxApi.getCounts(identityId)
-        countRequests.set(identityId, request)
+        request = receivedInboxApi.getCounts(identityId, identityId ? 0 : domainId)
+        countRequests.set(scopeKey, request)
       }
       const result = await request
       if (token !== api.getToken() || sequence !== countSequence) return
-      countCache.set(identityId, { at: Date.now(), data: result })
+      countCache.set(scopeKey, { at: Date.now(), data: result })
       counts.value = result
     } catch {
       // A counts failure must not hide usable mail or fabricate zero counts.
     } finally {
-      if (countRequests.get(identityId) === request) countRequests.delete(identityId)
+      if (countRequests.get(scopeKey) === request) countRequests.delete(scopeKey)
     }
+  }
+
+  function fetchScopes(force = false): Promise<void> {
+    ensureOwner()
+    if (!force && scopes.value && Date.now() - scopesAt < 15000) return Promise.resolve()
+    // A page load asks from the sidebar and the inbox at once: share one request.
+    if (!force && scopesRequest) return scopesRequest
+    const sequence = ++scopesSequence
+    const token = ownerToken
+    let request: Promise<void> | null = null
+    request = (async () => {
+      try {
+        const result = await receivedInboxApi.scopes()
+        if (token !== api.getToken() || sequence !== scopesSequence) return
+        scopes.value = result
+        scopesAt = Date.now()
+      } catch {
+        // The tree keeps its last good counts; mail itself is unaffected.
+      } finally {
+        if (scopesRequest === request) scopesRequest = null
+      }
+    })()
+    scopesRequest = request
+    return request
+  }
+  // Live events and actions arrive in bursts; re-read the tree once after
+  // them, and not more than every few seconds. A user action (delay 0) is shown
+  // right away.
+  function refreshScopesSoon(delay = 800) {
+    clearTimeout(scopesTimer)
+    const wait = delay === 0 ? 0 : Math.max(delay, SCOPES_MIN_INTERVAL - (Date.now() - scopesAt))
+    scopesTimer = setTimeout(() => { scopesTimer = undefined; void fetchScopes(true) }, wait)
   }
 
   async function mutate(action: () => Promise<unknown>, uuids: string[], patch?: Partial<ReceivedEmail>, remove = false) {
@@ -213,6 +259,7 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
       }
       if (remove && !emails.value.length && page.value > 1) filters.page = page.value - 1
       await Promise.all([fetchEmails(currentIdentityId.value, { force: true }), fetchCounts(currentIdentityId.value, true)])
+      refreshScopesSoon(0)
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'The change could not be saved. Try again.'
       throw e
@@ -252,6 +299,7 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
     refreshing = true
     await Promise.all([fetchEmails(currentIdentityId.value, { force: true }), fetchCounts(currentIdentityId.value, true)])
     if (generation !== syncGeneration) return
+    refreshScopesSoon()
     refreshing = false
     if (refreshPending) refreshSoon()
   }
@@ -324,9 +372,10 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
       onEmailDeleted: event => { if (active()) applyEvent(event) },
       onCountsUpdate: ({ counts: next }) => {
         if (!active()) return
-        countCache.set(0, { at: Date.now(), data: next })
-        if (currentIdentityId.value === 0) counts.value = next
+        countCache.set('0|0', { at: Date.now(), data: next })
+        if (currentIdentityId.value === 0 && currentDomainId.value === 0) counts.value = next
         else void fetchCounts(currentIdentityId.value, true)
+        refreshScopesSoon()
       },
       onResync: data => {
         if (!active()) return
@@ -363,6 +412,11 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
   function reset() {
     ++listSequence
     ++countSequence
+    ++scopesSequence
+    clearTimeout(scopesTimer)
+    scopesTimer = undefined
+    scopesRequest = null
+    scopesAt = 0
     closeEmail()
     listController?.abort()
     disconnectSSE()
@@ -372,12 +426,14 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
     activeListPromise = null
     emails.value = []
     counts.value = null
+    scopes.value = null
     page.value = 1
     total.value = 0
     totalPages.value = 0
     filters = {}
     currentFolder.value = 'inbox'
     currentIdentityId.value = 0
+    currentDomainId.value = 0
     searchQuery.value = ''
     selectedEmailUuids.value = []
     error.value = null
@@ -387,5 +443,5 @@ export const useReceivedInboxStore = defineStore('receivedInbox', () => {
     cursorRequest = null
     newMailPill.value = false
   }
-  return { emails, currentEmail, counts, isLoading, detailLoading, isMutating, error, page, pageSize, total, totalPages, currentFolder, currentIdentityId, searchQuery, selectedEmailUuids, sseConnected, notice, cursor, newMailPill, unreadCount, hasMore, allSelected, someSelected, fetchEmails, fetchEmail, closeEmail, fetchCounts, markAsRead, starEmails, moveEmails, trashEmails, toggleSelect, selectAll, clearSelection, connectSSE, disconnectSSE, primeCursor, invalidate, reset }
+  return { emails, currentEmail, counts, isLoading, detailLoading, isMutating, error, page, pageSize, total, totalPages, currentFolder, currentIdentityId, currentDomainId, scopes, searchQuery, selectedEmailUuids, sseConnected, notice, cursor, newMailPill, unreadCount, hasMore, allSelected, someSelected, fetchEmails, fetchEmail, closeEmail, fetchCounts, fetchScopes, markAsRead, starEmails, moveEmails, trashEmails, toggleSelect, selectAll, clearSelection, connectSSE, disconnectSSE, primeCursor, invalidate, reset }
 })

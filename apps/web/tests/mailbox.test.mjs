@@ -21,11 +21,12 @@ function deferred() { let resolve, reject; const promise = new Promise((a, b) =>
 function email(uuid, extra = {}) { return { uuid, identityId: 1, folder: 'inbox', isRead: false, isStarred: false, ...extra } }
 function result(emails) { return { emails, total: emails.length, totalPages: emails.length ? 1 : 0 } }
 function fixture(overrides = {}) {
-  const state = { token: 'user-one', calls: [], counts: [], connections: 0, handlers: null, changeCalls: [], connectCursors: [] }
+  const state = { token: 'user-one', calls: [], counts: [], countScopes: [], scopeCalls: 0, connections: 0, handlers: null, changeCalls: [], connectCursors: [] }
   const endpoints = {
     list: async (identity, options) => { state.calls.push([identity, options]); return result([email('a')]) },
     get: async uuid => email(uuid),
-    getCounts: async identity => { state.counts.push(identity); return { inbox: 1, unread: 1 } },
+    getCounts: async (identity, domain = 0) => { state.counts.push(identity); state.countScopes.push([identity, domain]); return { inbox: 1, unread: 1 } },
+    scopes: async () => { state.scopeCalls++; return { total: 1, unread: 1, domains: [] } },
     changes: async cursor => { state.changeCalls.push(cursor); return { changes: [], nextCursor: '10', hasMore: false } },
     mark: async () => {}, star: async () => {}, move: async () => {}, trash: async () => {}, ...overrides,
   }
@@ -414,4 +415,47 @@ test('DMARC folder and All Mail search retain normal filtering and move semantic
   assert.equal(state.calls.at(-1)[1].search, 'example.test')
   await store.moveEmails(['a'], 'dmarc-reports')
   assert.deepEqual(moves.at(-1), [['a'], 'dmarc-reports'])
+})
+
+test('domain counts use their own request and cache entry', async () => {
+  const { store, state } = fixture({ getCounts: async (identity, domain = 0) => { state.countScopes.push([identity, domain]); return { inbox: domain ? 4 : 9, unread: domain ? 2 : 7 } } })
+  await store.fetchEmails(0, { domainId: 7 })
+  assert.equal(store.currentDomainId, 7)
+  await store.fetchCounts(0)
+  assert.deepEqual(state.countScopes.at(-1), [0, 7], 'the selected domain is sent')
+  assert.equal(store.counts.inbox, 4)
+  await store.fetchEmails(0, { domainId: undefined })
+  await store.fetchCounts(0)
+  assert.deepEqual(state.countScopes.at(-1), [0, 0], 'every inbox is not served from the domain cache')
+  assert.equal(store.counts.inbox, 9)
+  await store.fetchEmails(3, { domainId: 7 })
+  assert.equal(store.currentDomainId, 0, 'an address wins over a domain')
+})
+
+test('counts_update on a domain scope refetches that domain instead of showing every inbox', async t => {
+  const { store, state } = realtimeFixture(t)
+  await store.fetchEmails(0, { domainId: 7 }); store.connectSSE()
+  await store.fetchCounts(0)
+  const before = state.countScopes.length
+  state.handlers.onCountsUpdate({ counts: { inbox: 99, inboxUnread: 99, unread: 99 } })
+  await Promise.resolve(); await Promise.resolve()
+  assert.notEqual(store.counts.inbox, 99, 'global counts are not shown for a domain')
+  assert.deepEqual(state.countScopes.slice(before), [[0, 7]])
+})
+
+test('scopes share one request, are throttled after events and cleared on account change', async t => {
+  const { store, state } = realtimeFixture(t)
+  await Promise.all([store.fetchScopes(), store.fetchScopes()])
+  assert.equal(state.scopeCalls, 1, 'sidebar and inbox share the first request')
+  await store.fetchScopes()
+  assert.equal(state.scopeCalls, 1, 'fresh scopes are reused')
+  await store.fetchEmails(0); store.connectSSE()
+  const before = state.scopeCalls
+  for (let i = 0; i < 5; i++) state.handlers.onCountsUpdate({ counts: { inbox: 1, inboxUnread: 1, unread: 1 } })
+  t.mock.timers.tick(1000); await Promise.resolve()
+  assert.equal(state.scopeCalls, before, 'a burst right after a read waits')
+  t.mock.timers.tick(5000); await Promise.resolve(); await Promise.resolve()
+  assert.equal(state.scopeCalls, before + 1, 'then one re-read covers the whole burst')
+  store.reset()
+  assert.equal(store.scopes, null)
 })

@@ -22,6 +22,7 @@ for (const [name, file] of Object.entries({ sidebar: 'components/layout/Sidebar.
     bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external',
     plugins: [{ name: 'folder-ui-fixture', setup(builder) {
       builder.onResolve({ filter: /^@\/lib\/roles$/ }, () => ({ path: `${webRoot}/src/lib/roles.ts` }))
+      builder.onResolve({ filter: /^@\/lib\/mailboxScopes$/ }, () => ({ path: `${webRoot}/src/lib/mailboxScopes.ts` }))
       builder.onResolve({ filter: /^(@\/|vue-router$|lucide-vue-next$)/ }, args => ({ path: args.path, namespace: 'fixture' }))
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ loader: 'js', contents:
         args.path === 'lucide-vue-next' ? icons.map(name => `export const ${name} = () => null`).join(';') :
@@ -70,6 +71,7 @@ function uiFixture(t, view, folder = 'dmarc-reports') {
     emails: [], currentEmail: null, selectedEmailUuids: [], counts: { inboxUnread: 2, dmarcReports: 6, dmarcReportsUnread: 4, unread: 9 }, notice: '', error: null,
     isLoading: false, isMutating: false, detailLoading: false, page: 1, pageSize: 50, total: 0, totalPages: 0,
     fetchEmails: async (id, options) => { calls.push([id, options]) }, fetchCounts: async () => {},
+    scopes: null, fetchScopes: async () => {},
     closeEmail() { mailbox.currentEmail = null }, clearSelection() { mailbox.selectedEmailUuids = [] },
     connectSSE() {}, disconnectSSE() {},
     async fetchEmail() { mailbox.currentEmail = report; return report },
@@ -86,7 +88,8 @@ test('sidebar separates Inbox/report badges and keeps the global All Mail unread
   const f = uiFixture(t, 'sidebar')
   assert.ok(f.button('Inbox 2')); assert.ok(f.button('Reports 4')); assert.ok(f.button('All Mail 9'))
   f.button('Reports 4').props.onClick()
-  assert.equal(f.navigation[0], '/received?folder=dmarc-reports')
+  // On a mail page a folder link is a location that keeps the selected domain or address.
+  assert.deepEqual(f.navigation[0], { path: '/received', query: { folder: 'dmarc-reports' } })
   assert.equal(f.button('Reports 4').props['aria-current'], 'page')
   f.mailbox.counts.dmarcReportsUnread = 5; f.mailbox.counts.unread = 10; await flush()
   assert.ok(f.button('Inbox 2')); assert.ok(f.button('Reports 5')); assert.ok(f.button('All Mail 10'))

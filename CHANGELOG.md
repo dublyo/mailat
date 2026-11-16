@@ -2,6 +2,23 @@
 
 Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web` tagged `sha-<full commit SHA>`; there are no version tags. Upgrade notes, backups and rollback are in [docs/self-hosting-ses.md](docs/self-hosting-ses.md).
 
+## Inboxes by domain and address
+
+Not yet deployed; migration `021_inbox_scope_indexes`. OpenAPI `contractVersion` is `2026-11-16`.
+
+### Added
+
+- **Inboxes** in the sidebar: **All inboxes**, then each domain, then each of your addresses (and shared mailboxes you read), each with its unread count. A domain opens only that domain's mail; an address opens only that address. Shown once you read more than one address. Expanded domains are remembered per browser.
+- `GET /api/v1/inbox/received/scopes` (`email:read`, mailbox users too): the caller's Inbox split by domain and address with `total` and `unread` per scope. Only domains with an address the caller can read are listed, and other users' mailboxes are never included.
+- `GET /api/v1/inbox/received/counts` accepts `domainId`.
+- Each message row shows the address the sender actually wrote to (for catch-all and `+tag` mail, e.g. `support@` arriving at the `info@` catch-all), and the reader shows **Delivered to** when that address is not in To or Cc.
+
+### Changed
+
+- Sent, Archive, Trash and the other folder links keep the selected domain or address, and the toolbar says which one ("Inbox · example.com").
+- Unread badges follow the selected domain or address.
+- The Inbox **Domain** filter lists only domains you can read mail on (picking another one used to show an error).
+
 ## Bounce notices out of the Inbox
 
 Deployed to mail.dublyo.com on 2026-11-16 (c44e3eb, then the cache fix); migration `020_file_existing_reports`. No API, DTO or IAM changes (OpenAPI `contractVersion` stays `2026-10-10`).

@@ -1172,8 +1172,8 @@ func (s *InboxService) validateMailboxScope(ctx context.Context, userID, identit
 	}
 	return nil
 }
-func (s *InboxService) GetReceivedEmailCounts(ctx context.Context, userID, identityID int64) (*model.InboxCountsResponse, error) {
-	if err := s.validateMailboxScope(ctx, userID, identityID, 0); err != nil {
+func (s *InboxService) GetReceivedEmailCounts(ctx context.Context, userID, identityID, domainID int64) (*model.InboxCountsResponse, error) {
+	if err := s.validateMailboxScope(ctx, userID, identityID, domainID); err != nil {
 		return nil, err
 	}
 	result := &model.InboxCountsResponse{Labels: map[string]int{}}
@@ -1188,12 +1188,12 @@ func (s *InboxService) GetReceivedEmailCounts(ctx context.Context, userID, ident
  COUNT(*) FILTER(WHERE folder='inbox' AND NOT is_read AND NOT is_trashed AND NOT is_archived),
  COUNT(*) FILTER(WHERE folder='dmarc-reports' AND NOT is_trashed AND NOT is_spam AND NOT is_archived),
  COUNT(*) FILTER(WHERE folder='dmarc-reports' AND NOT is_read AND NOT is_trashed AND NOT is_spam AND NOT is_archived)
- FROM received_emails re WHERE re.mailbox_owner_id=$1 AND ($2::bigint=0 OR re.identity_id=$2)`, userID, identityID).Scan(&result.Inbox, &result.Unread, &result.Starred, &result.Sent, &result.Drafts, &result.Spam, &result.Trash, &result.InboxUnread, &result.DMARCReports, &result.DMARCReportsUnread)
+ FROM received_emails re WHERE re.mailbox_owner_id=$1 AND ($2::bigint=0 OR re.identity_id=$2) AND ($3::bigint=0 OR re.domain_id=$3)`, userID, identityID, domainID).Scan(&result.Inbox, &result.Unread, &result.Starred, &result.Sent, &result.Drafts, &result.Spam, &result.Trash, &result.InboxUnread, &result.DMARCReports, &result.DMARCReportsUnread)
 
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT label,COUNT(*) FROM received_emails re CROSS JOIN LATERAL unnest(re.labels) AS label WHERE re.mailbox_owner_id=$1 AND ($2::bigint=0 OR re.identity_id=$2) AND NOT re.is_trashed GROUP BY label`, userID, identityID)
+	rows, err := s.db.QueryContext(ctx, `SELECT label,COUNT(*) FROM received_emails re CROSS JOIN LATERAL unnest(re.labels) AS label WHERE re.mailbox_owner_id=$1 AND ($2::bigint=0 OR re.identity_id=$2) AND ($3::bigint=0 OR re.domain_id=$3) AND NOT re.is_trashed GROUP BY label`, userID, identityID, domainID)
 	if err != nil {
 		return nil, err
 	}
@@ -1207,6 +1207,72 @@ func (s *InboxService) GetReceivedEmailCounts(ctx context.Context, userID, ident
 		result.Labels[label] = count
 	}
 	return result, rows.Err()
+}
+
+// GetMailboxScopes splits the caller's unified Inbox by domain and address for
+// the sidebar. Only domains with an address the caller can read are listed, so
+// every listed domain and address is a valid list/counts filter. Domain counts
+// include all of the caller's Inbox mail on that domain (also mail kept from an
+// address they no longer hold), matching the domainId list filter.
+func (s *InboxService) GetMailboxScopes(ctx context.Context, userID int64) (*model.MailboxScopesResponse, error) {
+	out := &model.MailboxScopesResponse{Domains: []model.MailboxScopeDomain{}}
+	// One pass over the caller's Inbox rows only: the WHERE matches
+	// received_emails_owner_folder_time_idx, so Sent, Archive, Trash and Spam
+	// are never read. Totals per address and per domain are summed here.
+	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(domain_id,0), COALESCE(identity_id,0), COUNT(*), COUNT(*) FILTER(WHERE NOT is_read)
+ FROM received_emails WHERE mailbox_owner_id=$1 AND folder='inbox' AND NOT is_trashed AND NOT is_archived
+ GROUP BY 1, 2`, userID)
+	if err != nil {
+		return nil, err
+	}
+	domainCounts := map[int64][2]int{}
+	identityCounts := map[int64][2]int{}
+	for rows.Next() {
+		var domainID, identityID int64
+		var total, unread int
+		if err = rows.Scan(&domainID, &identityID, &total, &unread); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out.Total += total
+		out.Unread += unread
+		d := domainCounts[domainID]
+		domainCounts[domainID] = [2]int{d[0] + total, d[1] + unread}
+		i := identityCounts[identityID]
+		identityCounts[identityID] = [2]int{i[0] + total, i[1] + unread}
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	rows, err = s.db.QueryContext(ctx, `SELECT d.id, d.name, i.id, i.uuid, i.email, COALESCE(i.display_name,''), COALESCE(i.color,''), i.kind, i.is_catch_all
+ FROM identities i JOIN domains d ON d.id=i.domain_id
+ WHERE `+identityAccessSQL("i", "$1", identityCanRead)+`
+ ORDER BY lower(d.name), d.id, i.is_catch_all DESC, lower(i.email), i.id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	index := map[int64]int{}
+	for rows.Next() {
+		var domainID int64
+		var name string
+		var id model.MailboxScopeIdentity
+		if err = rows.Scan(&domainID, &name, &id.IdentityID, &id.UUID, &id.Email, &id.DisplayName, &id.Color, &id.Kind, &id.IsCatchAll); err != nil {
+			return nil, err
+		}
+		c := identityCounts[id.IdentityID]
+		id.Total, id.Unread = c[0], c[1]
+		at, ok := index[domainID]
+		if !ok {
+			dc := domainCounts[domainID]
+			out.Domains = append(out.Domains, model.MailboxScopeDomain{DomainID: domainID, Name: name, Total: dc[0], Unread: dc[1], Identities: []model.MailboxScopeIdentity{}})
+			at = len(out.Domains) - 1
+			index[domainID] = at
+		}
+		out.Domains[at].Identities = append(out.Domains[at].Identities, id)
+	}
+	return out, rows.Err()
 }
 
 // receivedListColumns is the mailbox list projection; scanReceivedListRow reads it.

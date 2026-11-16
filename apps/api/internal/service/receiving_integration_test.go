@@ -96,7 +96,7 @@ func TestReceivedLifecycleIntegration(t *testing.T) {
 	if _, err = inbox.ListReceivedEmails(ctx, 1, &model.InboxListRequest{IdentityID: 2}); err == nil {
 		t.Fatal("cross-user identity count allowed")
 	}
-	if _, err = inbox.GetReceivedEmailCounts(ctx, 1, 2); err == nil {
+	if _, err = inbox.GetReceivedEmailCounts(ctx, 1, 2, 0); err == nil {
 		t.Fatal("cross-user count allowed")
 	}
 	own := list.Emails[0].UUID

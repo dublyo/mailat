@@ -43,7 +43,7 @@ const (
 type mailboxFeed interface {
 	Changes(ctx context.Context, userID int64, cursor string, limit int) (*service.MailboxChanges, error)
 	MailboxSummaries(ctx context.Context, userID int64, uuids []string) (map[string]model.ReceivedEmail, error)
-	GetReceivedEmailCounts(ctx context.Context, userID, identityID int64) (*model.InboxCountsResponse, error)
+	GetReceivedEmailCounts(ctx context.Context, userID, identityID, domainID int64) (*model.InboxCountsResponse, error)
 }
 
 // mailboxWakeups delivers change hints; *service.MailboxNotifier implements it.
@@ -332,7 +332,7 @@ func (s *sseStream) emit(id, event string, data any) error {
 }
 
 func (s *sseStream) emitCounts() error {
-	counts, err := s.feed.GetReceivedEmailCounts(s.ctx, s.userID, 0)
+	counts, err := s.feed.GetReceivedEmailCounts(s.ctx, s.userID, 0, 0)
 	if err != nil {
 		return nil // the next change retries
 	}

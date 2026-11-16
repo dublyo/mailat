@@ -222,13 +222,39 @@ func (c *ReceivedInboxController) GetCounts(r *ghttp.Request) {
 		}
 	}
 
-	counts, err := c.inboxService.GetReceivedEmailCounts(r.Context(), claims.UserID, identityID)
+	var domainID int64
+	if domainIDStr := r.Get("domainId").String(); domainIDStr != "" {
+		var err error
+		domainID, err = strconv.ParseInt(domainIDStr, 10, 64)
+		if err != nil {
+			response.BadRequest(r, "Invalid domain ID")
+			return
+		}
+	}
+
+	counts, err := c.inboxService.GetReceivedEmailCounts(r.Context(), claims.UserID, identityID, domainID)
 	if err != nil {
 		response.BadRequest(r, err.Error())
 		return
 	}
 
 	response.Success(r, counts)
+}
+
+// GetScopes returns the caller's Inbox split by domain and address
+// GET /api/v1/inbox/received/scopes
+func (c *ReceivedInboxController) GetScopes(r *ghttp.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+	scopes, err := c.inboxService.GetMailboxScopes(r.Context(), claims.UserID)
+	if err != nil {
+		response.InternalError(r, "Mailbox scopes are unavailable")
+		return
+	}
+	response.Success(r, scopes)
 }
 
 // SetupReceiving sets up email receiving for a domain

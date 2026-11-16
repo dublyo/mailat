@@ -1,3 +1,4 @@
+import type { MailboxScopes } from './mailboxScopes'
 import axios, { type AxiosInstance, type AxiosResponse } from 'axios'
 
 const API_BASE = import.meta.env.VITE_API_URL || ''
@@ -1565,8 +1566,16 @@ export const receivedInboxApi = {
     api.post('/api/v1/inbox/received/trash', { emailUuids, permanent }),
 
   // Get folder counts (identityId = 0 for all identities)
-  getCounts: (identityId: number) =>
-    api.get<InboxCounts>(`/api/v1/inbox/received/counts${identityId > 0 ? `?identityId=${identityId}` : ''}`),
+  getCounts: (identityId: number, domainId = 0) => {
+    const params = new URLSearchParams()
+    if (identityId > 0) params.set('identityId', String(identityId))
+    else if (domainId > 0) params.set('domainId', String(domainId))
+    const query = params.toString()
+    return api.get<InboxCounts>(`/api/v1/inbox/received/counts${query ? `?${query}` : ''}`)
+  },
+
+  // The Inbox split by domain and address, with unread counts (sidebar tree)
+  scopes: () => api.get<MailboxScopes>('/api/v1/inbox/received/scopes'),
 
   // Setup email receiving for a domain
   setupReceiving: (domainId: number) =>

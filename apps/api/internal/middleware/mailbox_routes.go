@@ -28,7 +28,7 @@ func init() {
 	add("DELETE", "/auth/sessions/:uuid /security/sessions/:uuid /security/webauthn/credentials/:uuid")
 	add("PUT", "/settings")
 	// Own mailbox: received mail, labels, filters, trusted senders.
-	add("GET", "/inbox/received /inbox/received/counts /inbox/received/:uuid /inbox/received/:uuid/attachments/:attachmentUuid /inbox/changes")
+	add("GET", "/inbox/received /inbox/received/counts /inbox/received/scopes /inbox/received/:uuid /inbox/received/:uuid/attachments/:attachmentUuid /inbox/changes")
 	add("GET", "/inbox/labels /labels /inbox/filters /inbox/filters/:uuid /inbox/trusted-senders")
 	add("POST", "/inbox/received/mark /inbox/received/star /inbox/received/move /inbox/received/trash /inbox/received/labels")
 	add("POST", "/inbox/labels /labels /inbox/filters /inbox/filters/:uuid/test /inbox/trusted-senders")

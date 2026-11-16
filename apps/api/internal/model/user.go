@@ -1320,6 +1320,37 @@ type InboxCountsResponse struct {
 	Labels             map[string]int `json:"labels,omitempty"`
 }
 
+// MailboxScopesResponse splits the caller's unified Inbox by domain and by
+// address. Counts cover the Inbox folder only (not archived or trashed).
+type MailboxScopesResponse struct {
+	Total   int                  `json:"total"`
+	Unread  int                  `json:"unread"`
+	Domains []MailboxScopeDomain `json:"domains"`
+}
+
+// MailboxScopeDomain is one domain the caller can read mail on.
+type MailboxScopeDomain struct {
+	DomainID   int64                  `json:"domainId"`
+	Name       string                 `json:"name"`
+	Total      int                    `json:"total"`
+	Unread     int                    `json:"unread"`
+	Identities []MailboxScopeIdentity `json:"identities"`
+}
+
+// MailboxScopeIdentity is one readable address: the caller's own or a shared
+// mailbox they belong to.
+type MailboxScopeIdentity struct {
+	IdentityID  int64  `json:"identityId"`
+	UUID        string `json:"uuid"`
+	Email       string `json:"email"`
+	DisplayName string `json:"displayName"`
+	Color       string `json:"color"`
+	Kind        string `json:"kind"`
+	IsCatchAll  bool   `json:"isCatchAll"`
+	Total       int    `json:"total"`
+	Unread      int    `json:"unread"`
+}
+
 // MarkEmailsRequest for marking emails as read/unread
 type MarkEmailsRequest struct {
 	EmailUUIDs []string `json:"emailUuids" v:"required"`

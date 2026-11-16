@@ -246,6 +246,7 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 			// Received Inbox
 			protectedGroup.GET("/inbox/received", receivedInboxCtrl.ListEmails)
 			protectedGroup.GET("/inbox/received/counts", receivedInboxCtrl.GetCounts)
+			protectedGroup.GET("/inbox/received/scopes", receivedInboxCtrl.GetScopes)
 			protectedGroup.GET("/inbox/received/:uuid", receivedInboxCtrl.GetEmail)
 			protectedGroup.GET("/inbox/received/:uuid/attachments/:attachmentUuid", receivedInboxCtrl.DownloadAttachment)
 			protectedGroup.POST("/inbox/received/mark", receivedInboxCtrl.MarkEmails)

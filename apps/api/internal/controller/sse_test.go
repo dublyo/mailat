@@ -57,7 +57,7 @@ func (f *fakeFeed) MailboxSummaries(_ context.Context, _ int64, uuids []string) 
 	return out, nil
 }
 
-func (f *fakeFeed) GetReceivedEmailCounts(context.Context, int64, int64) (*model.InboxCountsResponse, error) {
+func (f *fakeFeed) GetReceivedEmailCounts(context.Context, int64, int64, int64) (*model.InboxCountsResponse, error) {
 	return &model.InboxCountsResponse{Inbox: 1}, nil
 }
 

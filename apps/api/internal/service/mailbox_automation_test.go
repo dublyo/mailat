@@ -49,7 +49,7 @@ func TestMailboxLabelsAndReadContract(t *testing.T) {
 	if err = s.LabelReceivedEmails(ctx, 1, []string{id}, []string{label.Name}, nil); err != nil {
 		t.Fatal(err)
 	}
-	counts, err := s.GetReceivedEmailCounts(ctx, 1, 0)
+	counts, err := s.GetReceivedEmailCounts(ctx, 1, 0, 0)
 	if err != nil || counts.Labels[label.Name] != 1 {
 		t.Fatalf("labels not counted: %+v %v", counts, err)
 	}

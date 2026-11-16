@@ -11,6 +11,7 @@ import { api, trustedSendersApi, type ReceivedEmail, type Email, type InboxListO
 import { renderMessageDocument } from '@/lib/mailHtml'
 import { useAuthStore } from '@/stores/auth'
 import { isMailboxUser, inboxDomainOptions } from '@/lib/roles'
+import { deliveredTo, scopeLabel } from '@/lib/mailboxScopes'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,7 +19,10 @@ const mailbox = useReceivedInboxStore()
 const composer = useInboxStore()
 const domains = useDomainsStore()
 const authStore = useAuthStore()
-const domainOptions = computed(() => inboxDomainOptions(authStore.user, domains.domains, domains.identities))
+// Only domains the user can read mail on: picking any other domain would fail.
+const domainOptions = computed(() => mailbox.scopes
+  ? mailbox.scopes.domains.map(d => ({ id: String(d.domainId), name: d.name }))
+  : inboxDomainOptions(authStore.user, domains.domains, domains.identities))
 const settingsStore = useSettingsStore()
 const showFilters = ref(false)
 const selectedUuid = ref('')
@@ -32,12 +36,29 @@ const filterForm = ref({ identity: '', domain: '', read: '', starred: '', attach
 const folder = computed(() => String(route.query.folder || route.params.folder || 'inbox'))
 const folderTitle = computed(() => ({ 'dmarc-reports': 'Reports', all: 'All Mail', inbox: 'Inbox', starred: 'Starred', sent: 'Sent', drafts: 'Drafts', outbox: 'Outbox', archive: 'Archive', spam: 'Spam', trash: 'Trash' })[folder.value] || folder.value)
 const identityId = computed(() => Number(route.query.identity) || 0)
+const domainId = computed(() => identityId.value ? 0 : Number(route.query.domain) || 0)
+// "Inbox · ketabaziz.com" or "Inbox · info@ketabaziz.com" when a scope is open.
+const scopeName = computed(() => scopeLabel(mailbox.scopes, route.query))
+// A catch-all gets mail for many addresses, so its rows keep showing which one.
+const scopedCatchAll = computed(() => !!identityId.value && !!mailbox.scopes?.domains.some(d => d.identities.some(i => i.identityId === identityId.value && i.isCatchAll)))
+const showAddressChip = computed(() => identityId.value === 0 || scopedCatchAll.value)
+const outboundFolder = computed(() => ['sent', 'drafts', 'outbox'].includes(folder.value))
+const rowAddress = (email: ReceivedEmail) => outboundFolder.value || email.direction === 'outbound' ? email.identityEmail || '' : deliveredTo(email)
+// Shown in the reader when the address written to is not in the To/Cc header (Bcc, catch-all, +tag).
+const currentDeliveredTo = computed(() => {
+  const email = current.value
+  if (!email || email.direction === 'outbound') return ''
+  const address = deliveredTo(email)
+  const visible = [...(email.toEmails || []), ...(email.ccEmails || [])].map(a => a.toLowerCase())
+  return address && !visible.includes(address.toLowerCase()) ? address : ''
+})
 const current = computed(() => mailbox.currentEmail)
 const selectedIndex = computed(() => mailbox.emails.findIndex(e => e.uuid === selectedUuid.value))
 const actionIds = computed(() => selectedUuid.value ? [selectedUuid.value] : mailbox.selectedEmailUuids)
 const allActionStarred = computed(() => actionIds.value.length > 0 && actionIds.value.every(id => (current.value?.uuid === id ? current.value : mailbox.emails.find(e => e.uuid === id))?.isStarred))
 const queryOptions = computed<InboxListOptions>(() => ({
-  folder: folder.value, domainId: Number(route.query.domain) || undefined,
+  // An address wins over a domain everywhere (list, counts, title, links).
+  folder: folder.value, domainId: domainId.value || undefined,
   search: String(route.query.q || ''), sender: String(route.query.sender || ''),
   isRead: route.query.read === 'read' ? true : route.query.read === 'unread' ? false : undefined,
   isStarred: route.query.starred === 'true' ? true : undefined,
@@ -45,7 +66,7 @@ const queryOptions = computed<InboxListOptions>(() => ({
   dateFrom: String(route.query.after || ''), dateTo: String(route.query.before || ''),
   page: Number(route.query.page) || 1,
 }))
-const chips = computed(() => Object.entries(route.query).filter(([key, value]) => ['q', 'identity', 'domain', 'read', 'starred', 'attachments', 'sender', 'after', 'before'].includes(key) && value).map(([key, value]) => ({ key, label: key === 'identity' ? domains.identities.find(i => String(i.id) === value)?.email || String(value) : key === 'domain' ? domainOptions.value.find(d => d.id === value)?.name || String(value) : key === 'q' ? `Search: ${value}` : key === 'starred' ? 'Starred' : key === 'attachments' ? (value === 'true' ? 'With attachments' : 'Without attachments') : `${key}: ${value}` })))
+const chips = computed(() => Object.entries(route.query).filter(([key, value]) => ['q', 'identity', 'domain', 'read', 'starred', 'attachments', 'sender', 'after', 'before'].includes(key) && value).map(([key, value]) => ({ key, label: key === 'identity' ? domains.identities.find(i => String(i.id) === value)?.email || scopeLabel(mailbox.scopes, { identity: value }) || 'Address' : key === 'domain' ? domainOptions.value.find(d => d.id === value)?.name || 'Domain' : key === 'q' ? `Search: ${value}` : key === 'starred' ? 'Starred' : key === 'attachments' ? (value === 'true' ? 'With attachments' : 'Without attachments') : `${key}: ${value}` })))
 const range = computed(() => mailbox.total ? `${(mailbox.page - 1) * mailbox.pageSize + 1}–${Math.min(mailbox.page * mailbox.pageSize, mailbox.total)} of ${mailbox.total}` : '0 messages')
 const remoteAllowed = computed(() => !!current.value && (current.value.remoteImages === 'allowed' || revealed.value.has(current.value.uuid)))
 const rendered = computed(() => {
@@ -110,7 +131,7 @@ async function downloadAttachment(attachment: ReceivedEmailAttachment) {
 }
 
 async function load(force = false) {
-  await Promise.all([mailbox.fetchEmails(identityId.value, { ...queryOptions.value, force }), mailbox.fetchCounts(identityId.value, force)])
+  await Promise.all([mailbox.fetchEmails(identityId.value, { ...queryOptions.value, force }), mailbox.fetchCounts(identityId.value, force, domainId.value)])
 }
 // ?message=<uuid> (a push notification click) opens that message once; the
 // parameter is dropped so later navigation does not reopen it.
@@ -146,6 +167,7 @@ onMounted(() => {
   // Mailbox users cannot list domains; their filter uses identity domains.
   void Promise.all([domains.fetchIdentities(), isMailboxUser(authStore.user) ? null : domains.fetchDomains()])
   mailbox.connectSSE()
+  void mailbox.fetchScopes()
 })
 onUnmounted(() => { ++inlineSequence; Object.values(inlineUrls.value).forEach(URL.revokeObjectURL); mailbox.disconnectSSE(); mailbox.closeEmail() })
 
@@ -223,7 +245,7 @@ function formatDate(value: string, full = false) {
       <div class="flex flex-wrap items-center gap-2 px-3 py-2 border-b bg-white">
         <button v-if="selectedUuid" @click="closeEmail" class="mail-action" title="Back to message list"><ArrowLeft class="w-5 h-5" /></button>
         <label v-else class="flex items-center gap-2 p-2 text-xs"><input type="checkbox" :checked="mailbox.allSelected" :indeterminate="mailbox.someSelected" @change="mailbox.selectAll" aria-label="Select all messages on this page" class="w-4 h-4" /><span v-if="mailbox.selectedEmailUuids.length">{{ mailbox.selectedEmailUuids.length }} selected</span></label>
-        <h1 v-if="!actionIds.length" class="text-base font-medium capitalize mr-1">{{ folderTitle }}</h1>
+        <h1 v-if="!actionIds.length" class="text-base font-medium mr-1 min-w-0 truncate"><span class="capitalize">{{ folderTitle }}</span><span v-if="scopeName" class="text-gray-500 font-normal"> · {{ scopeName }}</span></h1>
         <div v-if="actionIds.length" class="flex items-center gap-1 flex-wrap">
           <button v-if="!['inbox', 'sent', 'drafts', 'outbox'].includes(folder)" @click="perform('restore')" :disabled="mailbox.isMutating" class="mail-action" title="Move to Inbox" aria-label="Move to Inbox"><Inbox class="w-4 h-4" /></button>
           <button v-if="!['archive', 'drafts', 'outbox'].includes(folder)" @click="perform('archive')" :disabled="mailbox.isMutating" class="mail-action" title="Archive"><Archive class="w-4 h-4" /></button>
@@ -267,7 +289,7 @@ function formatDate(value: string, full = false) {
               <button @click="openEmail(email)" class="flex-1 min-w-0 text-left focus-visible:outline-blue-500 rounded">
                 <div class="flex items-center gap-2 leading-5">
                   <span :class="['truncate flex-1 text-sm', !email.isRead ? 'font-semibold' : 'text-gray-600']">{{ ['sent', 'drafts', 'outbox'].includes(folder) ? `To: ${(email.toEmails || []).join(', ') || '(no recipients)'}` : email.fromName || email.fromEmail }}</span>
-                  <span v-if="identityId === 0" class="hidden sm:inline-flex items-center gap-1 max-w-[30%] text-[10px] text-gray-500 rounded bg-gray-100 px-1.5 leading-4" :title="email.identityEmail"><span class="w-1.5 h-1.5 rounded-full shrink-0" :style="{ backgroundColor: email.identityColor || '#9ca3af' }" /><span class="truncate">{{ email.identityEmail }}</span></span>
+                  <span v-if="showAddressChip && rowAddress(email)" class="hidden sm:inline-flex items-center gap-1 max-w-[30%] text-[10px] text-gray-500 rounded bg-gray-100 px-1.5 leading-4" :title="rowAddress(email) === email.identityEmail ? email.identityEmail : `Sent to ${rowAddress(email)} (delivered to ${email.identityEmail})`"><span class="w-1.5 h-1.5 rounded-full shrink-0" :style="{ backgroundColor: email.identityColor || '#9ca3af' }" /><span class="truncate">{{ rowAddress(email) }}</span></span>
                   <span class="text-xs text-gray-500 shrink-0">{{ formatDate(email.receivedAt || email.createdAt) }}</span>
                 </div>
                 <div class="flex gap-2 items-center mt-0.5 leading-5 min-w-0">
@@ -278,7 +300,7 @@ function formatDate(value: string, full = false) {
                   <span v-if="!selectedUuid" class="hidden sm:block text-xs text-gray-500 truncate min-w-0">— {{ email.snippet || (email.hasAttachments ? 'Content is in the attachment.' : '') }}</span>
                 </div>
                 <p class="sm:hidden text-xs text-gray-500 truncate mt-1">{{ email.snippet || (email.hasAttachments ? 'Content is in the attachment.' : '') }}</p>
-                <p v-if="identityId === 0" class="sm:hidden text-[10px] text-gray-400 truncate mt-1"><span class="inline-block w-1.5 h-1.5 rounded-full mr-1" :style="{ backgroundColor: email.identityColor || '#9ca3af' }" />{{ email.identityEmail }}</p>
+                <p v-if="showAddressChip && rowAddress(email)" class="sm:hidden text-[10px] text-gray-400 truncate mt-1"><span class="inline-block w-1.5 h-1.5 rounded-full mr-1" :style="{ backgroundColor: email.identityColor || '#9ca3af' }" />{{ rowAddress(email) }}</p>
               </button>
             </li>
           </ul>
@@ -286,7 +308,7 @@ function formatDate(value: string, full = false) {
         <article v-if="selectedUuid" class="flex-1 min-w-0 flex flex-col overflow-hidden">
           <div v-if="mailbox.detailLoading && !current" role="status" class="p-6 animate-pulse space-y-4"><div class="h-7 w-2/3 bg-gray-100 rounded" /><div class="h-40 bg-gray-100 rounded" /></div>
           <template v-else-if="current">
-            <header class="px-4 sm:px-6 py-4 border-b break-words"><h2 class="text-xl mb-3">{{ current.subject || '(no subject)' }}</h2><div class="flex flex-wrap items-start justify-between gap-2 text-sm"><div class="min-w-0"><p class="font-medium break-all">{{ current.fromName }} &lt;{{ current.fromEmail }}&gt;</p><p class="text-gray-500 break-all mt-1">To: {{ current.toEmails?.join(', ') }}</p><p v-if="current.ccEmails?.length" class="text-gray-500 break-all">Cc: {{ current.ccEmails.join(', ') }}</p><p v-if="current.replyTo" class="text-gray-500 break-all">Reply to: {{ current.replyTo }}</p></div><time class="text-xs text-gray-500">{{ formatDate(current.receivedAt || current.createdAt, true) }}</time></div><p v-if="current.sendStatus !== 'received' && (current.sendStatus || current.deliveryStatus)" class="text-xs text-gray-500 mt-3">Send: {{ current.sendStatus || 'accepted' }}<span v-if="current.deliveryStatus"> · Delivery: {{ current.deliveryStatus }}</span></p></header>
+            <header class="px-4 sm:px-6 py-4 border-b break-words"><h2 class="text-xl mb-3">{{ current.subject || '(no subject)' }}</h2><div class="flex flex-wrap items-start justify-between gap-2 text-sm"><div class="min-w-0"><p class="font-medium break-all">{{ current.fromName }} &lt;{{ current.fromEmail }}&gt;</p><p class="text-gray-500 break-all mt-1">To: {{ current.toEmails?.join(', ') }}</p><p v-if="current.ccEmails?.length" class="text-gray-500 break-all">Cc: {{ current.ccEmails.join(', ') }}</p><p v-if="currentDeliveredTo" class="text-gray-500 break-all">Delivered to: {{ currentDeliveredTo }}</p><p v-if="current.replyTo" class="text-gray-500 break-all">Reply to: {{ current.replyTo }}</p></div><time class="text-xs text-gray-500">{{ formatDate(current.receivedAt || current.createdAt, true) }}</time></div><p v-if="current.sendStatus !== 'received' && (current.sendStatus || current.deliveryStatus)" class="text-xs text-gray-500 mt-3">Send: {{ current.sendStatus || 'accepted' }}<span v-if="current.deliveryStatus"> · Delivery: {{ current.deliveryStatus }}</span></p></header>
             <div class="flex-1 min-h-0 overflow-y-auto">
               <div v-if="showRemoteBanner" role="status" class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 sm:px-6 py-2 text-sm bg-gray-50 border-b">
                 <span class="flex items-center gap-2 text-gray-700"><ImageOff class="w-4 h-4 shrink-0" />Remote images are hidden to protect your privacy.</span>
