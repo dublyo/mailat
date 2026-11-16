@@ -18,7 +18,7 @@ export const FILTER_OPERATORS: Array<{ value: FilterCondition['operator']; label
   { value: 'regex', label: 'matches regex' },
 ]
 
-const FOLDER_LABELS: Record<string, string> = { inbox: 'Inbox', archive: 'Archive', spam: 'Spam', trash: 'Trash', 'dmarc-reports': 'DMARC Reports' }
+const FOLDER_LABELS: Record<string, string> = { inbox: 'Inbox', archive: 'Archive', spam: 'Spam', trash: 'Trash', 'dmarc-reports': 'Reports' }
 
 // A blocked-sender value is an exact address or an @domain (subdomains are
 // not covered). Mirrors the server's validation for instant feedback.

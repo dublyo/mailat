@@ -56,3 +56,25 @@ func TestHealthSummaryRecordedCountsAndJSONContract(t *testing.T) {
 		}
 	}
 }
+
+// A display-name sender ("Name <a@example.com>") counts under its real domain,
+// never as a separate "example.com>" entry.
+func TestReputationByDomainIgnoresDisplayNames(t *testing.T) {
+	db := testutil.Database(t)
+	seedReceivedFixture(t, db)
+	_, err := db.Exec(`INSERT INTO transactional_emails(org_id,message_id,from_address,to_addresses,subject,status,updated_at) VALUES
+	 (1,'<h1@one.test>','Ketab Aziz <info@One.test>','b@elsewhere.test','s','sent',now()),
+	 (1,'<h2@one.test>','info@one.test','b@elsewhere.test','s','delivered',now()),
+	 (1,'<h3@one.test>','"Support, Team" <help@one.test> ','b@elsewhere.test','s','bounced',now())`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := NewHealthService(db, &config.Config{}).GetReputationMetrics(context.Background(), 1, "30days")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := metrics.ByDomain["one.test"]
+	if !ok || got.Sent != 3 || got.Delivered != 1 || got.Bounced != 1 || len(metrics.ByDomain) != 1 {
+		t.Fatalf("display-name senders split the domain: %+v", metrics.ByDomain)
+	}
+}

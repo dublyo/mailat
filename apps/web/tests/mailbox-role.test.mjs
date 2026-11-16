@@ -139,7 +139,8 @@ test('sidebar items per role', async () => {
   const items = [...source.matchAll(/\{ id: '([\w-]+)'[^}]*?audience: '(\w+)' \}/g)].map(m => ({ id: m[1], audience: m[2] }))
   assert.ok(items.length === 15, 'every sidebar item declares an audience')
   const ids = user => roles.visibleFor(items, user).map(i => i.id)
-  assert.deepEqual(ids(mailbox), ['inbox', 'all', 'starred', 'sent', 'drafts', 'outbox'])
+  // Mailbox users get bounce notices for mail they send, filed under Reports.
+  assert.deepEqual(ids(mailbox), ['inbox', 'dmarc-reports', 'all', 'starred', 'sent', 'drafts', 'outbox'])
   assert.ok(ids(member).includes('dmarc-reports') && ids(member).includes('campaigns') && !ids(member).includes('health'))
   assert.ok(ids(admin).includes('health') && ids(admin).includes('mailboxes') && ids(owner).includes('mailboxes'))
   assert.ok(!ids(member).includes('mailboxes') && !ids(mailbox).includes('mailboxes'))

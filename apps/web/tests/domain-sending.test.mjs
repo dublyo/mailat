@@ -53,8 +53,9 @@ function fixture(t, canSetup = true) {
   } }
   const module = { exports: {} }; new Function('require', 'module', 'exports', output.outputFiles[0].text)(require, module, module.exports)
   const props = ref({ domainUuid: 'first-domain', domainName: 'example.test', canSetup })
-  const root = node('root'); const app = renderer.createApp({ setup: () => () => h(module.exports.default, props.value) }); app.mount(root); t.after(() => app.unmount())
-  return { root, calls, state, props, button: name => all(root).find(n => n.type === 'button' && n.props['aria-label'] === name) }
+  const ready = []
+  const root = node('root'); const app = renderer.createApp({ setup: () => () => h(module.exports.default, { ...props.value, onReady: value => ready.push(value) }) }); app.mount(root); t.after(() => app.unmount())
+  return { root, calls, state, props, ready, button: name => all(root).find(n => n.type === 'button' && n.props['aria-label'] === name) }
 }
 test('sending status shows storage-only HTTP 200 progress without claiming feedback ready', async t => {
   const f = fixture(t); assert.match(text(f.root), /Checking sending resources/)
@@ -91,4 +92,13 @@ test('older domain and account responses cannot expose stale readiness', async t
   f.button('Refresh sending resources for second.test').props.onClick(); f.state.token = 'other-account'
   f.calls[2].resolve(stateResult({ domainUuid: 'second-domain', reason: 'Old account data' })); await flush()
   assert.doesNotMatch(text(f.root), /Old account data/)
+})
+
+test('reports bounce tracking from delivery feedback alone, and only when setup is possible', async t => {
+  const f = fixture(t); await flush()
+  f.calls[0].resolve(stateResult({ storageReady: false, feedbackConfigured: true, subscriptionStatus: 'active', feedbackReady: true })); await flush()
+  assert.deepEqual(f.ready, [true], 'storage is not part of bounce tracking')
+  const g = fixture(t, false); await flush()
+  g.calls[0].resolve(stateResult()); await flush()
+  assert.deepEqual(g.ready, [], 'an unverified domain never reports bounce tracking off')
 })

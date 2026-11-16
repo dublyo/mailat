@@ -84,17 +84,17 @@ function uiFixture(t, view, folder = 'dmarc-reports') {
 
 test('sidebar separates Inbox/report badges and keeps the global All Mail unread count', async t => {
   const f = uiFixture(t, 'sidebar')
-  assert.ok(f.button('Inbox 2')); assert.ok(f.button('DMARC Reports 4')); assert.ok(f.button('All Mail 9'))
-  f.button('DMARC Reports 4').props.onClick()
+  assert.ok(f.button('Inbox 2')); assert.ok(f.button('Reports 4')); assert.ok(f.button('All Mail 9'))
+  f.button('Reports 4').props.onClick()
   assert.equal(f.navigation[0], '/received?folder=dmarc-reports')
-  assert.equal(f.button('DMARC Reports 4').props['aria-current'], 'page')
+  assert.equal(f.button('Reports 4').props['aria-current'], 'page')
   f.mailbox.counts.dmarcReportsUnread = 5; f.mailbox.counts.unread = 10; await flush()
-  assert.ok(f.button('Inbox 2')); assert.ok(f.button('DMARC Reports 5')); assert.ok(f.button('All Mail 10'))
+  assert.ok(f.button('Inbox 2')); assert.ok(f.button('Reports 5')); assert.ok(f.button('All Mail 10'))
 })
 test('report folder has a useful empty state and bulk restore plus archive controls', async t => {
   const f = uiFixture(t, 'mailbox'); await flush()
-  assert.match(text(f.root), /DMARC Reports/)
-  assert.match(text(f.root), /existing DMARC policy requests reports and Mailat receives them/)
+  assert.match(text(f.root), /No messages in Reports/)
+  assert.match(text(f.root), /Bounce notices and DMARC reports are filed here/)
   assert.equal(f.calls[0][1].folder, 'dmarc-reports')
   f.mailbox.emails = [f.report]; f.mailbox.selectedEmailUuids = ['report']; await flush()
   assert.ok(f.button('Archive')); assert.ok(f.button('Move to Inbox'))
@@ -105,7 +105,7 @@ test('report folder has a useful empty state and bulk restore plus archive contr
 test('Inbox offers an explicit bulk move to reports and attachment-only detail stays readable', async t => {
   const f = uiFixture(t, 'mailbox', 'inbox'); await flush()
   f.mailbox.emails = [f.report]; f.mailbox.selectedEmailUuids = ['report']; await flush()
-  await f.button('Move to DMARC Reports').props.onClick(); await flush()
+  await f.button('Move to Reports').props.onClick(); await flush()
   assert.deepEqual(f.moves, [[['report'], 'dmarc-reports']])
   f.mailbox.emails = [f.report]; await flush()
   const open = all(f.root).find(n => n.type === 'button' && text(n).includes('Aggregate report'))

@@ -198,7 +198,7 @@ func (s *DomainService) GetDomainReadiness(ctx context.Context, orgID, userID in
 		item.Detail = "Attachment storage and delivery feedback are set up after the domain is verified."
 	default:
 		item.Status, item.State, item.Fix = ReadinessMissing, "not_set_up", "setup_sending"
-		item.Detail = "Set up attachment storage and delivery feedback."
+		item.Detail = "Set up attachment storage and delivery feedback. Until then SES emails bounces to your inbox and Mailat keeps sending to dead addresses."
 	}
 	if !verified {
 		item.Fix = ""

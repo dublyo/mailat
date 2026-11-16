@@ -895,7 +895,7 @@ async function handleSignOutAll() {
           <section class="mb-6 p-4 border border-gmail-border rounded-lg" aria-labelledby="dmarc-organization-title" :aria-busy="settingsStore.isLoading || settingsStore.isSaving">
             <label class="flex items-start gap-3">
               <input v-model="settingsStore.settings.autoOrganizeDmarcReports" type="checkbox" :disabled="settingsStore.isLoading || settingsStore.isSaving || !settingsStore.settingsLoaded" aria-describedby="dmarc-organization-description" class="mt-1 w-4 h-4 rounded border-gray-300 text-gmail-blue focus:ring-gmail-blue" />
-              <span><span id="dmarc-organization-title" class="text-sm font-medium">Automatically organize DMARC reports</span><span id="dmarc-organization-description" class="block mt-1 text-sm text-gmail-gray">Move verified aggregate reports into DMARC Reports as they arrive for any of your receiving domains. Your filters can choose a different destination. Turning this off affects future mail; existing reports stay where they are.</span></span>
+              <span><span id="dmarc-organization-title" class="text-sm font-medium">Automatically file reports</span><span id="dmarc-organization-description" class="block mt-1 text-sm text-gmail-gray">Move bounce notices (such as "Delivery Status Notification") and verified DMARC aggregate reports into Reports as they arrive, so they stay out of your Inbox. Your filters can choose a different destination. Turning this off affects future mail; existing reports stay where they are.</span></span>
             </label>
             <p class="text-xs text-gmail-gray mt-3">This setting does not change DNS records or enable receiving for sending-only domains.</p>
             <div class="mt-4 flex items-center gap-3">

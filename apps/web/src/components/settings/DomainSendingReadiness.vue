@@ -4,6 +4,7 @@ import { RefreshCw, Send } from 'lucide-vue-next'
 import { api, domainApi, type DomainSendingReadiness } from '@/lib/api'
 
 const props = defineProps<{ domainUuid: string; domainName: string; canSetup: boolean }>()
+const emit = defineEmits<{ (e: 'ready', value: boolean): void }>()
 const status = ref<DomainSendingReadiness | null>(null)
 const busy = ref<'checking' | 'setting-up' | ''>('')
 const error = ref('')
@@ -33,7 +34,11 @@ async function load(setup = false) {
     const result = setup ? await domainApi.setupSending(domain) : await domainApi.sendingStatus(domain, controller.signal)
     // HTTP 200 can mean storage-only progress. Read the readiness fields before
     // declaring completion, and discard results from an older domain/account.
-    if (version === requestVersion && token === api.getToken() && result.domainUuid === props.domainUuid) status.value = result
+    if (version === requestVersion && token === api.getToken() && result.domainUuid === props.domainUuid) {
+      status.value = result
+      // Bounce tracking is the delivery feedback alone; storage is separate.
+      if (props.canSetup) emit('ready', !!result.feedbackReady)
+    }
   } catch (e) {
     if (version === requestVersion && token === api.getToken()) error.value = e instanceof Error ? e.message : 'Sending setup could not be checked. Try again.'
   } finally {

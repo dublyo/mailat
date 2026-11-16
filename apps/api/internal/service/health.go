@@ -362,10 +362,12 @@ func (s *HealthService) GetReputationMetrics(ctx context.Context, orgID int64, p
 		metrics.SpamRate = float64(metrics.TotalSpam) / float64(metrics.TotalReceived) * 100
 	}
 	metrics.Score = calculateReputationScore(metrics)
+	// sender may carry a display name ("Name <a@example.com>"), so take the
+	// domain of the trailing address, never everything after the first '@'.
 	rows, err := s.db.QueryContext(ctx, `WITH outgoing AS (
  SELECT from_address AS sender,status,created_at FROM transactional_emails WHERE org_id=$1
  UNION ALL SELECT from_email,send_status,created_at FROM received_emails WHERE org_id=$1 AND direction='outbound'
- ) SELECT split_part(sender,'@',2),COUNT(*) FILTER(WHERE status IN ('sent','delivered','bounced','complained')),
+ ) SELECT COALESCE(lower(substring(sender FROM '@([^@<>[:space:]]+)>?[[:space:]]*$')),''),COUNT(*) FILTER(WHERE status IN ('sent','delivered','bounced','complained')),
  COUNT(*) FILTER(WHERE status='delivered'),COUNT(*) FILTER(WHERE status='bounced'),COUNT(*) FILTER(WHERE status='complained')
  FROM outgoing WHERE created_at >= $2 GROUP BY 1 ORDER BY 2 DESC LIMIT 20`, orgID, start)
 	if err != nil {

@@ -2,6 +2,25 @@
 
 Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web` tagged `sha-<full commit SHA>`; there are no version tags. Upgrade notes, backups and rollback are in [docs/self-hosting-ses.md](docs/self-hosting-ses.md).
 
+## Bounce notices out of the Inbox
+
+Not yet deployed; migration `020_file_existing_reports`. No API, DTO or IAM changes (OpenAPI `contractVersion` stays `2026-10-10`).
+
+### Added
+
+- **Bounce tracking off** badge (owners and admins) on every verified SES domain whose bounce and complaint feedback is not set up. Without it Mailat never records bounces or suppresses dead addresses, and SES only emails the bounce to the sender. The badge opens the card at **Set up sending resources**.
+
+### Changed
+
+- Bounce notices (RFC 3464 `multipart/report; report-type=delivery-status`, or MAILER-DAEMON/postmaster mail with a bounce subject such as "Delivery Status Notification (Failure)") are filed in **Reports** instead of the Inbox, like verified DMARC reports. Replies and forwards (`Re:`/`Fwd:`) stay in the Inbox, spam still wins, and forwarding behaves as before. Turning off Settings → Filters & Rules → **Automatically file reports** keeps them in the Inbox. SES email feedback forwarding is left on deliberately: another sender on the same SES identity may rely on it.
+- The **DMARC Reports** folder is now **Reports** and is shown to mailbox users too, so bounces for mail they send are not hidden.
+- Migration 020 moves bounce notices already in the Inbox to Reports for users who keep automatic filing on, including any a user had moved back to the Inbox. Nothing is deleted.
+- The sending-resources readiness item says what is lost without it.
+
+### Fixed
+
+- Health → sending by domain counted display-name senders (`"Name <a@example.com>"`, accepted since 89a348b) as a separate `example.com>` domain.
+
 ## Domain readiness and automatic setup on verification
 
 Not yet deployed; migrations `018_domain_ready_automation` and `019_domain_ready_backfill`. OpenAPI `contractVersion` is `2026-10-10`.

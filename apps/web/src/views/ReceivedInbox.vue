@@ -30,7 +30,7 @@ const revealed = ref(new Set<string>())
 const trusting = ref(false)
 const filterForm = ref({ identity: '', domain: '', read: '', starred: '', attachments: '', sender: '', after: '', before: '' })
 const folder = computed(() => String(route.query.folder || route.params.folder || 'inbox'))
-const folderTitle = computed(() => ({ 'dmarc-reports': 'DMARC Reports', all: 'All Mail', inbox: 'Inbox', starred: 'Starred', sent: 'Sent', drafts: 'Drafts', outbox: 'Outbox', archive: 'Archive', spam: 'Spam', trash: 'Trash' })[folder.value] || folder.value)
+const folderTitle = computed(() => ({ 'dmarc-reports': 'Reports', all: 'All Mail', inbox: 'Inbox', starred: 'Starred', sent: 'Sent', drafts: 'Drafts', outbox: 'Outbox', archive: 'Archive', spam: 'Spam', trash: 'Trash' })[folder.value] || folder.value)
 const identityId = computed(() => Number(route.query.identity) || 0)
 const current = computed(() => mailbox.currentEmail)
 const selectedIndex = computed(() => mailbox.emails.findIndex(e => e.uuid === selectedUuid.value))
@@ -201,7 +201,7 @@ async function perform(action: 'read' | 'unread' | 'star' | 'unstar' | 'archive'
     if (['archive', 'spam', 'restore', 'trash', 'dmarc-reports'].includes(action)) {
       if (selectedUuid.value && next && mailbox.emails.some(e => e.uuid === next.uuid)) await openEmail(next)
       else closeEmail()
-      mailbox.notice = permanent ? 'Messages permanently deleted.' : action === 'restore' ? 'Messages restored to Inbox.' : `Messages moved to ${action === 'trash' ? 'Trash' : action === 'dmarc-reports' ? 'DMARC Reports' : action}.`
+      mailbox.notice = permanent ? 'Messages permanently deleted.' : action === 'restore' ? 'Messages restored to Inbox.' : `Messages moved to ${action === 'trash' ? 'Trash' : action === 'dmarc-reports' ? 'Reports' : action}.`
     } else if (action === 'unread') closeEmail()
   } catch { /* Keep selection so a failed operation is easy to retry. */ }
 }
@@ -227,7 +227,7 @@ function formatDate(value: string, full = false) {
         <div v-if="actionIds.length" class="flex items-center gap-1 flex-wrap">
           <button v-if="!['inbox', 'sent', 'drafts', 'outbox'].includes(folder)" @click="perform('restore')" :disabled="mailbox.isMutating" class="mail-action" title="Move to Inbox" aria-label="Move to Inbox"><Inbox class="w-4 h-4" /></button>
           <button v-if="!['archive', 'drafts', 'outbox'].includes(folder)" @click="perform('archive')" :disabled="mailbox.isMutating" class="mail-action" title="Archive"><Archive class="w-4 h-4" /></button>
-          <button v-if="!['dmarc-reports', 'sent', 'drafts', 'outbox'].includes(folder)" @click="perform('dmarc-reports')" :disabled="mailbox.isMutating" class="mail-action" title="Move to DMARC Reports" aria-label="Move to DMARC Reports"><FileText class="w-4 h-4" /></button>
+          <button v-if="!['dmarc-reports', 'sent', 'drafts', 'outbox'].includes(folder)" @click="perform('dmarc-reports')" :disabled="mailbox.isMutating" class="mail-action" title="Move to Reports" aria-label="Move to Reports"><FileText class="w-4 h-4" /></button>
           <button @click="perform('trash')" :disabled="mailbox.isMutating" class="mail-action" :title="folder === 'trash' ? 'Delete permanently' : 'Move to Trash'"><Trash2 class="w-4 h-4" /></button>
           <button @click="perform('read')" :disabled="mailbox.isMutating" class="mail-action" title="Mark as read"><MailOpen class="w-4 h-4" /></button>
           <button @click="perform('unread')" :disabled="mailbox.isMutating" class="mail-action" title="Mark as unread"><Mail class="w-4 h-4" /></button>
@@ -259,7 +259,7 @@ function formatDate(value: string, full = false) {
       <div class="flex-1 flex min-h-0 overflow-hidden">
         <div :class="['overflow-y-auto min-w-0', selectedUuid ? 'hidden lg:block w-80 shrink-0 border-r' : 'flex-1']">
           <div v-if="mailbox.isLoading && !mailbox.emails.length" class="p-4 space-y-4" role="status" aria-label="Loading messages"><div v-for="n in 8" :key="n" class="h-12 bg-gray-100 rounded animate-pulse" /></div>
-          <div v-else-if="!mailbox.emails.length" class="h-full min-h-60 flex flex-col items-center justify-center p-6 text-center"><Mail class="w-12 h-12 text-gray-300 mb-4" /><h2 class="text-lg font-medium">{{ chips.length ? 'No messages match these filters' : `No messages in ${folderTitle}` }}</h2><p class="text-sm text-gray-500 mt-2">{{ chips.length ? 'Try a different search or clear your filters.' : folder === 'dmarc-reports' ? 'Reports appear here when your domain’s existing DMARC policy requests reports and Mailat receives them. Automatic organization does not change your DNS or enable receiving.' : folder === 'drafts' ? 'Saved drafts appear here when you compose a message.' : folder === 'sent' ? 'Messages accepted by SES are saved here.' : 'Mail for all your identities appears together here.' }}</p><button v-if="chips.length" @click="clearFilters" class="text-blue-600 text-sm mt-4">Clear filters</button></div>
+          <div v-else-if="!mailbox.emails.length" class="h-full min-h-60 flex flex-col items-center justify-center p-6 text-center"><Mail class="w-12 h-12 text-gray-300 mb-4" /><h2 class="text-lg font-medium">{{ chips.length ? 'No messages match these filters' : `No messages in ${folderTitle}` }}</h2><p class="text-sm text-gray-500 mt-2">{{ chips.length ? 'Try a different search or clear your filters.' : folder === 'dmarc-reports' ? 'Bounce notices and DMARC reports are filed here so they stay out of your Inbox. You can turn this off in Settings, Filters & Rules.' : folder === 'drafts' ? 'Saved drafts appear here when you compose a message.' : folder === 'sent' ? 'Messages accepted by SES are saved here.' : 'Mail for all your identities appears together here.' }}</p><button v-if="chips.length" @click="clearFilters" class="text-blue-600 text-sm mt-4">Clear filters</button></div>
           <ul v-else class="divide-y divide-gray-100">
             <li v-for="email in mailbox.emails" :key="email.uuid" :class="['group flex items-center gap-2 px-3 py-3 sm:py-2.5 border-l-4', selectedUuid === email.uuid ? 'bg-blue-100 border-blue-500' : email.isRead ? 'bg-white border-transparent hover:bg-gray-50' : 'bg-blue-50/60 border-transparent']">
               <input v-if="!selectedUuid" type="checkbox" :checked="mailbox.selectedEmailUuids.includes(email.uuid)" @change="mailbox.toggleSelect(email.uuid)" :aria-label="`Select ${email.subject || 'message'}`" class="w-4 h-4 shrink-0" />
@@ -272,7 +272,7 @@ function formatDate(value: string, full = false) {
                 </div>
                 <div class="flex gap-2 items-center mt-0.5 leading-5 min-w-0">
                   <span :class="['text-sm truncate', !selectedUuid ? 'sm:max-w-[55%] sm:shrink-0' : '', !email.isRead ? 'font-medium' : 'text-gray-700']">{{ email.subject || '(no subject)' }}</span>
-                  <span v-if="folder !== 'dmarc-reports' && email.folder === 'dmarc-reports'" class="text-[10px] text-gray-600 rounded bg-gray-100 px-1.5 shrink-0">DMARC Reports</span>
+                  <span v-if="folder !== 'dmarc-reports' && email.folder === 'dmarc-reports'" class="text-[10px] text-gray-600 rounded bg-gray-100 px-1.5 shrink-0">Reports</span>
                   <Paperclip v-if="email.hasAttachments" class="w-3 h-3 shrink-0 text-gray-400" />
                   <span v-if="email.sendStatus && email.sendStatus !== 'received'" class="text-[10px] text-gray-500 shrink-0">{{ email.sendStatus }}</span>
                   <span v-if="!selectedUuid" class="hidden sm:block text-xs text-gray-500 truncate min-w-0">— {{ email.snippet || (email.hasAttachments ? 'Content is in the attachment.' : '') }}</span>

@@ -13,7 +13,7 @@ import DomainApiReadiness from '@/components/settings/DomainApiReadiness.vue'
 import type { ReadinessAction } from '@/lib/domainReadiness'
 import { useDomainsStore } from '@/stores/domains'
 import { useAuthStore } from '@/stores/auth'
-import { isOrgAdmin, type CloudflareZone, type CloudflareDNSResult, type DomainDMARCStatus } from '@/lib/api'
+import { domainApi, isOrgAdmin, type CloudflareZone, type CloudflareDNSResult, type DomainDMARCStatus } from '@/lib/api'
 import { sendingDNSRecords, dnsResultStatus, dnsExportRecords } from '@/lib/domainDns'
 
 const domainsStore = useDomainsStore()
@@ -75,8 +75,30 @@ async function focusReceivingRow() {
   document.getElementById(`receiving-${uuid}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
+// Bounce tracking per verified SES domain: without it SES emails every bounce
+// to the sender's inbox and Mailat never suppresses dead addresses. Shown in
+// the card header because the green checks above do not cover it.
+const bounceTracking = ref<Record<string, boolean>>({})
+async function loadBounceTracking() {
+  if (!canManage.value) return
+  await Promise.all(domainsStore.domains
+    .filter(d => d.emailProvider === 'ses' && d.status === 'active' && d.sesVerified)
+    .map(async d => {
+      try {
+        const ready = (await domainApi.sendingStatus(d.uuid)).feedbackReady
+        // A newer answer from the expanded panel wins over this first load.
+        if (!(d.uuid in bounceTracking.value)) bounceTracking.value = { ...bounceTracking.value, [d.uuid]: ready }
+      } catch { /* unknown: no badge */ }
+    }))
+}
+async function showBounceTracking(uuid: string) {
+  if (!expandedDomains.value.has(uuid)) toggleDomainExpand(uuid)
+  await nextTick()
+  document.getElementById(`sending-${uuid}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
 onMounted(() => {
-  domainsStore.fetchDomains().then(focusReceivingRow, () => {})
+  domainsStore.fetchDomains().then(() => { focusReceivingRow(); loadBounceTracking() }, () => {})
   domainsStore.fetchIdentities()
 })
 
@@ -606,6 +628,16 @@ async function handleSetupReceiving(domain: any) {
                         Mailboxes
                       </Button>
                     </span>
+                    <button
+                      v-if="canManage && bounceTracking[domain.uuid] === false"
+                      type="button"
+                      @click="showBounceTracking(domain.uuid)"
+                      class="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200 hover:bg-amber-100"
+                      title="Mailat does not record bounces for this domain, so it keeps sending to dead addresses and SES reputation can drop. Click to set up sending resources."
+                    >
+                      <AlertCircle class="w-3 h-3" />
+                      Bounce tracking off
+                    </button>
                     <Badge v-if="domain.receivingEnabled" variant="success" size="sm">
                       <Inbox class="w-3 h-3 mr-1" />
                       Receiving prepared
@@ -733,7 +765,7 @@ async function handleSetupReceiving(domain: any) {
                       {{ domain.emailProvider === 'ses' ? 'Download sending records' : 'Download DNS records' }}
                     </button>
                   </div>
-                  <DomainSendingReadiness v-if="domain.emailProvider === 'ses'" :domain-uuid="domain.uuid" :domain-name="domain.name || domain.domain || ''" :can-setup="domain.sesVerified && domain.status === 'active'" class="mb-4" />
+                  <DomainSendingReadiness v-if="domain.emailProvider === 'ses'" :id="`sending-${domain.uuid}`" @ready="bounceTracking = { ...bounceTracking, [domain.uuid]: $event }" :domain-uuid="domain.uuid" :domain-name="domain.name || domain.domain || ''" :can-setup="domain.sesVerified && domain.status === 'active'" class="mb-4" />
                   <DomainDmarcStatus v-if="domain.emailProvider === 'ses'" :id="`dmarc-${domain.uuid}`" :domain-uuid="domain.uuid" :domain-name="domain.name || domain.domain || ''" :known-configured="configuredDmarc[domain.uuid]" class="mb-4" />
                   <div v-if="sendingDNSRecords(domain).length > 0" class="space-y-2">
                     <div

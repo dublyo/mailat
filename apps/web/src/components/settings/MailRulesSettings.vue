@@ -271,7 +271,7 @@ function discardLocal() {
               <option value="archive">Archive</option>
               <option value="spam">Spam</option>
               <option value="trash">Trash</option>
-              <option value="dmarc-reports">DMARC Reports</option>
+              <option value="dmarc-reports">Reports</option>
             </select>
           </label>
           <div v-if="labels.length" class="flex flex-wrap gap-2 text-sm">

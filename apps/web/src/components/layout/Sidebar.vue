@@ -25,7 +25,7 @@ type NavItem = { id: string; label: string; icon: typeof Inbox; route: string; f
 
 const allMainNavItems: NavItem[] = [
   { id: 'inbox', label: 'Inbox', icon: Inbox, route: '/received', folder: 'inbox', audience: 'all' },
-  { id: 'dmarc-reports', label: 'DMARC Reports', icon: FileText, route: '/received?folder=dmarc-reports', folder: 'dmarc-reports', audience: 'staff' },
+  { id: 'dmarc-reports', label: 'Reports', icon: FileText, route: '/received?folder=dmarc-reports', folder: 'dmarc-reports', audience: 'all' },
   { id: 'all', label: 'All Mail', icon: Mail, route: '/received?folder=all', folder: 'all', audience: 'all' },
   { id: 'starred', label: 'Starred', icon: Star, route: '/received?folder=starred', folder: 'starred', audience: 'all' },
   { id: 'sent', label: 'Sent', icon: Send, route: '/received?folder=sent', folder: 'sent', audience: 'all' },

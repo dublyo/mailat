@@ -351,6 +351,9 @@ func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *Recei
 	if classificationErr != nil {
 		log.Print("DMARC classification: domain ownership unavailable; retaining normal placement")
 	}
+	// Bounce notices are filed with the reports too. Placement only: the
+	// message is stored either way.
+	isReport := isDMARCReport || deliveryStatusReport(parsed)
 	for index := range parsed.Attachments {
 		att := &parsed.Attachments[index]
 		att.S3Bucket = auth.Bucket
@@ -422,7 +425,7 @@ func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *Recei
 		var copies []ArrivalCopy
 		for _, owner := range ident.Owners {
 			deliveryFolder := folder
-			if isDMARCReport && folder == "inbox" {
+			if isReport && folder == "inbox" {
 				enabled, err := autoOrganizeDMARC(ctx, tx, owner)
 				if err != nil {
 					return err
