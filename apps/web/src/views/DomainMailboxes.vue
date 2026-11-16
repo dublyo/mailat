@@ -75,6 +75,12 @@ onMounted(async () => {
   } else if (!domains.domains.length) domains.fetchDomains()
   load()
   loadReceiving()
+  // From the domain card's "Who reads mail?" step: open New mailbox directly.
+  if (route.query.new === '1') {
+    openCreate()
+    const { new: _new, ...query } = route.query
+    router.replace({ query })
+  }
 })
 // Switching domains on /mailboxes keeps the choice in the URL so Back and
 // links from the detail page land on the same list.
@@ -237,10 +243,13 @@ async function runImport(dryRun: boolean) {
 <template>
   <AppLayout>
     <section class="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6" :aria-busy="loading">
-      <router-link v-if="!allDomainsMode" to="/domains" class="inline-flex items-center gap-1 text-sm text-gmail-gray hover:text-gmail-blue mb-4"><ArrowLeft class="w-4 h-4" />Domains</router-link>
+      <nav v-if="!allDomainsMode" aria-label="Breadcrumb" class="flex flex-wrap items-center gap-1 text-sm text-gmail-gray mb-4">
+        <router-link to="/domains" class="inline-flex items-center gap-1 hover:text-gmail-blue"><ArrowLeft class="w-4 h-4" />Domains</router-link>
+        <template v-if="domainName"><span aria-hidden="true">/</span><router-link :to="`/domains/${fixedDomain}`" class="hover:text-gmail-blue">{{ domainName }}</router-link></template>
+      </nav>
       <header class="flex flex-wrap justify-between items-start gap-4 mb-4">
         <div>
-          <h1 class="text-2xl font-medium break-all">Mailboxes{{ !allDomainsMode && domainName ? ` · ${domainName}` : '' }}</h1>
+          <h1 class="text-2xl font-medium break-all">{{ allDomainsMode ? 'Mailboxes' : 'Private logins' }}{{ !allDomainsMode && domainName ? ` · ${domainName}` : '' }}</h1>
           <p v-if="allDomainsMode" class="text-sm text-gmail-gray mt-1">Each mailbox is a login that sees and sends only its own address. Mail to addresses without a mailbox goes to the domain's catch-all.</p>
           <label v-if="allDomainsMode && readyDomains.length" class="mt-3 flex flex-wrap items-center gap-2 text-sm">
             <Globe class="w-4 h-4 text-gmail-gray" aria-hidden="true" />

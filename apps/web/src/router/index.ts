@@ -108,6 +108,13 @@ const router = createRouter({
       meta: { requiresAuth: true, admin: true }
     },
     {
+      // One domain with tabs (Overview, Addresses, DNS & sending); same view as the list.
+      path: '/domains/:uuid',
+      name: 'domain-detail',
+      component: () => import('@/views/Domains.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/domains/:uuid/mailboxes',
       name: 'domain-mailboxes',
       component: () => import('@/views/DomainMailboxes.vue'),

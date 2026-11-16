@@ -69,7 +69,7 @@ test('mailbox reasons say off, missing and elsewhere precisely', () => {
   // Before the lookup answers, fall back to the domain switch only.
   assert.match(lib.receivingProblem(null, 'vaybcode.com', false), /off/)
   assert.equal(lib.receivingProblem(null, 'vaybcode.com', true), '')
-  assert.equal(lib.receivingFixLink('d 1'), '/domains?receiving=d%201')
+  assert.equal(lib.receivingFixLink('d 1'), '/domains/d%201?receiving=1')
 })
 
 test('mailbox overview says why it receives no mail', () => {

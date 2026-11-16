@@ -2,6 +2,26 @@
 
 Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web` tagged `sha-<full commit SHA>`; there are no version tags. Upgrade notes, backups and rollback are in [docs/self-hosting-ses.md](docs/self-hosting-ses.md).
 
+## Domains: list, domain pages and "who reads mail"
+
+Not yet deployed; web only (no API, DTO or migration changes).
+
+### Added
+
+- **Who reads mail on this domain?** Owners and admins choose one of four options in Add Domain, and again on the domain page once the domain is verified:
+  - **Me, in my one inbox**: turns on receiving if it is off, creates your address and optionally makes it the catch-all.
+  - **Private logins**: opens New mailbox.
+  - **Both**.
+  - **Nobody, sending only**.
+
+  The step is offered only on domains where nobody gets mail yet (no private logins, no other address, no catch-all), so it never moves an existing catch-all. It shows exactly what it will do, keeps a summary (or what was done before an error), and **Not now** is remembered per browser. Addresses has a link to bring it back. It never publishes DNS.
+
+### Changed
+
+- **Domains** is a status list: one row per domain with its state (Needs DNS, Bounce tracking off, Active), your addresses (catch-all marked) and receiving. A row opens the domain's own page, `/domains/<uuid>`.
+- The domain page has a breadcrumb and tabs: **Overview** (verification, readiness, who reads mail, receiving), **Addresses** (your addresses on the domain, catch-all, add address), **DNS & sending** (records, zone download, sending resources, DMARC) and **Private logins**. Adding a domain goes straight to its DNS records.
+- Private logins pages link back to their domain. Links to a domain's receiving section use `/domains/<uuid>?receiving=1`; old `/domains?receiving=<uuid>` links still work.
+
 ## Inboxes by domain and address
 
 Not yet deployed; migration `021_inbox_scope_indexes`. OpenAPI `contractVersion` is `2026-11-16`.

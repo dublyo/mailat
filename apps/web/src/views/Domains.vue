@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
-import { Plus, Globe, CheckCircle, XCircle, RefreshCw, MoreVertical, Copy, Cloud, Server, Shield, X, Loader2, ChevronDown, ChevronUp, Mail, AlertCircle, Check, Zap, ExternalLink, Key, Inbox, Pencil, Trash2, Star, Download, Users } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
+import { Plus, Globe, CheckCircle, XCircle, RefreshCw, MoreVertical, Copy, Cloud, Server, Shield, X, Loader2, ChevronRight, ArrowLeft, Mail, AlertCircle, Check, Zap, ExternalLink, Key, Inbox, Pencil, Trash2, Star, Download, Users } from 'lucide-vue-next'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import Badge from '@/components/common/Badge.vue'
@@ -10,6 +10,9 @@ import DomainDmarcStatus from '@/components/settings/DomainDmarcStatus.vue'
 import DomainSendingReadiness from '@/components/settings/DomainSendingReadiness.vue'
 import DomainReceivingStatus from '@/components/settings/DomainReceivingStatus.vue'
 import DomainApiReadiness from '@/components/settings/DomainApiReadiness.vue'
+import DomainMailPlan, { type MailPlanResult } from '@/components/settings/DomainMailPlan.vue'
+import { MAIL_PLANS, mailPlanAnswered, markMailPlanAnswered, rememberMailPlan, shouldOfferMailPlan, type MailPlan } from '@/lib/domainMailPlan'
+import { useReceivedInboxStore } from '@/stores/receivedInbox'
 import type { ReadinessAction } from '@/lib/domainReadiness'
 import { useDomainsStore } from '@/stores/domains'
 import { useAuthStore } from '@/stores/auth'
@@ -30,12 +33,49 @@ const showAddIdentityModal = ref(false)
 const showSetupWizard = ref(false)
 const selectedDomainUuid = ref('')
 const newDomain = ref('')
+const newDomainPlan = ref<MailPlan>('me')
+const receivedInbox = useReceivedInboxStore()
+// "Who reads mail?" after verification: hidden for this visit once closed,
+// kept open after setup so the result stays visible.
+const closedMailPlans = ref(new Set<string>())
+// The step waits for the admin's own addresses, so it never flashes on a domain they already use.
+const addressesLoaded = ref(false)
+// Brings the step back after "Not now" or "Sending only".
+// Domains the panel found in use by someone else: no reopen link there.
+const domainsInUse = ref(new Set<string>())
+function canReopenMailPlan(domain: { uuid: string; name?: string; status?: string; sesVerified?: boolean; emailProvider?: string }) {
+  return canManage.value && domain.emailProvider === 'ses' && domain.status === 'active' && !!domain.sesVerified && !domainsInUse.value.has(domain.uuid) &&
+    !showMailPlan(domain) && !getDomainIdentities(domain.uuid).length
+}
+function reopenMailPlan(domain: { uuid: string; name?: string }) {
+  markMailPlanAnswered(domain.name || '', false)
+  const closed = new Set(closedMailPlans.value); closed.delete(domain.uuid); closedMailPlans.value = closed
+  setTab('overview')
+}
+const mailPlanResults = ref<Record<string, MailPlanResult>>({})
+function showMailPlan(domain: { uuid: string; name?: string; status?: string; sesVerified?: boolean }) {
+  if (mailPlanResults.value[domain.uuid]) return true
+  if (closedMailPlans.value.has(domain.uuid)) return false
+  return shouldOfferMailPlan({ canManage: canManage.value, status: domain.status, sesVerified: domain.sesVerified,
+    myAddresses: getDomainIdentities(domain.uuid).length, answered: mailPlanAnswered(domain.name || ''), addressesLoaded: addressesLoaded.value })
+}
+// "Not now" is remembered per browser; a domain already in use is only hidden.
+function closeMailPlan(domain: { uuid: string; name?: string }, remember = true) {
+  const uuid = domain.uuid
+  if (remember && !mailPlanResults.value[uuid]) markMailPlanAnswered(domain.name || '')
+  closedMailPlans.value = new Set([...closedMailPlans.value, uuid])
+  const { [uuid]: _closed, ...rest } = mailPlanResults.value
+  mailPlanResults.value = rest
+}
+async function mailPlanChanged() {
+  await Promise.all([domainsStore.fetchDomains(), domainsStore.fetchIdentities()])
+  void receivedInbox.fetchScopes(true)
+}
 const selectedDomainUsesSES = computed(() => domainsStore.domains.find(d => d.uuid === selectedDomainUuid.value)?.emailProvider === 'ses')
 const newIdentity = ref({ displayName: '', email: '', password: '', isCatchAll: false })
 const isSubmitting = ref(false)
 const submitError = ref('')
 const successMessage = ref('')
-const expandedDomains = ref<Set<string>>(new Set())
 const copiedText = ref('')
 
 // Identity actions menu state
@@ -67,12 +107,49 @@ const receivingSetupResult = ref<{
 } | null>(null)
 
 const route = useRoute()
-// Mailbox pages link here with ?receiving=<uuid>; bring that card's receiving row into view.
+const router = useRouter()
+
+// Migadu-style: /domains is a status list; /domains/:uuid is one domain with
+// tabs. The card below renders only on the detail page.
+type DomainTab = 'overview' | 'addresses' | 'dns'
+const detailUuid = computed(() => typeof route.params.uuid === 'string' ? route.params.uuid : '')
+const inDetail = computed(() => !!detailUuid.value)
+const detailDomain = computed(() => domainsStore.domains.find(d => d.uuid === detailUuid.value) || null)
+const shownDomains = computed(() => detailDomain.value ? [detailDomain.value] : [])
+const tab = computed<DomainTab>(() => route.query.tab === 'addresses' || route.query.tab === 'dns' ? route.query.tab : 'overview')
+// Returns the navigation so callers can wait for the tab to render before scrolling to it.
+function setTab(next: DomainTab): Promise<unknown> {
+  return next !== tab.value ? router.replace({ query: { ...route.query, tab: next === 'overview' ? undefined : next } }) : Promise.resolve()
+}
+function openDomain(uuid: string, nextTab?: DomainTab) {
+  void router.push({ path: `/domains/${uuid}`, query: nextTab && nextTab !== 'overview' ? { tab: nextTab } : {} })
+}
+// One line per domain on the list: what needs doing first.
+function domainState(domain: { uuid: string; status: string; sesVerified?: boolean; emailProvider?: string }): { label: string; variant: 'success' | 'warning' | 'error' } {
+  if (domain.status === 'suspended') return { label: 'Suspended', variant: 'error' }
+  if (domain.status !== 'active' || (domain.emailProvider === 'ses' && !domain.sesVerified)) return { label: 'Needs DNS', variant: 'warning' }
+  if (bounceTracking.value[domain.uuid] === false) return { label: 'Bounce tracking off', variant: 'warning' }
+  return { label: 'Active', variant: 'success' }
+}
+function mailSummary(domainUuid: string): string {
+  const addresses = getDomainIdentities(domainUuid)
+  if (!addresses.length) return 'No address of yours'
+  const catchAll = addresses.find(a => a.isCatchAll)
+  const names = addresses.slice(0, 2).map(a => a.email.split('@')[0]).join(', ') + (addresses.length > 2 ? ` +${addresses.length - 2}` : '')
+  return catchAll ? `${names} · catch-all ${catchAll.email.split('@')[0]}@` : names
+}
+
+// Mailbox pages link to /domains/:uuid?receiving=1; older links used
+// /domains?receiving=<uuid>. Either way, bring the receiving row into view.
 async function focusReceivingRow() {
-  const uuid = route.query.receiving
-  if (typeof uuid !== 'string' || !uuid) return
+  const legacy = route.query.receiving
+  if (!inDetail.value && typeof legacy === 'string' && legacy && legacy !== '1') {
+    await router.replace({ path: `/domains/${legacy}`, query: { receiving: '1' } })
+  }
+  if (!inDetail.value || !route.query.receiving) return
+  await setTab('overview')
   await nextTick()
-  document.getElementById(`receiving-${uuid}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  document.getElementById(`receiving-${detailUuid.value}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
 // Bounce tracking per verified SES domain: without it SES emails every bounce
@@ -92,14 +169,15 @@ async function loadBounceTracking() {
     }))
 }
 async function showBounceTracking(uuid: string) {
-  if (!expandedDomains.value.has(uuid)) toggleDomainExpand(uuid)
+  if (!inDetail.value) { openDomain(uuid, 'dns'); return }
+  await setTab('dns')
   await nextTick()
   document.getElementById(`sending-${uuid}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
 onMounted(() => {
   domainsStore.fetchDomains().then(() => { focusReceivingRow(); loadBounceTracking() }, () => {})
-  domainsStore.fetchIdentities()
+  domainsStore.fetchIdentities().then(() => { addressesLoaded.value = true }, () => {})
 })
 
 const copyToClipboard = async (text: string) => {
@@ -168,7 +246,7 @@ function downloadDNSZoneFile(domain: any) {
 async function handleReadinessAction(domainUuid: string, action: ReadinessAction) {
   if (action.kind === 'verify') return handleVerifyDomain(domainUuid)
   if (action.kind === 'choose_identity') return openAddIdentityModal(domainUuid)
-  if (action.kind === 'dmarc' && !expandedDomains.value.has(domainUuid)) toggleDomainExpand(domainUuid)
+  await setTab(action.kind === 'dmarc' ? 'dns' : 'overview')
   await nextTick()
   const target = document.getElementById(`${action.kind === 'dmarc' ? 'dmarc' : 'receiving'}-${domainUuid}`)
   if (!target) return
@@ -177,14 +255,6 @@ async function handleReadinessAction(domainUuid: string, action: ReadinessAction
   target.focus({ preventScroll: true })
 }
 
-function toggleDomainExpand(uuid: string) {
-  if (expandedDomains.value.has(uuid)) {
-    expandedDomains.value.delete(uuid)
-  } else {
-    expandedDomains.value.add(uuid)
-  }
-  expandedDomains.value = new Set(expandedDomains.value)
-}
 
 function getVerificationCount(domain: any) {
   const checks = [domain.spfVerified, domain.dkimVerified]
@@ -208,8 +278,13 @@ async function handleAddDomain() {
   submitError.value = ''
 
   try {
-    await domainsStore.addDomain(newDomain.value.trim())
+    const name = newDomain.value.trim().toLowerCase()
+    const created = await domainsStore.addDomain(name)
+    rememberMailPlan(name, newDomainPlan.value)
     newDomain.value = ''
+    newDomainPlan.value = 'me'
+    // Straight to the new domain's page: its DNS records come next.
+    if (created?.uuid) openDomain(created.uuid, 'dns')
     showAddDomainModal.value = false
   } catch (e: any) {
     submitError.value = e.message || 'Failed to add domain'
@@ -433,6 +508,7 @@ async function handleDeleteDomain(domain: any) {
   deletingDomain.value = domain.uuid
   try {
     await domainsStore.deleteDomain(domain.uuid)
+    if (detailUuid.value === domain.uuid) void router.replace('/domains')
   } catch (e: any) {
     console.error('Failed to delete domain:', e)
   } finally {
@@ -473,11 +549,17 @@ async function handleSetupReceiving(domain: any) {
       <!-- Header -->
       <div class="flex-shrink-0 px-6 py-5 bg-white border-b border-gray-200 shadow-sm">
         <div class="flex items-center justify-between max-w-7xl mx-auto">
-          <div>
+          <div v-if="!inDetail">
             <h1 class="text-2xl font-semibold text-gray-900">Domains</h1>
-            <p class="text-sm text-gray-500 mt-1">Manage your email domains and sender identities</p>
+            <p class="text-sm text-gray-500 mt-1">Your domains, who reads their mail, and what still needs doing</p>
           </div>
-          <Button v-if="canManage" @click="showAddDomainModal = true" class="shadow-md hover:shadow-lg transition-shadow">
+          <div v-else class="min-w-0">
+            <nav aria-label="Breadcrumb" class="text-sm text-gray-500">
+              <router-link to="/domains" class="inline-flex items-center gap-1 hover:text-gray-800"><ArrowLeft class="w-4 h-4" aria-hidden="true" />Domains</router-link>
+            </nav>
+            <h1 class="mt-1 text-2xl font-semibold text-gray-900 truncate">{{ detailDomain?.name || 'Domain' }}</h1>
+          </div>
+          <Button v-if="canManage && !inDetail" @click="showAddDomainModal = true" class="shadow-md hover:shadow-lg transition-shadow">
             <Plus class="w-4 h-4" />
             Add Domain
           </Button>
@@ -501,7 +583,8 @@ async function handleSetupReceiving(domain: any) {
       <div class="flex-1 overflow-y-auto">
         <div class="max-w-7xl mx-auto px-6 py-6">
           <!-- Loading -->
-          <div v-if="domainsStore.isLoading" class="flex items-center justify-center py-20">
+          <!-- Only the first load shows the spinner: reloading in place keeps the page (and any open panel) mounted. -->
+          <div v-if="domainsStore.isLoading && !domainsStore.domains.length" class="flex items-center justify-center py-20">
             <div class="text-center">
               <Spinner size="lg" class="mb-4" />
               <p class="text-gray-500">Loading domains...</p>
@@ -526,13 +609,13 @@ async function handleSetupReceiving(domain: any) {
             </Button>
           </div>
 
-          <!-- Domain list -->
-          <div v-else class="space-y-4">
+          <!-- Domain list (Migadu-style status board) -->
+          <div v-else-if="!inDetail" class="space-y-4">
             <!-- Stats Summary -->
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-              <div class="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+            <div class="grid grid-cols-3 gap-2 sm:gap-4 mb-4 sm:mb-6">
+              <div class="bg-white rounded-xl p-3 sm:p-4 border border-gray-200 shadow-sm">
                 <div class="flex items-center gap-3">
-                  <div class="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
+                  <div class="hidden sm:flex w-10 h-10 rounded-lg bg-blue-100 items-center justify-center">
                     <Globe class="w-5 h-5 text-blue-600" />
                   </div>
                   <div>
@@ -541,9 +624,9 @@ async function handleSetupReceiving(domain: any) {
                   </div>
                 </div>
               </div>
-              <div class="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+              <div class="bg-white rounded-xl p-3 sm:p-4 border border-gray-200 shadow-sm">
                 <div class="flex items-center gap-3">
-                  <div class="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center">
+                  <div class="hidden sm:flex w-10 h-10 rounded-lg bg-green-100 items-center justify-center">
                     <CheckCircle class="w-5 h-5 text-green-600" />
                   </div>
                   <div>
@@ -552,28 +635,61 @@ async function handleSetupReceiving(domain: any) {
                   </div>
                 </div>
               </div>
-              <div class="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+              <div class="bg-white rounded-xl p-3 sm:p-4 border border-gray-200 shadow-sm">
                 <div class="flex items-center gap-3">
-                  <div class="w-10 h-10 rounded-lg bg-purple-100 flex items-center justify-center">
+                  <div class="hidden sm:flex w-10 h-10 rounded-lg bg-purple-100 items-center justify-center">
                     <Mail class="w-5 h-5 text-purple-600" />
                   </div>
                   <div>
                     <p class="text-2xl font-bold text-gray-900">{{ domainsStore.identities.length }}</p>
-                    <p class="text-sm text-gray-500">Identities</p>
+                    <p class="text-sm text-gray-500">Your addresses</p>
                   </div>
                 </div>
               </div>
             </div>
 
-            <!-- Domain Cards -->
+            <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+              <table class="w-full text-sm">
+                <caption class="sr-only">Domains</caption>
+                <thead class="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                  <tr>
+                    <th scope="col" class="px-4 py-3">Domain</th>
+                    <th scope="col" class="px-4 py-3 hidden sm:table-cell">Status</th>
+                    <th scope="col" class="px-4 py-3 hidden md:table-cell">Your addresses</th>
+                    <th scope="col" class="px-4 py-3 hidden lg:table-cell">Receiving</th>
+                    <th scope="col" class="px-4 py-3"><span class="sr-only">Open</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="domain in domainsStore.domains" :key="domain.uuid" class="border-t border-gray-100 hover:bg-gray-50 cursor-pointer" @click="openDomain(domain.uuid)">
+                    <td class="px-4 py-3">
+                      <router-link :to="`/domains/${domain.uuid}`" class="font-medium text-gray-900 hover:underline" @click.stop>{{ domain.name || domain.domain }}</router-link>
+                      <div class="sm:hidden mt-1"><Badge :variant="domainState(domain).variant" size="sm">{{ domainState(domain).label }}</Badge></div>
+                    </td>
+                    <td class="px-4 py-3 hidden sm:table-cell"><Badge :variant="domainState(domain).variant" size="sm">{{ domainState(domain).label }}</Badge></td>
+                    <td class="px-4 py-3 hidden md:table-cell text-gray-600">{{ mailSummary(domain.uuid) }}</td>
+                    <td class="px-4 py-3 hidden lg:table-cell text-gray-600">{{ domain.receivingEnabled ? 'Prepared' : 'Off (sending only)' }}</td>
+                    <td class="px-4 py-3 text-right"><ChevronRight class="w-4 h-4 text-gray-400 inline" aria-hidden="true" /></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- One domain -->
+          <div v-else class="space-y-4">
+            <div v-if="!detailDomain" class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
+              <p>This domain was not found. It may have been removed.</p>
+              <router-link to="/domains" class="mt-3 inline-block text-blue-600 hover:underline">Back to domains</router-link>
+            </div>
             <div
-              v-for="domain in domainsStore.domains"
+              v-for="domain in shownDomains"
               :key="domain.uuid"
               class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden hover:shadow-md transition-shadow"
             >
               <!-- Domain header -->
               <div class="p-5">
-                <div class="flex items-start justify-between">
+                <div class="flex flex-wrap items-start justify-between gap-3">
                   <div class="flex items-center gap-4">
                     <div class="w-12 h-12 rounded-xl flex items-center justify-center"
                          :class="domain.status === 'active' ? 'bg-green-100' : 'bg-amber-100'">
@@ -581,7 +697,7 @@ async function handleSetupReceiving(domain: any) {
                     </div>
                     <div>
                       <div class="flex items-center gap-3">
-                        <h3 class="text-lg font-semibold text-gray-900">{{ domain.name || domain.domain }}</h3>
+                        <h2 class="sr-only">{{ domain.name || domain.domain }}</h2>
                         <Badge :variant="domain.status === 'active' ? 'success' : domain.status === 'pending' ? 'warning' : 'error'" class="capitalize">
                           {{ domain.status }}
                         </Badge>
@@ -593,12 +709,12 @@ async function handleSetupReceiving(domain: any) {
                         </span>
                         <span class="text-gray-300">|</span>
                         <span class="text-xs text-gray-500">
-                          {{ getDomainIdentities(domain.uuid).length }} {{ getDomainIdentities(domain.uuid).length === 1 ? 'identity' : 'identities' }}
+                          {{ getDomainIdentities(domain.uuid).length }} {{ getDomainIdentities(domain.uuid).length === 1 ? 'address of yours' : 'addresses of yours' }}
                         </span>
                       </div>
                     </div>
                   </div>
-                  <div class="flex items-center gap-2">
+                  <div class="flex flex-wrap items-center gap-2">
                     <Button v-if="canManage && domain.status !== 'active'" variant="primary" size="sm" @click="openSetupWizard(domain.uuid)">
                       <Zap class="w-4 h-4" />
                       Set up sending
@@ -611,34 +727,24 @@ async function handleSetupReceiving(domain: any) {
                       v-if="canManage && domain.status === 'active'"
                       variant="secondary"
                       size="sm"
-                      @click="receivingOptionsDomain = receivingOptionsDomain === domain.uuid ? '' : domain.uuid; submitError = ''"
+                      @click="receivingOptionsDomain = receivingOptionsDomain === domain.uuid ? '' : domain.uuid; submitError = ''; if (receivingOptionsDomain) setTab('overview')"
                       :disabled="receivingSetupLoading === domain.uuid"
                     >
                       <Loader2 v-if="receivingSetupLoading === domain.uuid" class="w-4 h-4 animate-spin" />
                       <Inbox v-else class="w-4 h-4" />
                       Receiving options
                     </Button>
-                    <span v-if="canManage" :title="mailboxesReady(domain) ? 'Logins that see only their own mail' : 'Verify the domain with SES first'">
-                      <router-link v-if="mailboxesReady(domain)" :to="`/domains/${domain.uuid}/mailboxes`" class="inline-flex items-center justify-center gap-2 font-medium rounded-lg px-3 py-1.5 text-sm bg-white text-gmail-gray border border-gmail-border hover:bg-gmail-hover">
-                        <Users class="w-4 h-4" />
-                        Mailboxes
-                      </router-link>
-                      <Button v-else variant="secondary" size="sm" disabled>
-                        <Users class="w-4 h-4" />
-                        Mailboxes
-                      </Button>
-                    </span>
                     <button
                       v-if="canManage && bounceTracking[domain.uuid] === false"
                       type="button"
                       @click="showBounceTracking(domain.uuid)"
-                      class="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200 hover:bg-amber-100"
+                      class="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200 hover:bg-amber-100"
                       title="Mailat does not record bounces for this domain, so it keeps sending to dead addresses and SES reputation can drop. Click to set up sending resources."
                     >
                       <AlertCircle class="w-3 h-3" />
                       Bounce tracking off
                     </button>
-                    <Badge v-if="domain.receivingEnabled" variant="success" size="sm">
+                    <Badge v-if="domain.receivingEnabled" variant="success" size="sm" class="whitespace-nowrap">
                       <Inbox class="w-3 h-3 mr-1" />
                       Receiving prepared
                     </Badge>
@@ -652,15 +758,21 @@ async function handleSetupReceiving(domain: any) {
                       <Loader2 v-if="deletingDomain === domain.uuid" class="w-4 h-4 text-red-400 animate-spin" />
                       <Trash2 v-else class="w-4 h-4 text-gray-400 group-hover:text-red-500" />
                     </button>
-                    <button
-                      @click="toggleDomainExpand(domain.uuid)"
-                      class="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-                    >
-                      <component :is="expandedDomains.has(domain.uuid) ? ChevronUp : ChevronDown" class="w-5 h-5 text-gray-400" />
-                    </button>
                   </div>
                 </div>
 
+                <div role="tablist" aria-label="Domain sections" class="mt-5 flex gap-1 border-b border-gray-200 overflow-x-auto">
+                  <button v-for="item in ([['overview', 'Overview'], ['addresses', 'Addresses'], ['dns', 'DNS & sending']] as const)" :key="item[0]"
+                    type="button" role="tab" :aria-selected="tab === item[0]" @click="setTab(item[0])"
+                    class="-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium"
+                    :class="tab === item[0] ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-500 hover:text-gray-800'">{{ item[1] }}</button>
+                  <router-link v-if="canManage && mailboxesReady(domain)" :to="`/domains/${domain.uuid}/mailboxes`" title="Logins that see only their own mail"
+                    class="-mb-px whitespace-nowrap border-b-2 border-transparent px-3 py-2 text-sm font-medium text-gray-500 hover:text-gray-800">Private logins</router-link>
+                  <span v-else-if="canManage" title="Verify the domain with SES first" aria-disabled="true"
+                    class="-mb-px whitespace-nowrap border-b-2 border-transparent px-3 py-2 text-sm font-medium text-gray-300 cursor-not-allowed">Private logins</span>
+                </div>
+
+                <template v-if="tab === 'overview'">
                 <!-- Verification Progress -->
                 <div class="mt-4">
                   <div class="flex items-center justify-between text-sm mb-2">
@@ -716,6 +828,19 @@ async function handleSetupReceiving(domain: any) {
                   @action="handleReadinessAction(domain.uuid, $event)"
                   @changed="domainsStore.fetchIdentities()"
                 />
+                <DomainMailPlan
+                  v-if="domain.emailProvider === 'ses' && showMailPlan(domain)"
+                  :domain-id="domain.id"
+                  :domain-uuid="domain.uuid"
+                  :domain-name="domain.name || domain.domain || ''"
+                  :receiving-enabled="!!domain.receivingEnabled"
+                  :result="mailPlanResults[domain.uuid]"
+                  @changed="mailPlanChanged"
+                  @finished="mailPlanResults = { ...mailPlanResults, [domain.uuid]: $event }"
+                  :owner-name="authStore.user?.name || ''"
+                  @in-use="domainsInUse = new Set([...domainsInUse, domain.uuid]); closeMailPlan(domain, false)"
+                  @close="closeMailPlan(domain)"
+                />
                 <DomainReceivingStatus
                   v-if="domain.emailProvider === 'ses'"
                   :domain-uuid="domain.uuid"
@@ -744,12 +869,12 @@ async function handleSetupReceiving(domain: any) {
                     </div>
                   </div>
                 </section>
+                </template>
               </div>
 
-              <!-- Expanded Content -->
-              <div v-if="expandedDomains.has(domain.uuid)" class="border-t border-gray-100">
+              <div v-if="tab !== 'overview'" class="border-t border-gray-100">
                 <!-- DNS Records -->
-                <div class="p-5 bg-gray-50">
+                <div v-if="tab === 'dns'" class="p-5 bg-gray-50">
                   <div class="flex items-center justify-between mb-3">
                     <h4 class="text-sm font-semibold text-gray-700 flex items-center gap-2">
                       <Shield class="w-4 h-4" />
@@ -804,18 +929,20 @@ async function handleSetupReceiving(domain: any) {
                   </div>
                 </div>
 
-                <!-- Identities -->
-                <div class="p-5 border-t border-gray-100">
+                <!-- Your addresses on this domain -->
+                <div v-if="tab === 'addresses'" class="p-5">
                   <div class="flex items-center justify-between mb-3">
                     <h4 class="text-sm font-semibold text-gray-700 flex items-center gap-2">
                       <Mail class="w-4 h-4" />
-                      Sender Identities
+                      Your addresses
                     </h4>
                     <Button v-if="canManage" variant="secondary" size="sm" @click="openAddIdentityModal(domain.uuid)">
                       <Plus class="w-4 h-4" />
-                      Add Identity
+                      Add address
                     </Button>
                   </div>
+                  <button v-if="canReopenMailPlan(domain)" type="button" @click="reopenMailPlan(domain)" class="mb-3 text-sm font-medium text-blue-700 hover:underline">Who reads mail on {{ domain.name || domain.domain }}? Set it up</button>
+                  <p class="mb-3 text-xs text-gray-500">These arrive in your Inbox. A catch-all also gets mail for every address on {{ domain.name || domain.domain }} that is not someone's mailbox. Other people's mail lives in <router-link v-if="canManage && mailboxesReady(domain)" :to="`/domains/${domain.uuid}/mailboxes`" class="text-blue-600 hover:underline">Private logins</router-link><span v-else>Private logins</span>, which you cannot read.</p>
                   <div v-if="getDomainIdentities(domain.uuid).length > 0" class="space-y-2">
                     <div
                       v-for="identity in getDomainIdentities(domain.uuid)"
@@ -898,7 +1025,7 @@ async function handleSetupReceiving(domain: any) {
                   </div>
                   <div v-else class="text-sm text-gray-500 italic bg-gray-50 rounded-lg border border-dashed border-gray-200 p-4 text-center">
                     <Mail class="w-5 h-5 mx-auto mb-2 text-gray-400" />
-                    No identities configured. Add one to start sending emails.
+                    You have no address on this domain yet. Add one to send from it and receive its mail in your Inbox.
                   </div>
                 </div>
               </div>
@@ -924,12 +1051,12 @@ async function handleSetupReceiving(domain: any) {
             enter-from-class="opacity-0 scale-95"
             leave-to-class="opacity-0 scale-95"
           >
-            <div v-if="showAddDomainModal" class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md">
+            <div v-if="showAddDomainModal" class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
               <div class="p-6">
                 <div class="flex items-center justify-between mb-6">
                   <div>
                     <h2 class="text-xl font-semibold text-gray-900">Add Domain</h2>
-                    <p class="text-sm text-gray-500 mt-1">Enter your domain name to get started</p>
+                    <p class="text-sm text-gray-500 mt-1">Next: add the DNS records, verify, then choose who reads its mail.</p>
                   </div>
                   <button @click="showAddDomainModal = false" class="p-2 hover:bg-gray-100 rounded-lg transition-colors">
                     <X class="w-5 h-5 text-gray-400" />
@@ -950,6 +1077,17 @@ async function handleSetupReceiving(domain: any) {
                     </div>
                     <p class="text-xs text-gray-500 mt-2">You'll need to verify ownership by adding DNS records</p>
                   </div>
+                  <fieldset>
+                    <legend class="block text-sm font-medium text-gray-700 mb-2">Who will read its mail?</legend>
+                    <div class="grid gap-2">
+                      <label v-for="option in MAIL_PLANS" :key="option.value" class="flex cursor-pointer gap-2 rounded-lg border p-2.5 text-sm"
+                        :class="newDomainPlan === option.value ? 'border-blue-500 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'">
+                        <input type="radio" name="new-domain-plan" :value="option.value" :checked="newDomainPlan === option.value" @change="newDomainPlan = option.value" class="mt-0.5" :disabled="isSubmitting" />
+                        <span><span class="block font-medium text-gray-900">{{ option.title }}</span><span class="block text-xs text-gray-500">{{ option.detail }}</span></span>
+                      </label>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2">{{ newDomainPlan === 'sending' ? 'Nothing is set up for receiving. You can add addresses later from the domain page.' : 'Nothing is set up yet: after verification the domain page asks again with this choice selected.' }}</p>
+                  </fieldset>
                   <div v-if="submitError" class="flex items-center gap-2 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
                     <AlertCircle class="w-4 h-4 flex-shrink-0" />
                     {{ submitError }}

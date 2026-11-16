@@ -72,7 +72,7 @@ export function receivesMailLabel(status: DomainReceivingStatus | null | undefin
   }
 }
 
-// Link from mailbox pages straight to the domain card's receiving section.
+// Link from mailbox pages straight to the domain page's receiving section.
 export function receivingFixLink(domainUuid: string): string {
-  return `/domains?receiving=${encodeURIComponent(domainUuid)}`
+  return `/domains/${encodeURIComponent(domainUuid)}?receiving=1`
 }

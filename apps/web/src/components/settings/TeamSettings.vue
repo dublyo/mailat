@@ -138,7 +138,7 @@ const formatDate = (value: string | null) => value ? new Date(value).toLocaleDat
       <div class="flex items-center justify-between gap-3 mb-3">
         <div>
           <h3 id="members-title" class="text-base font-medium">Members</h3>
-          <p class="text-xs text-gmail-gray">Mailbox users are managed per domain: <router-link to="/domains" class="text-gmail-blue hover:underline">Domains → Mailboxes</router-link>.</p>
+          <p class="text-xs text-gmail-gray">Mailbox users are managed per domain: <router-link to="/mailboxes" class="text-gmail-blue hover:underline">Mailboxes</router-link>, or Domains → a domain → Private logins.</p>
         </div>
         <label v-if="removedMembers" class="text-sm text-gmail-gray flex items-center gap-2"><input v-model="showRemoved" type="checkbox" />Show removed ({{ removedMembers }})</label>
       </div>
