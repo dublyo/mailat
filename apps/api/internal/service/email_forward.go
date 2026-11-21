@@ -654,13 +654,15 @@ func (r *ArrivalRunner) runForward(ctx context.Context, tx *sql.Tx, job *arrival
 		emailID                                   int64
 		fromEmail, fromName, replyTo, subject     string
 		textBody, htmlBody, spamVerdict, virusVer string
+		spfVerdict, dkimVerdict, dmarcVerdict     string
 		size                                      int
 	)
 	err = tx.QueryRowContext(ctx, `SELECT id,COALESCE(from_email,''),COALESCE(from_name,''),COALESCE(reply_to,''),COALESCE(subject,''),
-			COALESCE(text_body,''),COALESCE(html_body,''),COALESCE(size_bytes,0),COALESCE(spam_verdict,''),COALESCE(virus_verdict,'')
+			COALESCE(text_body,''),COALESCE(html_body,''),COALESCE(size_bytes,0),COALESCE(spam_verdict,''),COALESCE(virus_verdict,''),
+			COALESCE(spf_verdict,''),COALESCE(dkim_verdict,''),COALESCE(dmarc_verdict,'')
 		FROM received_emails WHERE identity_id=$1 AND ses_message_id=$2 AND direction='inbound'
 		ORDER BY (id=$3) DESC, id LIMIT 1`, job.IdentityID, job.SESMessageID, job.EmailID).
-		Scan(&emailID, &fromEmail, &fromName, &replyTo, &subject, &textBody, &htmlBody, &size, &spamVerdict, &virusVer)
+		Scan(&emailID, &fromEmail, &fromName, &replyTo, &subject, &textBody, &htmlBody, &size, &spamVerdict, &virusVer, &spfVerdict, &dkimVerdict, &dmarcVerdict)
 	if errors.Is(err, sql.ErrNoRows) {
 		return arrivalSkipped("source-deleted"), nil
 	}
@@ -672,6 +674,10 @@ func (r *ArrivalRunner) runForward(ctx context.Context, tx *sql.Tx, job *arrival
 	switch {
 	case strings.EqualFold(spamVerdict, "FAIL") || strings.EqualFold(virusVer, "FAIL"):
 		return arrivalSkipped("spam"), nil
+	// Forwarding re-sends from our own domain, so a forged From would pass the
+	// destination's checks. Mail the receipt proved forged stays local only.
+	case strings.EqualFold(dmarcVerdict, "FAIL") || (strings.EqualFold(spfVerdict, "FAIL") && strings.EqualFold(dkimVerdict, "FAIL")):
+		return arrivalSkipped("unauthenticated"), nil
 	case p.DMARCReport:
 		return arrivalSkipped("dmarc-report"), nil
 	case ForwardLoopBlocked(loopHeader, tag):

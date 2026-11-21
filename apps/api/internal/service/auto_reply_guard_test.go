@@ -72,12 +72,23 @@ func TestAutoReplyEligible(t *testing.T) {
 		{name: "cc counts", h: mail.Header{"From": {"sender@example.org"}, "To": {"x@else.test"}, "Cc": {"a@else.test, OWNER@own.test"}}, reason: ""},
 		{name: "catch-all recipient in to", h: mail.Header{"From": {"sender@example.org"}, "To": {"sales@own.test"}}, rcpts: []string{"owner@own.test", "sales@own.test"}, reason: ""},
 		{name: "no sender", sender: "not-an-address", reason: "no-sender"},
+		// From spoofing: the reply must go to the one mailbox DMARC covered.
+		{name: "display name hides address", h: mail.Header{"From": {`"<victim@third.example>" <sender@example.org>`}, "To": {"owner@own.test"}}, sender: "victim@third.example", reason: "ambiguous-from"},
+		{name: "display name address is not the sender", h: mail.Header{"From": {`"<victim@third.example>" <sender@example.org>`}, "To": {"owner@own.test"}}, reason: ""},
+		{name: "two from addresses", h: mail.Header{"From": {"victim@third.example, sender@example.org"}, "To": {"owner@own.test"}}, reason: "ambiguous-from"},
+		{name: "two from headers", h: mail.Header{"From": {"sender@example.org", "victim@third.example"}, "To": {"owner@own.test"}}, reason: "ambiguous-from"},
+		{name: "unparseable from", h: mail.Header{"From": {"<victim@third.example> <sender@example.org>"}, "To": {"owner@own.test"}}, reason: "ambiguous-from"},
+		{name: "from differs from sender", h: mail.Header{"From": {"victim@third.example"}, "To": {"owner@own.test"}}, reason: "ambiguous-from"},
+		{name: "encoded display name", h: mail.Header{"From": {"=?utf-8?q?J=C3=BCrgen?= <sender@example.org>"}, "To": {"owner@own.test"}}, reason: ""},
+		{name: "provider from agrees", v: func(v *ArrivalVerdicts) { v.ProviderFrom = []string{`"Sender" <SENDER@example.org>`} }, reason: ""},
+		{name: "provider from differs", v: func(v *ArrivalVerdicts) { v.ProviderFrom = []string{"victim@third.example"} }, reason: "ambiguous-from"},
+		{name: "provider saw two from addresses", v: func(v *ArrivalVerdicts) { v.ProviderFrom = []string{"sender@example.org", "victim@third.example"} }, reason: "ambiguous-from"},
 	}
 	for _, local := range []string{"mailer-daemon", "MAILER-DAEMON", "postmaster", "noreply", "no-reply", "no_reply", "noreply-alerts", "donotreply", "do-not-reply", "bounce", "bounces+abc", "bounce-123", "news-request", "owner-list", "listserv", "majordomo"} {
 		tests = append(tests, guardCase{name: "system sender " + local, sender: local + "@example.org", reason: "system-sender"})
 	}
 	for _, local := range []string{"owner", "replyguy", "requests", "mailer"} {
-		tests = append(tests, guardCase{name: "person " + local, sender: local + "@example.org", reason: ""})
+		tests = append(tests, guardCase{name: "person " + local, h: mail.Header{"From": {local + "@example.org"}, "To": {"owner@own.test"}}, sender: local + "@example.org", reason: ""})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -148,5 +159,35 @@ func TestExcludedSenderAndSubject(t *testing.T) {
 		if got := autoReplySubject(tc.rule, tc.original); got != tc.want {
 			t.Errorf("%q/%q: got %q", tc.rule, tc.original, got)
 		}
+	}
+}
+
+func TestParseAddressHeader(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		values        []string
+		address, disp string
+		strict        bool
+	}{
+		{name: "missing"},
+		{name: "plain", values: []string{"Sender <sender@example.org>"}, address: "sender@example.org", disp: "Sender", strict: true},
+		{name: "bare", values: []string{"sender@example.org"}, address: "sender@example.org", strict: true},
+		{name: "quoted angle address in name", values: []string{`"<victim@third.example>" <attacker@evil.example>`}, address: "attacker@evil.example", disp: "<victim@third.example>", strict: true},
+		{name: "quoted comma in name", values: []string{`"Acme, Inc." <a@acme.test>`}, address: "a@acme.test", disp: "Acme, Inc.", strict: true},
+		{name: "encoded name", values: []string{"=?iso-8859-1?q?J=FCrgen?= <j@example.org>"}, address: "j@example.org", disp: "Jürgen", strict: true},
+		{name: "list takes first, not strict", values: []string{"a@example.org, b@example.org"}, address: "a@example.org"},
+		{name: "repeated header not strict", values: []string{"a@example.org", "b@example.org"}, address: "a@example.org"},
+		{name: "two angle addresses rejected", values: []string{"<victim@third.example> <attacker@evil.example>"}},
+		{name: "fallback single angle address", values: []string{"victim@third.example <attacker@evil.example>"}, address: "attacker@evil.example", disp: "victim@third.example"},
+		{name: "unclosed angle rejected", values: []string{"Foo <a@example.org"}},
+		{name: "garbage", values: []string{"not an address"}},
+		{name: "empty group", values: []string{"undisclosed-recipients:;"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			address, disp, strict := parseAddressHeader(tt.values)
+			if address != tt.address || disp != tt.disp || strict != tt.strict {
+				t.Fatalf("got (%q, %q, %v), want (%q, %q, %v)", address, disp, strict, tt.address, tt.disp, tt.strict)
+			}
+		})
 	}
 }

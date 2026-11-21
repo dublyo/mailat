@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"mime"
 	"net/mail"
 	"regexp"
 	"sort"
@@ -20,6 +21,7 @@ import (
 	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/internal/provider"
 	"github.com/lib/pq"
+	"golang.org/x/net/html/charset"
 )
 
 type ReceivingService struct {
@@ -286,6 +288,12 @@ func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *Recei
 			identities[ident.ID] = &ident
 		}
 	}
+	// Unknown addresses have no owner. Acknowledge rather than indefinitely
+	// retrying them, and queue the raw object for deletion: otherwise every
+	// message to a random address of a receiving domain is kept forever.
+	if len(identities) == 0 {
+		return s.discardUnroutedObject(ctx, auth, n)
+	}
 	// A message may produce separate notifications for each matched domain rule.
 	// Deduplicate the recipient identity, never the whole message/topic pair.
 	rows, err := s.db.QueryContext(ctx, `SELECT identity_id FROM received_ingestions WHERE topic_arn=$1 AND ses_message_id=$2`, auth.TopicARN, n.Mail.MessageId)
@@ -305,7 +313,7 @@ func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *Recei
 	if err != nil {
 		return err
 	}
-	// Unknown addresses have no owner. Acknowledge rather than indefinitely retrying them.
+	// Every identity already has its copy (an SNS retry or a duplicate rule).
 	if len(identities) == 0 {
 		return nil
 	}
@@ -325,6 +333,13 @@ func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *Recei
 	}
 	if len(keys) == 0 {
 		return fmt.Errorf("unapproved S3 object key")
+	}
+	// SES scans the message but its receipt rule has no action for a virus
+	// verdict. Nobody gets a copy (not even in Spam) and the object is deleted;
+	// spam verdicts keep their normal Spam-folder delivery below.
+	if strings.EqualFold(n.Receipt.VirusVerdict.Status, "FAIL") {
+		log.Printf("Incoming mail rejected: SES virus verdict FAIL (org %d, message %s, %d recipient identities); raw object queued for deletion", auth.OrgID, n.Mail.MessageId, len(identities))
+		return queueIncomingObjectCleanup(ctx, s.db, auth.Bucket, keys)
 	}
 	var raw []byte
 	var key string
@@ -391,15 +406,17 @@ func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *Recei
 			}
 		}
 	}
-	from := clipUTF8(extractEmail(parsed.Header["From"]), 255)
-	name := clipUTF8(decodeMIMEHeader(extractName(parsed.Header["From"])), 255)
+	fromAddress, fromName, _ := parseAddressHeader(parsed.Header["From"])
+	from := clipUTF8(fromAddress, 255)
+	name := clipUTF8(fromName, 255)
 	subject := clipUTF8(decodeMIMEHeader(parsed.Header.Get("Subject")), 1000)
 	messageID := parsed.Header.Get("Message-ID")
 	if messageID == "" {
 		messageID = "<" + n.Mail.MessageId + "@ses.invalid>"
 	}
 	refs := strings.Fields(parsed.Header.Get("References"))
-	replyTo := clipUTF8(extractEmail(parsed.Header["Reply-To"]), 255)
+	replyToAddress, _, _ := parseAddressHeader(parsed.Header["Reply-To"])
+	replyTo := clipUTF8(replyToAddress, 255)
 	thread := generateThreadID(n.Mail.Headers)
 	if thread == "" {
 		hash := sha256.Sum256([]byte(messageID))
@@ -477,6 +494,67 @@ func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *Recei
 	}
 	// Live clients are woken by the mailbox_changes trigger's NOTIFY at commit.
 	return tx.Commit()
+}
+
+// discardUnroutedObject queues the raw object of a notification none of whose
+// recipients reached an identity. Only objects of the organization's bucket,
+// under the SES key of one of its active receiving domains, are queued; a
+// domain that is inactive or no longer receiving keeps its objects so nothing
+// is lost to a transient domain state. The cleanup worker deletes an object
+// only after the delay and only when no mailbox row references it.
+func (s *ReceivingService) discardUnroutedObject(ctx context.Context, auth *ReceivingAuthorization, n *model.SESNotification) error {
+	action := n.Receipt.Action
+	if action.BucketName != "" && action.BucketName != auth.Bucket {
+		return nil
+	}
+	var domains []string
+	for _, recipient := range n.Receipt.Recipients {
+		parsed, err := mail.ParseAddress(recipient)
+		if err != nil {
+			continue
+		}
+		address := strings.ToLower(parsed.Address)
+		if at := strings.LastIndex(address, "@"); at > 0 && !containsString(domains, address[at+1:]) {
+			domains = append(domains, address[at+1:])
+		}
+	}
+	if len(domains) == 0 {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM domains WHERE org_id=$1 AND name=ANY($2) AND status='active' AND receiving_enabled=true`, auth.OrgID, pq.Array(domains))
+	if err != nil {
+		return err
+	}
+	var keys []string
+	for rows.Next() {
+		var domain string
+		if err = rows.Scan(&domain); err != nil {
+			rows.Close()
+			return err
+		}
+		key := "incoming/" + domain + "/" + n.Mail.MessageId
+		if action.ObjectKey == "" || action.ObjectKey == key {
+			keys = append(keys, key)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	return queueIncomingObjectCleanup(ctx, s.db, auth.Bucket, keys)
+}
+
+// queueIncomingObjectCleanup queues raw incoming objects that no mailbox will
+// reference. The hour's delay lets any concurrent delivery of the same object
+// commit first; the worker rechecks references before deleting.
+func queueIncomingObjectCleanup(ctx context.Context, db *sql.DB, bucket string, keys []string) error {
+	if bucket == "" || len(keys) == 0 {
+		return nil
+	}
+	_, err := db.ExecContext(ctx, `INSERT INTO storage_cleanup_jobs(bucket,object_key,next_attempt_at)
+ SELECT $1,k,NOW()+INTERVAL '1 hour' FROM unnest($2::text[]) k ON CONFLICT(bucket,object_key) DO NOTHING`, bucket, pq.Array(keys))
+	return err
 }
 
 // mailboxOwners returns who gets a copy of mail for ident. A shared identity
@@ -690,33 +768,41 @@ func (s *ReceivingService) matchesCondition(email model.ReceivedEmail, cond mode
 
 // Helper functions
 
-func extractEmail(addresses []string) string {
-	if len(addresses) == 0 {
-		return ""
+// parseAddressHeader reads an address header (From, Reply-To, Sender) with
+// net/mail, decoding RFC 2047 display names. It returns the first mailbox and
+// whether the header was exactly one well-formed mailbox in one header
+// instance (strict); only a strict From may be answered automatically.
+//
+// A display name can itself contain "<...>" (From: "<victim@x>" <attacker@y>),
+// so the address is never cut out of the raw text at the first angle bracket.
+// A header net/mail rejects falls back only to one unambiguous <addr-spec>
+// (exactly one "<" and one ">"); anything else yields an empty address.
+func parseAddressHeader(values []string) (address, name string, strict bool) {
+	if len(values) == 0 {
+		return "", "", false
 	}
-	addr := addresses[0]
-	if strings.Contains(addr, "<") {
-		start := strings.Index(addr, "<")
-		end := strings.Index(addr, ">")
-		if start >= 0 && end > start {
-			return addr[start+1 : end]
+	list, err := incomingAddressParser.ParseList(values[0])
+	if err == nil {
+		if len(list) == 0 {
+			return "", "", false
 		}
+		return safeMailText(list[0].Address), safeMailText(list[0].Name), len(list) == 1 && len(values) == 1
 	}
-	return addr
+	raw := strings.TrimSpace(values[0])
+	open, end := strings.Index(raw, "<"), strings.Index(raw, ">")
+	if strings.Count(raw, "<") != 1 || strings.Count(raw, ">") != 1 || end < open {
+		return "", "", false
+	}
+	inner, err := mail.ParseAddress(raw[open+1 : end])
+	if err != nil {
+		return "", "", false
+	}
+	return safeMailText(inner.Address), decodeMIMEHeader(strings.Trim(strings.TrimSpace(raw[:open]), `"`)), false
 }
 
-func extractName(addresses []string) string {
-	if len(addresses) == 0 {
-		return ""
-	}
-	addr := addresses[0]
-	if strings.Contains(addr, "<") {
-		start := strings.Index(addr, "<")
-		name := strings.TrimSpace(addr[:start])
-		return strings.Trim(name, "\"")
-	}
-	return ""
-}
+// incomingAddressParser decodes encoded display names in any charset the
+// body decoder accepts. It holds no state, so it is safe for concurrent use.
+var incomingAddressParser = mail.AddressParser{WordDecoder: &mime.WordDecoder{CharsetReader: charset.NewReaderLabel}}
 
 func generateThreadID(headers []model.SESHeader) string {
 	for _, h := range headers {

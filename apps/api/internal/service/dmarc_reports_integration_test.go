@@ -85,7 +85,8 @@ func TestDMARCReceivingConservativeAndSpamPrecedence(t *testing.T) {
 		{name: "missing authentication", domain: "one.test", verdict: "missing", folder: "inbox"},
 		{name: "malformed report", domain: "one.test", invalid: true, folder: "inbox"},
 		{name: "spam cannot promote", domain: "one.test", verdict: "spam", folder: "spam"},
-		{name: "virus cannot promote", domain: "one.test", verdict: "virus", folder: "spam"},
+		// A virus verdict is never delivered at all (not even to Spam).
+		{name: "virus never delivered", domain: "one.test", verdict: "virus", folder: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := testutil.Database(t)
@@ -111,6 +112,13 @@ func TestDMARCReceivingConservativeAndSpamPrecedence(t *testing.T) {
 			}
 			if err := s.ProcessIncomingEmail(context.Background(), a, n); err != nil {
 				t.Fatal(err)
+			}
+			if tc.folder == "" {
+				var n int
+				if err := db.QueryRow(`SELECT COUNT(*) FROM received_emails`).Scan(&n); err != nil || n != 0 {
+					t.Fatalf("virus mail delivered: copies=%d err=%v", n, err)
+				}
+				return
 			}
 			var folder string
 			var spam bool
