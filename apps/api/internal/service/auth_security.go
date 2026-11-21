@@ -2,9 +2,7 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
 	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/golang-jwt/jwt/v5"
@@ -13,6 +11,9 @@ import (
 	"time"
 )
 
+// issueSession is called only by startSession, after every sign-in step
+// passed. The insert re-checks the account: active, unchanged credentials,
+// the TOTP decision, and a login PIN set.
 func (s *AuthService) issueSession(ctx context.Context, user *model.User, version int64, verifiedFactor bool) (string, error) {
 	token, err := s.generateToken(user)
 	if err != nil {
@@ -21,38 +22,35 @@ func (s *AuthService) issueSession(ctx context.Context, user *model.User, versio
 	var id int64
 	// Persist before returning a usable token. The middleware always checks this
 	// record, so revocation and account disablement take effect on the next request.
-	err = s.db.QueryRowContext(ctx, `INSERT INTO user_sessions(user_id,org_id,token_hash,expires_at) SELECT id,org_id,$2,$3 FROM users WHERE id=$1 AND status='active' AND auth_version=$4 AND totp_enabled=$5 RETURNING id`, user.ID, hashToken(token), s.sessionExpiry(), version, verifiedFactor).Scan(&id)
+	err = s.db.QueryRowContext(ctx, `INSERT INTO user_sessions(user_id,org_id,token_hash,expires_at) SELECT id,org_id,$2,$3 FROM users WHERE id=$1 AND status='active' AND auth_version=$4 AND totp_enabled=$5 AND login_pin_hash IS NOT NULL RETURNING id`, user.ID, hashToken(token), s.sessionExpiry(), version, verifiedFactor).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("unable to create session")
 	}
 	return token, nil
 }
 
-// IssueSessionForUser signs in an active user that has no second factor, such
-// as a user who just accepted an invite.
-func (s *AuthService) IssueSessionForUser(ctx context.Context, user *model.User) (string, error) {
+// BeginSessionForUser continues the sign-in of an active user that has no
+// second factor, such as a user who just accepted an invite: the result is
+// the PIN step (or PIN setup), never a session by itself.
+func (s *AuthService) BeginSessionForUser(ctx context.Context, user *model.User) (*model.LoginResponse, error) {
 	var version int64
 	var totp bool
 	if err := s.db.QueryRowContext(ctx, `SELECT auth_version,totp_enabled FROM users WHERE id=$1 AND status='active'`, user.ID).Scan(&version, &totp); err != nil {
-		return "", fmt.Errorf("account unavailable")
+		return nil, fmt.Errorf("account unavailable")
 	}
 	if totp {
-		return "", fmt.Errorf("sign in with your second factor")
+		return nil, fmt.Errorf("sign in with your second factor")
 	}
-	token, err := s.issueSession(ctx, user, version, false)
-	if err != nil {
-		return "", err
-	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE users SET last_login_at=now() WHERE id=$1`, user.ID)
-	return token, nil
+	return s.pinGate(ctx, user, version, false, 0)
 }
 
 // AuthenticateUser is shared by password and OAuth logins; neither can bypass
-// the second-factor decision or issue a token for a disabled account.
+// the second-factor or PIN decision or issue a token for a disabled account.
+// OAuth carries no trusted-device token, so it always reaches the PIN step.
 func (s *AuthService) AuthenticateUser(ctx context.Context, userID int64) (*model.LoginResponse, error) {
-	return s.authenticateUser(ctx, userID, nil)
+	return s.authenticateUser(ctx, userID, nil, 0)
 }
-func (s *AuthService) authenticateUser(ctx context.Context, userID int64, expectedVersion *int64) (*model.LoginResponse, error) {
+func (s *AuthService) authenticateUser(ctx context.Context, userID int64, expectedVersion *int64, deviceID int64) (*model.LoginResponse, error) {
 	user, err := s.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("account unavailable")
@@ -75,18 +73,19 @@ func (s *AuthService) authenticateUser(ctx context.Context, userID int64, expect
 			return nil, err
 		}
 		var count int
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM auth_challenges WHERE user_id=$1 AND created_at>now()-interval '15 minutes'`, userID).Scan(&count); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM auth_challenges WHERE user_id=$1 AND kind='totp' AND created_at>now()-interval '15 minutes'`, userID).Scan(&count); err != nil {
 			return nil, err
 		}
 		if count >= 10 {
 			return nil, fmt.Errorf("too many verification attempts; try again later")
 		}
-		b := make([]byte, 32)
-		if _, err = rand.Read(b); err != nil {
+		challenge, err := newSecretToken()
+		if err != nil {
 			return nil, err
 		}
-		challenge := hex.EncodeToString(b)
-		if _, err = tx.ExecContext(ctx, `INSERT INTO auth_challenges(token_hash,user_id,expires_at,auth_version) VALUES($1,$2,now()+interval '5 minutes',$3)`, hashToken(challenge), userID, version); err != nil {
+		// A trusted device presented with the password still skips the PIN
+		// after the TOTP step; the row is re-checked then.
+		if _, err = tx.ExecContext(ctx, `INSERT INTO auth_challenges(token_hash,user_id,expires_at,auth_version,kind,trusted_device_id) VALUES($1,$2,now()+interval '5 minutes',$3,'totp',NULLIF($4,0))`, hashToken(challenge), userID, version, deviceID); err != nil {
 			return nil, err
 		}
 		// Bounded retention of consumed/expired challenges for this account.
@@ -98,12 +97,7 @@ func (s *AuthService) authenticateUser(ctx context.Context, userID int64, expect
 		}
 		return &model.LoginResponse{RequiresTwoFactor: true, ChallengeToken: challenge}, nil
 	}
-	token, err := s.issueSession(ctx, user, version, false)
-	if err != nil {
-		return nil, err
-	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE users SET last_login_at=now() WHERE id=$1`, userID)
-	return &model.LoginResponse{Token: token, User: user}, nil
+	return s.pinGate(ctx, user, version, false, deviceID)
 }
 
 func (s *AuthService) CompleteChallenge(ctx context.Context, challenge, code string) (*model.LoginResponse, error) {
@@ -117,9 +111,10 @@ func (s *AuthService) CompleteChallenge(ctx context.Context, challenge, code str
 	}
 	defer tx.Rollback()
 	var userID, challengeVersion int64
+	var deviceID sql.NullInt64
 	// Serialize challenge attempts, including failure counts. A successful token is
 	// single-use; concurrent submissions cannot both establish sessions.
-	err = tx.QueryRowContext(ctx, `SELECT user_id,auth_version FROM auth_challenges WHERE token_hash=$1 AND expires_at>now() AND consumed_at IS NULL AND attempts<5 FOR UPDATE`, hashToken(challenge)).Scan(&userID, &challengeVersion)
+	err = tx.QueryRowContext(ctx, `SELECT user_id,auth_version,trusted_device_id FROM auth_challenges WHERE token_hash=$1 AND kind='totp' AND expires_at>now() AND consumed_at IS NULL AND attempts<5 FOR UPDATE`, hashToken(challenge)).Scan(&userID, &challengeVersion, &deviceID)
 	if err != nil {
 		return nil, invalid
 	}
@@ -165,9 +160,9 @@ func (s *AuthService) CompleteChallenge(ctx context.Context, challenge, code str
 	}
 	if backupIndex >= 0 {
 		backup = append(backup[:backupIndex], backup[backupIndex+1:]...)
-		_, err = tx.ExecContext(ctx, `UPDATE users SET backup_codes=$2,last_login_at=now() WHERE id=$1`, userID, pq.Array(backup))
+		_, err = tx.ExecContext(ctx, `UPDATE users SET backup_codes=$2 WHERE id=$1`, userID, pq.Array(backup))
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE users SET totp_last_step=$2,last_login_at=now() WHERE id=$1`, userID, step)
+		_, err = tx.ExecContext(ctx, `UPDATE users SET totp_last_step=$2 WHERE id=$1`, userID, step)
 	}
 	if err != nil {
 		return nil, err
@@ -182,11 +177,9 @@ func (s *AuthService) CompleteChallenge(ctx context.Context, challenge, code str
 	if err != nil {
 		return nil, invalid
 	}
-	token, err := s.issueSession(ctx, user, version, true)
-	if err != nil {
-		return nil, err
-	}
-	return &model.LoginResponse{Token: token, User: user}, nil
+	// The PIN step follows; a trusted device presented with the password
+	// skips it.
+	return s.pinGate(ctx, user, version, true, deviceID.Int64)
 }
 
 func (s *AuthService) RevokeToken(ctx context.Context, token string) error {

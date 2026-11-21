@@ -87,12 +87,18 @@ type InviteLookup struct {
 	Name        string    `json:"name,omitempty"` // the mailbox user's name, for mailbox_setup
 }
 
-// AcceptInviteResult signs the user in, except after a password reset of an
-// account with a second factor: then SignedIn is false and the user logs in.
+// AcceptInviteResult continues to the login PIN step: requiresPinSetup (a
+// new account, POST /auth/pin/setup) or requiresPin (POST /auth/pin/verify)
+// with challengeToken. After a password reset of an account with a second
+// factor there is no challenge: the user logs in. SignedIn is true only with
+// a token.
 type AcceptInviteResult struct {
-	Token    string      `json:"token,omitempty"`
-	User     *model.User `json:"user,omitempty"`
-	SignedIn bool        `json:"signedIn"`
+	Token            string      `json:"token,omitempty"`
+	User             *model.User `json:"user,omitempty"`
+	SignedIn         bool        `json:"signedIn"`
+	RequiresPin      bool        `json:"requiresPin,omitempty"`
+	RequiresPinSetup bool        `json:"requiresPinSetup,omitempty"`
+	ChallengeToken   string      `json:"challengeToken,omitempty"`
 }
 
 type OrgIdentity struct {
@@ -486,6 +492,7 @@ func (s *OrgMemberService) RemoveMember(ctx context.Context, a OrgActor, userUUI
 	// 2. Credentials and devices.
 	for _, q := range []string{
 		`UPDATE user_sessions SET active=false,revoked_at=now() WHERE user_id=$1 AND active`,
+		`DELETE FROM trusted_devices WHERE user_id=$1`,
 		`DELETE FROM api_keys WHERE user_id=$1`,
 		`DELETE FROM push_subscriptions WHERE user_id=$1`,
 		`DELETE FROM oauth_connections WHERE user_id=$1`,
@@ -1148,11 +1155,14 @@ func (s *OrgMemberService) AcceptInvite(ctx context.Context, req *AcceptInviteRe
 	if totp {
 		return &AcceptInviteResult{SignedIn: false}, nil
 	}
-	token, err := s.auth.IssueSessionForUser(ctx, user)
+	// The link proved the address and set the password; the PIN step (or PIN
+	// setup for a new account) still comes before any session.
+	step, err := s.auth.BeginSessionForUser(ctx, user)
 	if err != nil {
 		return nil, s.accountGone(ctx, userID, err)
 	}
-	return &AcceptInviteResult{Token: token, User: user, SignedIn: true}, nil
+	return &AcceptInviteResult{Token: step.Token, User: step.User, SignedIn: step.Token != "",
+		RequiresPin: step.RequiresPin, RequiresPinSetup: step.RequiresPinSetup, ChallengeToken: step.ChallengeToken}, nil
 }
 
 // accountGone answers like an unusable link when the account was removed or
@@ -1253,6 +1263,7 @@ func (s *OrgMemberService) acceptMailboxLink(ctx context.Context, token string, 
 	for _, q := range []string{
 		`UPDATE user_sessions SET active=false,revoked_at=now() WHERE user_id=$1 AND active`,
 		`DELETE FROM auth_challenges WHERE user_id=$1`,
+		`DELETE FROM trusted_devices WHERE user_id=$1`,
 	} {
 		if _, err = tx.ExecContext(ctx, q, inv.userID); err != nil {
 			return 0, err

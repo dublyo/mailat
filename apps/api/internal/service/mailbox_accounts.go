@@ -405,14 +405,18 @@ func lockMailbox(ctx context.Context, tx *sql.Tx, a OrgActor, userUUID string, w
 	return &m, lockOrg(ctx, tx, a.OrgID)
 }
 
-// revokeSignIns ends every session and pending second-factor challenge.
+// revokeSignIns ends every session, pending second-factor or PIN challenge
+// and remembered (PIN-skipping) device.
 func revokeSignIns(ctx context.Context, tx *sql.Tx, userID int64) (int, error) {
 	res, err := tx.ExecContext(ctx, `UPDATE user_sessions SET active=false,revoked_at=now() WHERE user_id=$1 AND active`, userID)
 	if err != nil {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	_, err = tx.ExecContext(ctx, `DELETE FROM auth_challenges WHERE user_id=$1`, userID)
+	if _, err = tx.ExecContext(ctx, `DELETE FROM auth_challenges WHERE user_id=$1`, userID); err != nil {
+		return 0, err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM trusted_devices WHERE user_id=$1`, userID)
 	return int(n), err
 }
 

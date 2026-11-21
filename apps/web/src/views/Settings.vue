@@ -11,6 +11,7 @@ import VacationForwardingSettings from '@/components/settings/VacationForwarding
 import TeamSettings from '@/components/settings/TeamSettings.vue'
 import SharedMailboxesSettings from '@/components/settings/SharedMailboxesSettings.vue'
 import SignatureSettings from '@/components/settings/SignatureSettings.vue'
+import LoginPinSection from '@/components/settings/LoginPinSection.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useDomainsStore } from '@/stores/domains'
@@ -595,6 +596,8 @@ async function handleSignOutAll() {
               <h3 class="text-sm font-medium text-gmail-gray mb-4">Password</h3>
               <Button variant="secondary" @click="showPasswordModal = true">Change Password</Button>
             </section>
+
+            <LoginPinSection />
 
             <section class="pt-6 border-t border-gmail-border">
               <h3 class="text-sm font-medium text-gmail-gray mb-4">Two-Factor Authentication</h3>

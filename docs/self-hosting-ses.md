@@ -228,6 +228,23 @@ API keys have the `ue_` prefix and are accepted through the same Authorization h
 
 Mailbox queries, message mutations, draft operations, labels, and attachment downloads are scoped to the mailbox copies the user owns: mail to their personal identities and their own copy of mail to shared mailboxes they read. A unified inbox combines those; it is not an organization-wide mailbox browser, and owners and admins cannot read another member's mail. Live updates use the authenticated `/api/v1/sse/connect` route (see [Live updates and web push](#live-updates-and-web-push)).
 
+### Login PIN and remembered devices
+
+Every user (owner, admin, member and mailbox user) has a 4-digit login PIN that is asked after the password, and after the authenticator code when two-factor sign-in is on. No session exists until the PIN step passes. The first sign-in after this feature (and after registration, an invite or a PIN reset) asks the user to choose a PIN; there is no skip. PINs are 4 digits, not all the same (`1111`) and not a run (`1234`, `4321`); only a bcrypt hash is stored.
+
+- The PIN step lasts 5 minutes and allows 5 attempts. Per user, at most 5 wrong PINs per 15 minutes and 20 per 24 hours; beyond that the PIN step answers 429 until the window passes. The 20th wrong PIN in a day is written to the audit log (`login_pin_locked`): it means someone has the password, so change it. No email alert is sent.
+- "Remember this device for 30 days" stores a random token in the browser (only its SHA-256 on the server). A remembered browser skips the PIN for that account until the fixed expiry. At most 20 per user. Changing the password or PIN, signing out of all sessions, an admin password set, 2FA reset or PIN reset, suspension and removal forget them. Users see and forget them in Settings → Security.
+- Failed logins (wrong password or unknown address) are limited to 10 per address and client IP and 100 per address per 15 minutes; a correct password never uses this budget, so wrong guesses from elsewhere cannot lock a user out. The per-IP limit of 20 login requests per 15 minutes stays.
+- Owners and admins reset a forgotten PIN for a member or mailbox user (Team settings, or the mailbox page → Access → Reset PIN). Admins cannot reset the owner's or another admin's PIN; only the owner resets an admin's. The reset is audited and signs the user out everywhere.
+
+**Owner forgot the PIN.** Nobody can reset the owner's PIN in the app. With database access, clear it and sign in again; the next sign-in asks for a new PIN:
+
+```sql
+UPDATE users SET login_pin_hash=NULL, login_pin_set_at=NULL WHERE email='owner@example.com';
+DELETE FROM trusted_devices WHERE user_id=(SELECT id FROM users WHERE email='owner@example.com');
+DELETE FROM login_pin_failures WHERE user_id=(SELECT id FROM users WHERE email='owner@example.com');
+```
+
 ### Members, roles, and shared mailboxes
 
 Users are `owner`, `admin`, `member` or `mailbox` (see [Mailbox users](#mailbox-users)). Owners and admins invite people from Settings (`POST /api/v1/org/invites`); admins can invite and remove members only, and only the owner changes roles. The invite email is sent through SES from the inviter's own identity and links to `${WEB_URL}/invite#token=...`; the link is valid for `INVITE_TTL_HOURS` (default 168, at most 720), single use, and replaced on resend (60-second cooldown, five sends per invite). The invitee sets a name and password, then can link OAuth later. With `DISABLE_APP_LIMITS=false`, active users plus open invites count against the organization's `max_users`. While the SES account is in the sandbox, invites reach only verified addresses.

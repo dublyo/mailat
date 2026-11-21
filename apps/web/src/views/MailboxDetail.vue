@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Trash2, Plus, RotateCw, KeyRound, Mail, ShieldOff, PauseCircle, PlayCircle } from 'lucide-vue-next'
+import { ArrowLeft, Trash2, Plus, RotateCw, KeyRound, Mail, ShieldOff, PauseCircle, PlayCircle, Hash } from 'lucide-vue-next'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Button from '@/components/common/Button.vue'
 import Badge from '@/components/common/Badge.vue'
@@ -150,6 +150,8 @@ const resendInvite = () => run('resend', async () => {
 }, 'Could not resend the setup link.')
 const resetTwoFactor = () => confirm('Turn off two-factor sign-in for this user? They are signed out everywhere and should set it up again.') &&
   run('2fa', async () => { await mailboxAdminApi.resetTwoFactor(userUuid); return 'Two-factor sign-in was turned off and every session ended.' }, 'Could not reset two-factor sign-in.')
+const resetLoginPin = () => confirm('Reset the login PIN of this user? They are signed out everywhere, remembered devices are forgotten, and they choose a new PIN at their next sign-in.') &&
+  run('pin', async () => { await orgApi.resetLoginPin(userUuid); return 'The login PIN was reset and every session ended. The user chooses a new PIN at the next sign-in.' }, 'Could not reset the login PIN.')
 const suspend = () => confirm('Suspend this mailbox? The user is signed out and cannot sign in, forwards pause and auto-replies stop. Mail keeps arriving.') &&
   run('suspend', async () => { await mailboxAdminApi.suspend(userUuid); return 'Mailbox suspended.' }, 'Could not suspend the mailbox.')
 const reactivate = () => run('reactivate', async () => {
@@ -342,10 +344,11 @@ async function remove() {
               <Button v-if="status === 'active'" variant="secondary" :disabled="!!busy" @click="openPassword('link')"><Mail class="w-4 h-4" />Send reset link</Button>
             </template>
             <Button v-if="detail.overview.twoFactor" variant="secondary" :loading="busy === '2fa'" @click="resetTwoFactor"><ShieldOff class="w-4 h-4" />Reset 2FA</Button>
+            <Button v-if="detail.overview.loginPin" variant="secondary" :loading="busy === 'pin'" @click="resetLoginPin"><Hash class="w-4 h-4" />Reset PIN</Button>
             <Button v-if="status === 'active'" variant="secondary" :loading="busy === 'suspend'" @click="suspend"><PauseCircle class="w-4 h-4" />Suspend</Button>
             <Button v-if="status === 'suspended'" variant="secondary" :loading="busy === 'reactivate'" @click="reactivate"><PlayCircle class="w-4 h-4" />Reactivate</Button>
           </section>
-          <p class="text-xs text-gmail-gray">Setting a password or resetting 2FA signs the user out everywhere. Two-factor sign-in stays on after a password change. Every action is recorded in the audit log.</p>
+          <p class="text-xs text-gmail-gray">Setting a password or resetting 2FA or the login PIN signs the user out everywhere. Two-factor sign-in stays on after a password change. Every action is recorded in the audit log.</p>
         </div>
 
         <!-- Remove -->

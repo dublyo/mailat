@@ -21,6 +21,7 @@ import (
 	"github.com/dublyo/mailat/api/internal/controller"
 	"github.com/dublyo/mailat/api/internal/database"
 	"github.com/dublyo/mailat/api/internal/middleware"
+	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/internal/service"
 	"github.com/dublyo/mailat/api/internal/testutil"
 )
@@ -62,7 +63,9 @@ func TestOAuthLoginLinkAndConfirmHTTP(t *testing.T) {
 	google := oauth.ProviderConfig(service.ProviderGoogle)
 	google.AuthURL, google.TokenURL, google.UserInfoURL = stub.URL+"/auth", stub.URL+"/token", stub.URL+"/userinfo"
 	ctrl := controller.NewOAuthController(oauth, service.NewAuditLogService(db, cfg), cfg, service.NewRateLimiter(db, cfg))
-	auth := controller.NewAuthController(service.NewAuthService(db, cfg), nil)
+	authService := service.NewAuthService(db, cfg)
+	auth := controller.NewAuthController(authService, nil)
+	pin := controller.NewLoginPinController(authService, nil, nil)
 
 	s := ghttp.GetServer(fmt.Sprintf("oauth-http-%d", time.Now().UnixNano()))
 	s.SetAddr("127.0.0.1:0")
@@ -70,6 +73,8 @@ func TestOAuthLoginLinkAndConfirmHTTP(t *testing.T) {
 	s.SetAccessLogEnabled(false)
 	s.Group("/api/v1", func(g *ghttp.RouterGroup) {
 		g.POST("/auth/login", auth.Login)
+		g.POST("/auth/pin/setup", pin.Setup)
+		g.POST("/auth/pin/verify", pin.Verify)
 		g.GET("/oauth/:provider", ctrl.InitiateOAuth)
 		g.GET("/oauth/:provider/callback", ctrl.HandleCallback)
 		g.Group("/", func(g *ghttp.RouterGroup) {
@@ -116,10 +121,20 @@ func TestOAuthLoginLinkAndConfirmHTTP(t *testing.T) {
 	session := func(email string) string {
 		t.Helper()
 		status, body := post("/api/v1/auth/login", "", map[string]string{"email": email, "password": "fixture-password"})
+		var step struct{ Data model.LoginResponse }
+		json.Unmarshal(body, &step)
+		path := "/api/v1/auth/pin/verify"
+		if step.Data.RequiresPinSetup {
+			path = "/api/v1/auth/pin/setup"
+		}
+		if status != 200 || step.Data.ChallengeToken == "" {
+			t.Fatalf("login %s: %d %s", email, status, body)
+		}
+		status, body = post(path, "", map[string]string{"challengeToken": step.Data.ChallengeToken, "pin": "2580"})
 		var out struct{ Data struct{ Token string } }
 		json.Unmarshal(body, &out)
 		if status != 200 || out.Data.Token == "" {
-			t.Fatalf("login %s: %d %s", email, status, body)
+			t.Fatalf("PIN step %s: %d %s", email, status, body)
 		}
 		return out.Data.Token
 	}
@@ -207,10 +222,11 @@ func TestOAuthLoginLinkAndConfirmHTTP(t *testing.T) {
 	if status, body := post("/api/v1/oauth/link/confirm", owner, map[string]string{"ticket": ticket}); status != 410 || errorCode(body) != "invalid_ticket" {
 		t.Fatalf("ticket replay: %d %s", status, body)
 	}
-	// The linked identity now signs in; the session goes in the URL fragment.
+	// The linked identity now signs in; the PIN challenge goes in the URL
+	// fragment (OAuth never skips the PIN step).
 	state = startLogin()
 	res := get("/api/v1/oauth/google/callback?code=c&state="+state, state)
-	if res.StatusCode != 302 || !strings.HasPrefix(res.Header.Get("Location"), "http://web.test/login#session=") || strings.Contains(res.Header.Get("Location"), "nonce=") {
+	if res.StatusCode != 302 || !strings.HasPrefix(res.Header.Get("Location"), "http://web.test/login#pin=") || strings.Contains(res.Header.Get("Location"), "nonce=") {
 		t.Fatalf("linked login: %d %s", res.StatusCode, res.Header.Get("Location"))
 	}
 	if !strings.Contains(res.Header.Get("Set-Cookie"), "Max-Age=0") {
@@ -226,7 +242,7 @@ func TestOAuthLoginLinkAndConfirmHTTP(t *testing.T) {
 		t.Fatalf("nonce cookie: %s -> %s", res.Header.Get("Set-Cookie"), loc)
 	}
 	res = get("/api/v1/oauth/google/callback?code=c&state="+state, state+"."+nonce)
-	if target := res.Header.Get("Location"); res.StatusCode != 302 || !strings.HasPrefix(target, "http://web.test/login#session=") || !strings.HasSuffix(target, "&nonce="+nonce) {
+	if target := res.Header.Get("Location"); res.StatusCode != 302 || !strings.HasPrefix(target, "http://web.test/login#pin=") || !strings.HasSuffix(target, "&nonce="+nonce) {
 		t.Fatalf("nonce login: %d %s", res.StatusCode, target)
 	}
 	wantError(get("/api/v1/oauth/google?nonce=bad%22value", ""), "invalid_state")

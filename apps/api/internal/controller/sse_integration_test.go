@@ -99,9 +99,19 @@ func newSSEFixture(t *testing.T) *sseFixture {
 
 func (f *sseFixture) session(t *testing.T) string {
 	t.Helper()
-	res, err := service.NewAuthService(f.db, f.cfg).Login(context.Background(), &model.LoginRequest{Email: "live@fixture.test", Password: "fixture-password"})
+	auth := service.NewAuthService(f.db, f.cfg)
+	res, err := auth.Login(context.Background(), &model.LoginRequest{Email: "live@fixture.test", Password: "fixture-password"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The session follows the login PIN step.
+	if res.RequiresPinSetup {
+		res, err = auth.SetupLoginPin(context.Background(), res.ChallengeToken, "2580", false, service.DeviceMeta{})
+	} else if res.RequiresPin {
+		res, err = auth.VerifyLoginPin(context.Background(), res.ChallengeToken, "2580", false, service.DeviceMeta{})
+	}
+	if err != nil || res.Token == "" {
+		t.Fatal("PIN step", err)
 	}
 	return res.Token
 }

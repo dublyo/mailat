@@ -332,3 +332,57 @@ test('switching accounts ends the old push before adopting the new session, neve
     delete globalThis.navigator
   }
 })
+
+test('a wrong PIN or setup error stays on the login form', async () => {
+  const { rejectResponse } = apiFixture()
+  const href = window.location.href
+  for (const url of ['/api/v1/auth/pin/verify', '/api/v1/auth/pin/setup']) {
+    await assert.rejects(rejectResponse({ config: { url }, response: { status: 401, data: { message: 'Wrong PIN. 4 attempts left.', data: { attemptsLeft: 4 } } } }),
+      error => error.status === 401 && error.data.attemptsLeft === 4)
+  }
+  assert.equal(window.location.href, href)
+})
+
+test('a password alone leads to the PIN step; the PIN issues the session and remembers the device', async () => {
+  const { auth, endpoints, state } = storesFixture()
+  const saved = new Map()
+  globalThis.localStorage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) }
+  const sent = []
+  endpoints.authApi.login = async (email, password, deviceToken) => { sent.push(deviceToken); return { requiresPinSetup: true, challengeToken: 'pin-challenge' } }
+  assert.equal(await auth.login('Owner@Example.test', 'password'), false)
+  assert.deepEqual(auth.pinChallenge, { token: 'pin-challenge', setup: true })
+  assert.equal(state.token, null)
+  assert.equal(auth.isAuthenticated, false)
+  endpoints.authApi.setupPin = async (challenge, pin, trust) => {
+    assert.deepEqual([challenge, pin, trust], ['pin-challenge', '2580', true])
+    return { token: 'pin-session', user: { id: 1, email: 'owner@example.test' }, deviceToken: 'device-token', deviceTokenExpiresAt: '2999-01-01T00:00:00Z' }
+  }
+  assert.equal(await auth.submitPin('2580', true), true)
+  assert.equal(state.token, 'pin-session')
+  assert.equal(auth.pinChallenge, null)
+  // The next login of the same address (any case) sends the device token.
+  endpoints.authApi.login = async (email, password, deviceToken) => { sent.push(deviceToken); return { token: 'skipped', user: { id: 1, email: 'owner@example.test' } } }
+  assert.equal(await auth.login('OWNER@example.test', 'password'), true)
+  assert.deepEqual(sent, [undefined, 'device-token'])
+  // A token the server no longer accepts is dropped.
+  endpoints.authApi.login = async (email, password, deviceToken) => { sent.push(deviceToken); return { requiresPin: true, challengeToken: 'again' } }
+  assert.equal(await auth.login('owner@example.test', 'password'), false)
+  assert.equal(await auth.login('owner@example.test', 'password'), false)
+  assert.deepEqual(sent.slice(2), ['device-token', undefined])
+})
+
+test('two-factor completion continues to the PIN step', async () => {
+  const { auth, endpoints } = storesFixture()
+  endpoints.authApi.login = async () => ({ requiresTwoFactor: true, challengeToken: 'totp' })
+  await auth.login('fixture@example.test', 'password')
+  endpoints.authApi.completeChallenge = async () => ({ requiresPin: true, challengeToken: 'pin-after-totp' })
+  assert.equal(await auth.verifyChallenge('123456'), false)
+  assert.equal(auth.challengeToken, null)
+  assert.deepEqual(auth.pinChallenge, { token: 'pin-after-totp', setup: false })
+  endpoints.authApi.verifyPin = async (challenge, pin, trust) => {
+    assert.deepEqual([challenge, pin, trust], ['pin-after-totp', '1357', false])
+    return { token: 'session', user: { id: 1, email: 'fixture@example.test' } }
+  }
+  assert.equal(await auth.submitPin('1357', false), true)
+  assert.equal(auth.isAuthenticated, true)
+})

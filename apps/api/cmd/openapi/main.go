@@ -344,7 +344,7 @@ func main() {
 		bindings[m[1]] = m[2]
 	}
 	paths := object{}
-	public := map[string]bool{"/health": true, "/ready": true, "/auth/register-status": true, "/auth/register": true, "/auth/login": true, "/auth/2fa/challenge": true, "/webhooks/ses/incoming": true, "/oauth/providers": true, "/oauth/:provider": true, "/oauth/:provider/callback": true, "/forwards/verify": true, "/auth/invites/lookup": true, "/auth/invites/accept": true}
+	public := map[string]bool{"/health": true, "/ready": true, "/auth/register-status": true, "/auth/register": true, "/auth/login": true, "/auth/2fa/challenge": true, "/auth/pin/verify": true, "/auth/pin/setup": true, "/webhooks/ses/incoming": true, "/oauth/providers": true, "/oauth/:provider": true, "/oauth/:provider/callback": true, "/forwards/verify": true, "/auth/invites/lookup": true, "/auth/invites/accept": true}
 	lineRx := regexp.MustCompile(`(\w+)\.(GET|POST|PUT|DELETE|PATCH)\("([^"]+)",\s*(\w+)\.(\w+)\)`)
 	paramRx := regexp.MustCompile(`:(\w+)`)
 	mailboxAllowed := map[string]bool{}
@@ -568,7 +568,7 @@ func customize(op object, verb, path string) {
 	}
 	// Database-backed per-IP/account/user limits (fixed windows of 15 minutes
 	// or 1 hour, not the per-minute API key window).
-	authLimited := map[string]bool{"POST /auth/login": true, "POST /auth/register": true, "POST /auth/2fa/challenge": true, "POST /auth/2fa/enable": true, "POST /auth/2fa/verify": true, "POST /auth/2fa/disable": true, "POST /security/2fa/setup": true, "POST /security/2fa/verify": true, "POST /security/2fa/disable": true, "POST /security/2fa/backup-codes": true, "POST /auth/change-password": true, "POST /oauth/link/confirm": true, "POST /unsubscribe/:token": true, "DELETE /unsubscribe/:token": true, "PUT /preferences/:token": true, "POST /forwards/verify": true, "POST /auth/invites/lookup": true, "POST /auth/invites/accept": true, "POST /forwards": true, "POST /forwards/:uuid/resend-verification": true}
+	authLimited := map[string]bool{"POST /auth/login": true, "POST /auth/register": true, "POST /auth/2fa/challenge": true, "POST /auth/pin/verify": true, "POST /auth/pin/setup": true, "PUT /security/pin": true, "POST /auth/2fa/enable": true, "POST /auth/2fa/verify": true, "POST /auth/2fa/disable": true, "POST /security/2fa/setup": true, "POST /security/2fa/verify": true, "POST /security/2fa/disable": true, "POST /security/2fa/backup-codes": true, "POST /auth/change-password": true, "POST /oauth/link/confirm": true, "POST /unsubscribe/:token": true, "DELETE /unsubscribe/:token": true, "PUT /preferences/:token": true, "POST /forwards/verify": true, "POST /auth/invites/lookup": true, "POST /auth/invites/accept": true, "POST /forwards": true, "POST /forwards/:uuid/resend-verification": true}
 	if responses, ok := op["responses"].(object); ok && authLimited[verb+" "+path] {
 		if limited, ok := responses["429"].(object); ok {
 			limited["description"] = "Too many attempts from this client, account or user; respect Retry-After"

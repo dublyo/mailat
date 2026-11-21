@@ -23,16 +23,22 @@ type RateRule struct {
 // Auth and public endpoint limits (M2 C2). Subjects are client IPs, lowercased
 // account emails or user IDs depending on the rule.
 var (
-	RuleLoginIP            = RateRule{Name: "login-ip", Limit: 20, Window: 15 * time.Minute}
-	RuleLoginAccount       = RateRule{Name: "login-account", Limit: 10, Window: 15 * time.Minute}
-	RuleRegisterIP         = RateRule{Name: "register-ip", Limit: 5, Window: time.Hour}
-	Rule2FAChallengeIP     = RateRule{Name: "2fa-challenge-ip", Limit: 20, Window: 15 * time.Minute}
-	Rule2FAManageUser      = RateRule{Name: "2fa-manage-user", Limit: 10, Window: 15 * time.Minute}
-	RuleOAuthIP            = RateRule{Name: "oauth-ip", Limit: 30, Window: 15 * time.Minute}
-	RulePublicComplianceIP = RateRule{Name: "public-compliance-ip", Limit: 60, Window: 15 * time.Minute}
-	RuleForwardVerifyIP    = RateRule{Name: "forward-verify-ip", Limit: 20, Window: 15 * time.Minute}
-	RuleInviteLookupIP     = RateRule{Name: "invite-lookup-ip", Limit: 20, Window: 15 * time.Minute}
-	RuleInviteAcceptIP     = RateRule{Name: "invite-accept-ip", Limit: 10, Window: 15 * time.Minute}
+	RuleLoginIP = RateRule{Name: "login-ip", Limit: 20, Window: 15 * time.Minute}
+	// Failed logins only (wrong password or unknown account): a correct
+	// password never uses the budget, so knowing an address is not enough to
+	// lock its owner out. Strict per address and client IP, loose per address.
+	RuleLoginFailure        = RateRule{Name: "login-failure", Limit: 10, Window: 15 * time.Minute}
+	RuleLoginAccountFailure = RateRule{Name: "login-account-failure", Limit: 100, Window: 15 * time.Minute}
+	RulePinIP               = RateRule{Name: "pin-ip", Limit: 20, Window: 15 * time.Minute}
+	RulePinManageUser       = RateRule{Name: "pin-manage-user", Limit: 10, Window: 15 * time.Minute}
+	RuleRegisterIP          = RateRule{Name: "register-ip", Limit: 5, Window: time.Hour}
+	Rule2FAChallengeIP      = RateRule{Name: "2fa-challenge-ip", Limit: 20, Window: 15 * time.Minute}
+	Rule2FAManageUser       = RateRule{Name: "2fa-manage-user", Limit: 10, Window: 15 * time.Minute}
+	RuleOAuthIP             = RateRule{Name: "oauth-ip", Limit: 30, Window: 15 * time.Minute}
+	RulePublicComplianceIP  = RateRule{Name: "public-compliance-ip", Limit: 60, Window: 15 * time.Minute}
+	RuleForwardVerifyIP     = RateRule{Name: "forward-verify-ip", Limit: 20, Window: 15 * time.Minute}
+	RuleInviteLookupIP      = RateRule{Name: "invite-lookup-ip", Limit: 20, Window: 15 * time.Minute}
+	RuleInviteAcceptIP      = RateRule{Name: "invite-accept-ip", Limit: 10, Window: 15 * time.Minute}
 )
 
 // RateLimiter counts hits in Postgres so limits hold across API replicas.
@@ -80,6 +86,36 @@ func (l *RateLimiter) Allow(ctx context.Context, rule RateRule, subject string) 
 		return false, 0, err
 	}
 	return false, time.Duration(seconds * float64(time.Second)), nil
+}
+
+// Peek reports whether rule/subject still has budget in the current window
+// without recording a hit. Pair it with Record for failure-only limits.
+func (l *RateLimiter) Peek(ctx context.Context, rule RateRule, subject string) (bool, time.Duration, error) {
+	window := int64(rule.Window / time.Second)
+	if window < 1 || rule.Limit < 1 {
+		return false, 0, fmt.Errorf("invalid rate rule %s", rule.Name)
+	}
+	var hits int
+	var seconds float64
+	err := l.db.QueryRowContext(ctx, `
+		WITH w AS (SELECT to_timestamp(floor(extract(epoch FROM now())/$2::int)*$2::int) AS ws)
+		SELECT COALESCE((SELECT a.hits FROM auth_rate_limits a, w WHERE a.key=$1 AND a.window_start=w.ws),0),
+			extract(epoch FROM (SELECT ws FROM w) + make_interval(secs => $2::int) - now())`,
+		l.storageKey(rule, subject), window).Scan(&hits, &seconds)
+	if err != nil {
+		return false, 0, err
+	}
+	if hits >= rule.Limit {
+		return false, time.Duration(seconds * float64(time.Second)), nil
+	}
+	return true, 0, nil
+}
+
+// Record counts one hit for rule/subject (a failure, for failure-only
+// limits). The count stops at the limit, which Peek then reports.
+func (l *RateLimiter) Record(ctx context.Context, rule RateRule, subject string) error {
+	_, _, err := l.Allow(ctx, rule, subject)
+	return err
 }
 
 // RunCleanup deletes expired windows hourly until ctx is cancelled.

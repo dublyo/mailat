@@ -83,8 +83,11 @@ func TestJoinInviteNeverReplacesMailboxLogin(t *testing.T) {
 		t.Fatalf("lookup: %+v %v", look, err)
 	}
 	res, err := f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: setupToken, Name: "Box Two", Password: "long-enough-password"}, "192.0.2.1")
-	if err != nil || !res.SignedIn || res.User.ID != box2 {
+	if err != nil {
 		t.Fatalf("accept: %+v %v", res, err)
+	}
+	if s := acceptedSession(t, f.auth, res); s.User.ID != box2 {
+		t.Fatalf("accept: %+v", s.User)
 	}
 	if n := f.count(t, `SELECT count(*) FROM users WHERE id=$1 AND status='active' AND role='mailbox'`, box2); n != 1 {
 		t.Fatal("mailbox login not activated")

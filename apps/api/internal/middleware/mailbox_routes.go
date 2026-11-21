@@ -27,6 +27,11 @@ func init() {
 	add("POST", "/security/webauthn/register/begin /security/webauthn/register/finish /security/webauthn/authenticate/begin /security/webauthn/authenticate/finish")
 	add("DELETE", "/auth/sessions/:uuid /security/sessions/:uuid /security/webauthn/credentials/:uuid")
 	add("PUT", "/settings")
+	// Own login PIN and remembered devices.
+	add("GET", "/security/pin /security/trusted-devices")
+	add("PUT", "/security/pin")
+	add("POST", "/security/trusted-devices/forget-all")
+	add("DELETE", "/security/trusted-devices/:uuid")
 	// Own mailbox: received mail, labels, filters, trusted senders.
 	add("GET", "/inbox/received /inbox/received/counts /inbox/received/scopes /inbox/received/:uuid /inbox/received/:uuid/attachments/:attachmentUuid /inbox/changes")
 	add("GET", "/inbox/labels /labels /inbox/filters /inbox/filters/:uuid /inbox/trusted-senders")

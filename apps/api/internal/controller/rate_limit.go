@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"time"
 
@@ -28,6 +29,35 @@ func rateLimited(r *ghttp.Request, l *service.RateLimiter, rule service.RateRule
 		return true
 	}
 	return false
+}
+
+// peekLimited checks rule/subject without counting this request; use it with
+// recordHit for limits that count failures only.
+func peekLimited(r *ghttp.Request, l *service.RateLimiter, rule service.RateRule, subject string) bool {
+	if l == nil {
+		return false
+	}
+	allowed, retryAfter, err := l.Peek(r.Context(), rule, subject)
+	if err != nil {
+		response.InternalError(r, "Unable to process the request right now")
+		return true
+	}
+	if !allowed {
+		response.TooManyRequests(r, retryAfter, tooManyAttemptsMessage(retryAfter))
+		return true
+	}
+	return false
+}
+
+// recordHit counts one failure. A database error is logged, not returned:
+// the request already failed for its own reason.
+func recordHit(r *ghttp.Request, l *service.RateLimiter, rule service.RateRule, subject string) {
+	if l == nil {
+		return
+	}
+	if err := l.Record(r.Context(), rule, subject); err != nil {
+		log.Printf("rate limit %s record failed: %v", rule.Name, err)
+	}
 }
 
 func tooManyAttemptsMessage(retryAfter time.Duration) string {

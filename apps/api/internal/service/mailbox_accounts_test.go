@@ -65,7 +65,7 @@ func (f *mailboxUserFixture) copies(t *testing.T, sesID string, owner int64) int
 }
 
 func (f *mailboxUserFixture) login(email, pw string) (*model.LoginResponse, error) {
-	return f.auth.Login(context.Background(), &model.LoginRequest{Email: email, Password: pw})
+	return loginWithPin(f.auth, email, pw)
 }
 
 func (f *mailboxUserFixture) lastMail(t *testing.T) (to, text string) {
@@ -166,8 +166,11 @@ func TestMailboxInviteLifecycle(t *testing.T) {
 	_, err = f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: fresh, Password: "a-long-password"}, "")
 	wantStatus(t, err, http.StatusBadRequest)
 	acc, err := f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: fresh, Name: "Ibrahim", Password: "a-long-password"}, "198.51.100.7")
-	if err != nil || !acc.SignedIn || acc.Token == "" || acc.User.ID != user || acc.User.Role != "mailbox" {
+	if err != nil || acc.SignedIn || !acc.RequiresPinSetup {
 		t.Fatalf("accept %+v %v", acc, err)
+	}
+	if s := acceptedSession(t, f.auth, acc); s.User.ID != user || s.User.Role != "mailbox" {
+		t.Fatalf("session after PIN setup %+v", s.User)
 	}
 	if n := f.count(t, `SELECT count(*) FROM users WHERE id=$1 AND status='active' AND email_verified AND name='Ibrahim'`, user); n != 1 {
 		t.Fatal("not activated")
@@ -271,7 +274,7 @@ func TestMailboxPasswordModeAndAdminReset(t *testing.T) {
 	}
 	before = version()
 	acc, err := f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: secondToken, Password: "third-password"}, "")
-	if err != nil || acc.SignedIn || acc.Token != "" || version() != before+1 {
+	if err != nil || acc.SignedIn || acc.Token != "" || acc.ChallengeToken != "" || version() != before+1 {
 		t.Fatalf("accept %+v %v", acc, err)
 	}
 	if lr, err := f.login("anna@acme.test", "third-password"); err != nil || !lr.RequiresTwoFactor {

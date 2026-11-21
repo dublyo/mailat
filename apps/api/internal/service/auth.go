@@ -66,7 +66,7 @@ func normalizeAccountEmail(email string) (string, error) {
 
 // Register creates the first admin user and organization.
 // Registration is one-time only — once an owner exists, new users must be invited.
-func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) (*model.AuthResponse, error) {
+func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) (*model.LoginResponse, error) {
 	email, err := validateRegistration(req.Email, req.Password)
 	if err != nil {
 		return nil, err
@@ -151,19 +151,13 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 		return nil, fmt.Errorf("failed to commit transaction")
 	}
 
-	// Generate JWT token
-	token, err := s.issueSession(ctx, &user, 0, false)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate token")
-	}
-
-	return &model.AuthResponse{
-		Token: token,
-		User:  &user,
-	}, nil
+	// No session yet: the new owner chooses a login PIN first.
+	return s.pinGate(ctx, &user, 0, false, 0)
 }
 
-// Login authenticates a user and returns a JWT token
+// Login checks the password, then continues with the TOTP step (when on) and
+// the PIN step. A deviceToken of this account's live trusted device skips
+// the PIN step. A wrong password or unknown address is ErrInvalidCredentials.
 func (s *AuthService) Login(ctx context.Context, req *model.LoginRequest) (*model.LoginResponse, error) {
 	var id, version int64
 	var passwordHash string
@@ -171,12 +165,12 @@ func (s *AuthService) Login(ctx context.Context, req *model.LoginRequest) (*mode
 	if err != nil || passwordHash == "" {
 		// Spend the same bcrypt work as a real comparison before failing.
 		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(req.Password))
-		return nil, fmt.Errorf("invalid email or password")
+		return nil, ErrInvalidCredentials
 	}
 	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)) != nil {
-		return nil, fmt.Errorf("invalid email or password")
+		return nil, ErrInvalidCredentials
 	}
-	return s.authenticateUser(ctx, id, &version)
+	return s.authenticateUser(ctx, id, &version, s.matchTrustedDevice(ctx, id, version, req.DeviceToken))
 }
 
 // GetUserByID retrieves a user by ID

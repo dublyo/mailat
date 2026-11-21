@@ -250,8 +250,10 @@ func (c *OrgController) LookupInvite(r *ghttp.Request) {
 
 // AcceptInvite completes an invite, mailbox setup or password-reset link
 // (password 8-72 bytes; name 2-255 characters unless the link resets a
-// password) and signs the user in, or answers signedIn:false when the account
-// has a second factor. Every unusable token gets the same 400; 409 when the
+// password), then continues to the login PIN step: requiresPinSetup or
+// requiresPin with a challengeToken (POST /auth/pin/setup or /auth/pin/verify),
+// or signedIn:false without a challenge when the account has a second factor
+// and must log in. Every unusable token gets the same 400; 409 when the
 // organization has no free seat. Limited per client IP.
 // POST /api/v1/auth/invites/accept
 func (c *OrgController) AcceptInvite(r *ghttp.Request) {
@@ -276,4 +278,24 @@ func (c *OrgController) AcceptInvite(r *ghttp.Request) {
 		log.Printf("invite accept failed: %v", err)
 		response.WithStatus(r, http.StatusInternalServerError, http.StatusInternalServerError, "Unable to accept the invite", nil)
 	}
+}
+
+// ResetLoginPin clears a member's or mailbox user's forgotten login PIN; the
+// next sign-in asks them to choose a new one. Every session and remembered
+// device ends. Owners reset admins, members and mailbox users; admins reset
+// members and mailbox users only. Nobody resets the owner's PIN here (the
+// owner changes it in Settings, or recovers it on the server). 409 when the
+// user has no PIN or is you.
+// POST /api/v1/org/members/:uuid/pin/reset
+func (c *OrgController) ResetLoginPin(r *ghttp.Request) {
+	a, ok := orgActor(r)
+	if !ok {
+		return
+	}
+	member, err := c.orgService.ResetLoginPin(r.Context(), a, r.Get("uuid").String())
+	if err != nil {
+		writeOrgError(r, err)
+		return
+	}
+	response.Success(r, member)
 }

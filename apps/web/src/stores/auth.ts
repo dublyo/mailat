@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { api, authApi, pushApi, type User } from '@/lib/api'
+import { api, authApi, pushApi, type LoginResponse, type User } from '@/lib/api'
 import { endDevicePush } from '@/lib/push'
+import { deviceTokenFor, forgetDevice, rememberDevice } from '@/lib/loginPin'
 import { useReceivedInboxStore } from './receivedInbox'
 import { useInboxStore } from './inbox'
 import { useDomainsStore } from './domains'
@@ -19,22 +20,49 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAuthenticated = computed(() => !!user.value && !!token.value)
 
+  // The login PIN step (after the password, and after TOTP when it is on).
+  // setup is true when the account has no PIN yet and must choose one.
+  const pinChallenge = ref<{ token: string; setup: boolean } | null>(null)
+
+  function adoptSession(response: LoginResponse & { token: string; user: User }) {
+    if (response.deviceToken) rememberDevice(response.user.email, response.deviceToken, response.deviceTokenExpiresAt)
+    challengeToken.value = null
+    pinChallenge.value = null
+    token.value = response.token
+    user.value = response.user
+    api.setToken(response.token)
+  }
+
+  // Applies a sign-in result: a session (true) or the next step (false).
+  function applyStep(response: LoginResponse): boolean {
+    if (response.token && response.user) {
+      adoptSession(response as LoginResponse & { token: string; user: User })
+      return true
+    }
+    token.value = null
+    user.value = null
+    api.setToken(null)
+    if (response.requiresTwoFactor && response.challengeToken) {
+      challengeToken.value = response.challengeToken
+      pinChallenge.value = null
+      return false
+    }
+    if ((response.requiresPin || response.requiresPinSetup) && response.challengeToken) {
+      challengeToken.value = null
+      pinChallenge.value = { token: response.challengeToken, setup: !!response.requiresPinSetup }
+      return false
+    }
+    throw new Error('Sign in did not complete. Please try again.')
+  }
+
   async function login(email: string, password: string) {
     isLoading.value = true
     try {
-      const response = await authApi.login(email, password)
-      if (response.requiresTwoFactor) {
-        challengeToken.value = response.challengeToken
-        token.value = null
-        user.value = null
-        api.setToken(null)
-        return false
-      }
-      challengeToken.value = null
-      token.value = response.token
-      user.value = response.user
-      api.setToken(response.token)
-      return true
+      const deviceToken = deviceTokenFor(email)
+      const response = await authApi.login(email, password, deviceToken)
+      // A remembered device the server no longer accepts is dropped here.
+      if (deviceToken && (response.requiresPin || response.requiresPinSetup)) forgetDevice(email)
+      return applyStep(response)
     } finally {
       isLoading.value = false
     }
@@ -43,22 +71,31 @@ export const useAuthStore = defineStore('auth', () => {
   async function register(data: { name: string; email: string; password: string }) {
     isLoading.value = true
     try {
-      const response = await authApi.register(data)
-      token.value = response.token
-      user.value = response.user
-      api.setToken(response.token)
+      return applyStep(await authApi.register(data))
     } finally {
       isLoading.value = false
     }
   }
 
+  // Completes the TOTP step: true when signed in, false when the PIN follows.
   async function verifyChallenge(code: string) {
     if (!challengeToken.value) throw new Error('Sign in again to request a verification code.')
-    const result = await authApi.completeChallenge(challengeToken.value, code)
+    return applyStep(await authApi.completeChallenge(challengeToken.value, code))
+  }
+
+  // Completes the PIN step (or chooses the first PIN).
+  async function submitPin(pin: string, trustDevice: boolean) {
+    const step = pinChallenge.value
+    if (!step) throw new Error('Sign in again to enter your PIN.')
+    const response = step.setup
+      ? await authApi.setupPin(step.token, pin, trustDevice)
+      : await authApi.verifyPin(step.token, pin, trustDevice)
+    return applyStep(response)
+  }
+
+  function cancelSignIn() {
     challengeToken.value = null
-    token.value = result.token
-    user.value = result.user
-    api.setToken(result.token)
+    pinChallenge.value = null
   }
 
   // Ends web push in this browser for the account signed in with token: the
@@ -73,6 +110,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   function clearLocalSession(options: { keepLegacyRules?: boolean }) {
     challengeToken.value = null
+    pinChallenge.value = null
     useReceivedInboxStore().reset()
     useInboxStore().closeCompose()
     useDomainsStore().reset()
@@ -110,10 +148,26 @@ export const useAuthStore = defineStore('auth', () => {
       void authApi.logout(previous).catch(() => { /* Local logout remains possible offline. */ })
     }
     challengeToken.value = null
+    pinChallenge.value = null
     authError.value = null
     token.value = nextToken
     user.value = nextUser
     api.setToken(nextToken)
+    isInitialized.value = true
+  }
+
+  // Starts the PIN step for a sign-in that began outside the login form
+  // (invite acceptance, OAuth). Another account signed in here is signed out
+  // first, as setSession does.
+  async function beginPinStep(step: { token: string; setup: boolean }) {
+    const previous = api.getToken()
+    if (previous) {
+      clearLocalSession({})
+      await endPush(previous)
+      void authApi.logout(previous).catch(() => { /* Local logout remains possible offline. */ })
+    }
+    challengeToken.value = null
+    pinChallenge.value = step
     isInitialized.value = true
   }
 
@@ -153,6 +207,10 @@ export const useAuthStore = defineStore('auth', () => {
     login,
     challengeToken,
     verifyChallenge,
+    pinChallenge,
+    submitPin,
+    beginPinStep,
+    cancelSignIn,
     register,
     logout,
     setSession,

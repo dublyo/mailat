@@ -175,6 +175,10 @@ func (s *SessionService) RevokeSession(ctx context.Context, userID int64, sessio
 // push back on from its settings.
 const pauseAllPush = `UPDATE push_subscriptions SET active=false WHERE user_id=$1 AND active`
 
+// forgetTrustedDevices makes every remembered browser ask for the login PIN
+// again; signing out everywhere must not leave a PIN-skipping device behind.
+const forgetTrustedDevices = `DELETE FROM trusted_devices WHERE user_id=$1`
+
 // RevokeAllSessions revokes all sessions for a user except the current one,
 // and pauses push on all of the user's devices.
 func (s *SessionService) RevokeAllSessions(ctx context.Context, userID int64, exceptToken string) (int, error) {
@@ -193,6 +197,9 @@ func (s *SessionService) RevokeAllSessions(ctx context.Context, userID int64, ex
 		return 0, fmt.Errorf("failed to revoke sessions")
 	}
 	if _, err = tx.ExecContext(ctx, pauseAllPush, userID); err != nil {
+		return 0, fmt.Errorf("failed to revoke sessions")
+	}
+	if _, err = tx.ExecContext(ctx, forgetTrustedDevices, userID); err != nil {
 		return 0, fmt.Errorf("failed to revoke sessions")
 	}
 	if err = tx.Commit(); err != nil {
@@ -218,6 +225,9 @@ func (s *SessionService) RevokeAllUserSessions(ctx context.Context, userID int64
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, pauseAllPush, userID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, forgetTrustedDevices, userID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -288,6 +298,9 @@ func (s *SessionService) ChangePassword(ctx context.Context, userID int64, curre
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM auth_challenges WHERE user_id=$1`, userID); err != nil {
 		return fmt.Errorf("unable to revoke verification challenges")
+	}
+	if _, err = tx.ExecContext(ctx, forgetTrustedDevices, userID); err != nil {
+		return fmt.Errorf("unable to forget remembered devices")
 	}
 	// An admin-sent reset link is pointless once the user chose a password.
 	if _, err = tx.ExecContext(ctx, `UPDATE org_invites SET revoked_at=now() WHERE user_id=$1 AND purpose='password_reset' AND accepted_at IS NULL AND revoked_at IS NULL`, userID); err != nil {

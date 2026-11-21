@@ -2,6 +2,10 @@
 
 Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web` tagged `sha-<full commit SHA>`; there are no version tags. Upgrade notes, backups and rollback are in [docs/self-hosting-ses.md](docs/self-hosting-ses.md).
 
+## 2026-11-21 security update
+
+- Login PIN and login lockout fix (migration `022_login_pin.sql`; API contract 2026-11-21). Every user now enters a 4-digit login PIN after the password (and after TOTP); the first sign-in asks to choose one, with no skip. Registration, invite and mailbox-setup acceptance and OAuth also end at the PIN step instead of issuing a session. "Remember this device for 30 days" (fixed expiry, at most 20 per user) skips the PIN; password, PIN or 2FA changes, sign-out everywhere, suspension and removal forget remembered devices. Wrong PINs: 5 per challenge, 5 per 15 minutes and 20 per 24 hours per user (429 after that; the 20th is audited). New routes: `POST /auth/pin/verify`, `POST /auth/pin/setup`, `GET|PUT /security/pin`, `GET /security/trusted-devices`, `DELETE /security/trusted-devices/:uuid`, `POST /security/trusted-devices/forget-all`, `POST /org/members/:uuid/pin/reset` (owners reset admins, members and mailbox users; admins reset members and mailbox users). Login limits now count failures only: 10 per address and IP, 100 per address per 15 minutes, so a correct password is never locked out by someone else's wrong guesses. Web: PIN step on the sign-in page, Login PIN and remembered devices in Settings → Security, Reset PIN on the mailbox page and in Team settings. Owner recovery is documented in docs/self-hosting-ses.md.
+
 ## Domains: list, domain pages and "who reads mail"
 
 Not yet deployed; web only (no API, DTO or migration changes).
