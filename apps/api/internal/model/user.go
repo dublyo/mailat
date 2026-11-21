@@ -154,6 +154,9 @@ type RegisterRequest struct {
 type LoginRequest struct {
 	Email    string `json:"email" v:"required|email"`
 	Password string `json:"password" v:"required"`
+	// Optional trusted-device token from an earlier PIN step of this account;
+	// a valid one skips the PIN step.
+	DeviceToken string `json:"deviceToken"`
 }
 
 type AuthResponse struct {

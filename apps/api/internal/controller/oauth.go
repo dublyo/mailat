@@ -207,9 +207,16 @@ func (c *OAuthController) HandleCallback(r *ghttp.Request) {
 		return
 	}
 	// Fragments never reach the server access log or Referer header.
+	// OAuth carries no trusted-device token, so the PIN step always follows
+	// (after TOTP when it is on).
 	fragment := "session=" + result.Token
-	if result.RequiresTwoFactor {
+	switch {
+	case result.RequiresTwoFactor:
 		fragment = "challenge=" + result.ChallengeToken
+	case result.RequiresPin:
+		fragment = "pin=" + result.ChallengeToken
+	case result.RequiresPinSetup:
+		fragment = "pinSetup=" + result.ChallengeToken
 	}
 	if nonce != "" {
 		fragment += "&nonce=" + nonce

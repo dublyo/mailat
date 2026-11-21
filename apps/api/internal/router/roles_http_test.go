@@ -83,14 +83,7 @@ func TestOrganizationRoleMatrixHTTP(t *testing.T) {
 	}
 	login := func(email string) string {
 		t.Helper()
-		status, b := call("POST", "/auth/login", "", map[string]string{"email": email, "password": "role-matrix-password"})
-		var out struct {
-			Data model.LoginResponse `json:"data"`
-		}
-		if status != 200 || json.Unmarshal(b, &out) != nil || out.Data.Token == "" {
-			t.Fatalf("login %s: %d %s", email, status, b)
-		}
-		return out.Data.Token
+		return routerLogin(t, base, email, "role-matrix-password")
 	}
 	owner, admin, member := login("owner@roles.test"), login("admin@roles.test"), login("member@roles.test")
 	auth := service.NewAuthService(db, cfg)

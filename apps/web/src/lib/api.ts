@@ -12,6 +12,10 @@ interface ApiResponse<T> {
   data: T
 }
 
+// Sign-in steps answer 401 for a wrong password, code or PIN: the form shows
+// the error instead of a redirect.
+const SIGN_IN_STEPS = ['/api/v1/auth/login', '/api/v1/auth/2fa/challenge', '/api/v1/auth/pin/verify', '/api/v1/auth/pin/setup']
+
 class ApiClient {
   private client: AxiosInstance
   private token: string | null = null
@@ -41,7 +45,7 @@ class ApiClient {
         // its error and the protected route the user was trying to open.
         const requestToken = error.config?.headers?.Authorization
         const belongsToCurrentSession = !requestToken || requestToken === `Bearer ${this.getToken()}`
-        if (error.response?.status === 401 && belongsToCurrentSession && !['/api/v1/auth/login', '/api/v1/auth/2fa/challenge'].includes(error.config?.url)) {
+        if (error.response?.status === 401 && belongsToCurrentSession && !SIGN_IN_STEPS.includes(error.config?.url)) {
           this.setToken(null)
           // Invite and forward-confirmation pages work signed out; an expired
           // session must not navigate away from them and lose the link.
@@ -404,20 +408,51 @@ export interface CampaignSettings {
 
 // ============ Auth API ============
 
-export type LoginResponse = { token: string; user: User; requiresTwoFactor?: false } | { requiresTwoFactor: true; challengeToken: string }
+/**
+ * A sign-in result: a session (token and user), or the next step with its
+ * challengeToken: requiresTwoFactor, then requiresPin or requiresPinSetup.
+ * deviceToken comes once from a PIN step that asked to remember the device.
+ */
+export interface LoginResponse {
+  token?: string
+  user?: User
+  requiresTwoFactor?: boolean
+  requiresPin?: boolean
+  requiresPinSetup?: boolean
+  challengeToken?: string
+  deviceToken?: string
+  deviceTokenExpiresAt?: string
+}
+
+export interface LoginPinStatus { set: boolean; setAt?: string }
+
+export interface TrustedDevice {
+  uuid: string
+  userAgent: string
+  ip?: string
+  createdAt: string
+  lastUsedAt: string
+  expiresAt: string
+}
 
 export const authApi = {
-  login: (email: string, password: string) =>
-    api.post<LoginResponse>('/api/v1/auth/login', { email, password }),
+  login: (email: string, password: string, deviceToken?: string) =>
+    api.post<LoginResponse>('/api/v1/auth/login', deviceToken ? { email, password, deviceToken } : { email, password }),
 
   register: (data: { email: string; password: string; name: string }) =>
-    api.post<{ token: string; user: User }>('/api/v1/auth/register', data),
+    api.post<LoginResponse>('/api/v1/auth/register', data),
+
+  verifyPin: (challengeToken: string, pin: string, trustDevice: boolean) =>
+    api.post<LoginResponse>('/api/v1/auth/pin/verify', { challengeToken, pin, trustDevice }),
+
+  setupPin: (challengeToken: string, pin: string, trustDevice: boolean) =>
+    api.post<LoginResponse>('/api/v1/auth/pin/setup', { challengeToken, pin, trustDevice }),
 
   registerStatus: () => api.get<{ open: boolean }>('/api/v1/auth/register-status'),
 
   me: () => api.get<User>('/api/v1/auth/me'),
   completeChallenge: (challengeToken: string, code: string) =>
-    api.post<{ token: string; user: User }>('/api/v1/auth/2fa/challenge', { challengeToken, code }),
+    api.post<LoginResponse>('/api/v1/auth/2fa/challenge', { challengeToken, code }),
   logout: (token: string) => api.post<void>('/api/v1/auth/logout', undefined, { Authorization: `Bearer ${token}` }),
   streamToken: () => api.post<{ token: string; expiresAt: string }>('/api/v1/auth/stream-token'),
 }
@@ -1027,6 +1062,13 @@ export const settingsApi = {
   verify2FA: (code: string) => api.post<{ backupCodes: string[] }>('/api/v1/security/2fa/verify', { code }),
 
   disable2FA: (password: string, code: string) => api.post('/api/v1/security/2fa/disable', { password, code }),
+
+  // Login PIN and remembered devices
+  pinStatus: () => api.get<LoginPinStatus>('/api/v1/security/pin'),
+  changePin: (currentPassword: string, newPin: string) => api.put<LoginPinStatus>('/api/v1/security/pin', { currentPassword, newPin }),
+  trustedDevices: () => api.get<TrustedDevice[]>('/api/v1/security/trusted-devices'),
+  forgetTrustedDevice: (uuid: string) => api.delete(`/api/v1/security/trusted-devices/${encodeURIComponent(uuid)}`),
+  forgetAllTrustedDevices: () => api.post<{ count: number }>('/api/v1/security/trusted-devices/forget-all'),
 }
 
 // ============ API Keys ============
@@ -1723,6 +1765,8 @@ export const orgApi = {
   // Mailbox users are left out unless asked for.
   members: (opts: { includeMailboxes?: boolean } = {}) => api.get<OrgMember[]>(`/api/v1/org/members${opts.includeMailboxes ? '?includeMailboxes=true' : ''}`),
   changeRole: (uuid: string, role: 'admin' | 'member') => api.put<OrgMember>(`/api/v1/org/members/${encodeURIComponent(uuid)}`, { role }),
+  /** Clears a forgotten login PIN; the user chooses a new one at the next sign-in. */
+  resetLoginPin: (uuid: string) => api.post<OrgMember>(`/api/v1/org/members/${encodeURIComponent(uuid)}/pin/reset`),
   // Without a transfer target the member's personal identities are disabled.
   removeMember: (uuid: string, transferIdentitiesTo?: string) =>
     api.delete<{ removed: boolean; identitiesTransferred: number; identitiesDisabled: number }>(`/api/v1/org/members/${encodeURIComponent(uuid)}`, transferIdentitiesTo ? { transferIdentitiesTo } : {}),
@@ -1738,7 +1782,7 @@ export const orgApi = {
 export const invitesApi = {
   lookup: (token: string) => api.post<InviteLookup>('/api/v1/auth/invites/lookup', { token }),
   // signedIn is false after a password reset of an account with two-factor sign-in.
-  accept: (data: { token: string; name?: string; password: string }) => api.post<{ token?: string; user?: User; signedIn: boolean }>('/api/v1/auth/invites/accept', data),
+  accept: (data: { token: string; name?: string; password: string }) => api.post<{ token?: string; user?: User; signedIn: boolean; requiresPin?: boolean; requiresPinSetup?: boolean; challengeToken?: string }>('/api/v1/auth/invites/accept', data),
 }
 
 // ============ Mailbox users (owner/admin) ============
@@ -1785,7 +1829,7 @@ export interface MailboxDetail {
   domain: MailboxDomainInfo
   overview: {
     maySend: boolean; mayReceive: boolean; wildcardSender: boolean; isCatchAll: boolean
-    forwardsActive: boolean; autoReplyActive: boolean; twoFactor: boolean; recoveryEmail: string
+    forwardsActive: boolean; autoReplyActive: boolean; twoFactor: boolean; loginPin: boolean; recoveryEmail: string
   }
   aliases: { uuid: string; address: string }[]
   invite: MailboxLink | null

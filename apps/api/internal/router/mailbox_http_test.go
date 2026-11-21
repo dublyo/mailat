@@ -227,9 +227,7 @@ INSERT INTO receiving_configs(org_id,s3_bucket,s3_region,sns_topic_arn,ses_rule_
 		var login struct {
 			Token string `json:"token"`
 		}
-		if err := json.Unmarshal(call("POST", "/api/v1/auth/login", "", map[string]string{"email": "qa@example.test", "password": "mailat-local-test"}, 200), &login); err != nil || login.Token == "" {
-			t.Fatal("local human login failed", err)
-		}
+		login.Token = routerLogin(t, base+"/api/v1", "qa@example.test", "mailat-local-test")
 		var settings service.UserSettings
 		json.Unmarshal(call("GET", "/api/v1/settings", login.Token, nil, 200), &settings)
 		if !settings.AutoOrganizeDMARCReports {

@@ -41,9 +41,12 @@ async function accept() {
       accept: invitesApi.accept,
       clearHash: () => clearFragment(),
       setSession: authStore.setSession,
+      beginPinStep: authStore.beginPinStep,
     })
+    // The login page asks for the PIN (or a new one), then opens the mailbox.
+    if (user === 'pin') await router.replace({ path: '/login', query: { redirect: copy.value.after, email: invite.value.email } })
     // With two-factor sign-in on, a reset does not sign in: log in with the new password.
-    await router.replace(user ? copy.value.after : loginAfterReset(invite.value.email))
+    else await router.replace(user ? copy.value.after : loginAfterReset(invite.value.email))
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not accept the invite. Try again.'
   } finally {

@@ -57,6 +57,7 @@ func newAuthFixture(t *testing.T) *authFixture {
 	}
 	auth := service.NewAuthService(db, cfg)
 	ac := controller.NewAuthController(auth, service.NewRateLimiter(db, cfg))
+	pc := controller.NewLoginPinController(auth, service.NewAuditLogService(db, cfg), service.NewRateLimiter(db, cfg))
 	inbox := controller.NewReceivedInboxController(service.NewInboxService(db, cfg, service.NewIdentityService(db, cfg)), nil)
 	s := ghttp.GetServer(fmt.Sprintf("auth-security-%d", time.Now().UnixNano()))
 	s.SetAddr("127.0.0.1:0")
@@ -65,8 +66,15 @@ func newAuthFixture(t *testing.T) *authFixture {
 	s.Group("/api/v1", func(g *ghttp.RouterGroup) {
 		g.POST("/auth/login", ac.Login)
 		g.POST("/auth/2fa/challenge", ac.CompleteChallenge)
+		g.POST("/auth/pin/verify", pc.Verify)
+		g.POST("/auth/pin/setup", pc.Setup)
 		g.Group("/", func(g *ghttp.RouterGroup) {
 			g.Middleware(middleware.Auth)
+			g.GET("/security/pin", pc.Status)
+			g.PUT("/security/pin", pc.Change)
+			g.GET("/security/trusted-devices", pc.ListDevices)
+			g.DELETE("/security/trusted-devices/:uuid", pc.ForgetDevice)
+			g.POST("/security/trusted-devices/forget-all", pc.ForgetAllDevices)
 			g.POST("/auth/logout", ac.Logout)
 			g.POST("/auth/stream-token", ac.StreamToken)
 			g.GET("/auth/me", ac.Me)
@@ -95,9 +103,19 @@ type authHTTPResult struct {
 
 func (f *authFixture) call(t *testing.T, method, path, token string, body interface{}) authHTTPResult {
 	t.Helper()
+	return f.callFrom(t, "", method, path, token, body)
+}
+
+// callFrom sends the request as client ip (X-Forwarded-For through the
+// trusted loopback proxy); an empty ip is the loopback peer itself.
+func (f *authFixture) callFrom(t *testing.T, ip, method, path, token string, body interface{}) authHTTPResult {
+	t.Helper()
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequest(method, f.base+path, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
+	if ip != "" {
+		req.Header.Set("X-Forwarded-For", ip)
+	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -126,8 +144,27 @@ func loginResult(t *testing.T, r authHTTPResult) *model.LoginResponse {
 	}
 	return &out.Data
 }
+
+// fixturePin is the login PIN fixture users choose at their first sign-in.
+const fixturePin = "2580"
+
+// login signs in with the password and completes the PIN step; a TOTP step
+// is returned unchanged.
 func (f *authFixture) login(t *testing.T, email string) *model.LoginResponse {
-	return loginResult(t, f.call(t, "POST", "/api/v1/auth/login", "", map[string]string{"email": email, "password": "fixture-password"}))
+	t.Helper()
+	return f.pinStep(t, loginResult(t, f.call(t, "POST", "/api/v1/auth/login", "", map[string]string{"email": email, "password": "fixture-password"})))
+}
+
+// pinStep completes a PIN or PIN setup step with fixturePin.
+func (f *authFixture) pinStep(t *testing.T, res *model.LoginResponse) *model.LoginResponse {
+	t.Helper()
+	switch {
+	case res.RequiresPinSetup:
+		return loginResult(t, f.call(t, "POST", "/api/v1/auth/pin/setup", "", map[string]interface{}{"challengeToken": res.ChallengeToken, "pin": fixturePin}))
+	case res.RequiresPin:
+		return loginResult(t, f.call(t, "POST", "/api/v1/auth/pin/verify", "", map[string]interface{}{"challengeToken": res.ChallengeToken, "pin": fixturePin}))
+	}
+	return res
 }
 func (f *authFixture) key(t *testing.T, session string, scopes []string, rate int) (string, string) {
 	t.Helper()
@@ -247,7 +284,11 @@ func TestTwoFactorChallengeOneUseAndLockoutHTTP(t *testing.T) {
 	if !enabled {
 		t.Fatal("setup disabled factor")
 	}
-	verified := loginResult(t, f.call(t, "POST", "/api/v1/auth/2fa/challenge", "", map[string]string{"challengeToken": challenged.ChallengeToken, "code": recovery}))
+	afterTOTP := loginResult(t, f.call(t, "POST", "/api/v1/auth/2fa/challenge", "", map[string]string{"challengeToken": challenged.ChallengeToken, "code": recovery}))
+	if afterTOTP.Token != "" || !afterTOTP.RequiresPinSetup {
+		t.Fatal("TOTP skipped the PIN step")
+	}
+	verified := f.pinStep(t, afterTOTP)
 	if verified.Token == "" {
 		t.Fatal("missing verified session")
 	}
@@ -303,15 +344,21 @@ func TestAPIKeyConcurrentLimitHTTP(t *testing.T) {
 	}
 }
 
-func TestLoginRateLimitPerAccountHTTP(t *testing.T) {
+// Failed logins are limited per address and client IP (10 per 15 minutes)
+// and loosely per address (100); a correct password never spends the budget,
+// so wrong guesses from elsewhere cannot lock the owner out.
+func TestLoginFailureLimitHTTP(t *testing.T) {
 	f := newAuthFixture(t)
-	wrong := map[string]string{"email": "Owner@Example.test", "password": "wrong-password"}
-	for i := 0; i < 10; i++ {
-		f.call(t, "POST", "/api/v1/auth/login", "", wrong).expect(t, 401)
+	login := func(ip, password string) authHTTPResult {
+		return f.callFrom(t, ip, "POST", "/api/v1/auth/login", "", map[string]string{"email": "Owner@Example.test", "password": password})
 	}
-	// The 11th attempt for the same (case-insensitive) account is refused before
-	// the password is checked, even with the right password.
-	limited := f.call(t, "POST", "/api/v1/auth/login", "", map[string]string{"email": "owner@example.test", "password": "fixture-password"})
+	attacker, owner, other := "198.51.100.1", "203.0.113.7", "192.0.2.44"
+	for i := 0; i < 10; i++ {
+		login(attacker, "wrong-password").expect(t, 401)
+	}
+	// The same address and IP is refused before the password is checked,
+	// even with the right password.
+	limited := login(attacker, "fixture-password")
 	limited.expect(t, 429)
 	retry, err := strconv.Atoi(limited.header.Get("Retry-After"))
 	if err != nil || retry < 1 || retry > 15*60 {
@@ -322,11 +369,99 @@ func TestLoginRateLimitPerAccountHTTP(t *testing.T) {
 	if body.Message == "" || !bytes.Contains([]byte(body.Message), []byte("Too many attempts")) {
 		t.Fatalf("message %q", body.Message)
 	}
-	// Other accounts on the same IP are still under the per-IP limit.
-	f.login(t, "member@example.test")
+	// The owner on another IP still signs in.
+	if res := f.pinStep(t, loginResult(t, login(owner, "fixture-password"))); res.Token == "" {
+		t.Fatal("owner locked out by another IP's failures")
+	}
+	// Correct logins do not count: 9 failures, 3 successes, then the 10th
+	// failure is still answered and only then the IP is limited.
+	for i := 0; i < 9; i++ {
+		login(other, "wrong-password").expect(t, 401)
+	}
+	for i := 0; i < 3; i++ {
+		if res := loginResult(t, login(other, "fixture-password")); !res.RequiresPin {
+			t.Fatalf("correct password: %+v", res)
+		}
+	}
+	login(other, "wrong-password").expect(t, 401)
+	login(other, "fixture-password").expect(t, 429)
+	// Other accounts on a limited IP are unaffected.
+	if res := f.callFrom(t, attacker, "POST", "/api/v1/auth/login", "", map[string]string{"email": "member@example.test", "password": "fixture-password"}); res.status != 200 {
+		t.Fatalf("member on the attacker IP: %d %s", res.status, res.body)
+	}
 	var stored int
-	f.db.QueryRow(`SELECT count(*) FROM auth_rate_limits WHERE key LIKE '%example%'`).Scan(&stored)
+	f.db.QueryRow(`SELECT count(*) FROM auth_rate_limits WHERE key LIKE '%example%' OR key LIKE '%198.51%'`).Scan(&stored)
 	if stored != 0 {
 		t.Fatal("rate limit keys must not contain raw subjects")
 	}
+	// 100 failures for the address from anywhere close it for 15 minutes.
+	limiter := service.NewRateLimiter(f.db, f.cfg)
+	for i := 0; i < 100; i++ {
+		if err := limiter.Record(context.Background(), service.RuleLoginAccountFailure, "owner@example.test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	login("192.0.2.200", "fixture-password").expect(t, 429)
+}
+
+// The PIN step over HTTP: wrong PINs report attempts left, then 429 with
+// Retry-After; a remembered device skips the PIN at the next login.
+func TestLoginPinStepHTTP(t *testing.T) {
+	f := newAuthFixture(t)
+	first := loginResult(t, f.call(t, "POST", "/api/v1/auth/login", "", map[string]string{"email": "owner@example.test", "password": "fixture-password"}))
+	if first.Token != "" || !first.RequiresPinSetup {
+		t.Fatalf("first login: %+v", first)
+	}
+	f.call(t, "GET", "/api/v1/auth/me", first.ChallengeToken, nil).expect(t, 401)
+	f.call(t, "POST", "/api/v1/auth/pin/setup", "", map[string]interface{}{"challengeToken": first.ChallengeToken, "pin": "1111"}).expect(t, 400)
+	set := loginResult(t, f.call(t, "POST", "/api/v1/auth/pin/setup", "", map[string]interface{}{"challengeToken": first.ChallengeToken, "pin": fixturePin, "trustDevice": true}))
+	if set.Token == "" || set.DeviceToken == "" {
+		t.Fatalf("setup: %+v", set)
+	}
+	status := f.call(t, "GET", "/api/v1/security/pin", set.Token, nil)
+	status.expect(t, 200)
+	if !bytes.Contains(status.body, []byte(`"set":true`)) {
+		t.Fatalf("status %s", status.body)
+	}
+	skipped := loginResult(t, f.call(t, "POST", "/api/v1/auth/login", "", map[string]string{"email": "owner@example.test", "password": "fixture-password", "deviceToken": set.DeviceToken}))
+	if skipped.Token == "" {
+		t.Fatalf("remembered device: %+v", skipped)
+	}
+	devices := f.call(t, "GET", "/api/v1/security/trusted-devices", skipped.Token, nil)
+	devices.expect(t, 200)
+	var list struct {
+		Data []struct {
+			UUID string `json:"uuid"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(devices.body, &list); len(list.Data) != 1 {
+		t.Fatalf("devices %s", devices.body)
+	}
+
+	ch := loginResult(t, f.call(t, "POST", "/api/v1/auth/login", "", map[string]string{"email": "owner@example.test", "password": "fixture-password"})).ChallengeToken
+	wrong := f.call(t, "POST", "/api/v1/auth/pin/verify", "", map[string]interface{}{"challengeToken": ch, "pin": "1357"})
+	wrong.expect(t, 401)
+	if !bytes.Contains(wrong.body, []byte(`"attemptsLeft":4`)) {
+		t.Fatalf("wrong PIN body %s", wrong.body)
+	}
+	for i := 0; i < 3; i++ {
+		f.call(t, "POST", "/api/v1/auth/pin/verify", "", map[string]interface{}{"challengeToken": ch, "pin": "1357"}).expect(t, 401)
+	}
+	locked := f.call(t, "POST", "/api/v1/auth/pin/verify", "", map[string]interface{}{"challengeToken": ch, "pin": "1357"})
+	locked.expect(t, 429)
+	if locked.header.Get("Retry-After") == "" {
+		t.Fatal("missing Retry-After")
+	}
+	// The remembered device still signs in: the PIN step is what is locked.
+	if res := loginResult(t, f.call(t, "POST", "/api/v1/auth/login", "", map[string]string{"email": "owner@example.test", "password": "fixture-password", "deviceToken": set.DeviceToken})); res.Token == "" {
+		t.Fatal("device refused")
+	}
+	// Change the PIN: forgets remembered devices.
+	f.call(t, "PUT", "/api/v1/security/pin", skipped.Token, map[string]string{"currentPassword": "wrong", "newPin": "1357"}).expect(t, 400)
+	f.call(t, "PUT", "/api/v1/security/pin", skipped.Token, map[string]string{"currentPassword": "fixture-password", "newPin": "1357"}).expect(t, 200)
+	if res := loginResult(t, f.call(t, "POST", "/api/v1/auth/login", "", map[string]string{"email": "owner@example.test", "password": "fixture-password", "deviceToken": set.DeviceToken})); res.Token != "" || !res.RequiresPin {
+		t.Fatalf("device survived a PIN change: %+v", res)
+	}
+	f.call(t, "DELETE", "/api/v1/security/trusted-devices/"+list.Data[0].UUID, skipped.Token, nil).expect(t, 404)
+	f.call(t, "POST", "/api/v1/security/trusted-devices/forget-all", skipped.Token, nil).expect(t, 200)
 }

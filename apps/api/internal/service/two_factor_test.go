@@ -11,7 +11,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/dublyo/mailat/api/internal/config"
-	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/internal/testutil"
 )
 
@@ -41,7 +40,7 @@ func TestTwoFactorEnableRevokesOtherSessionsAndDisableRejectsReplay(t *testing.T
 	auth := NewAuthService(db, cfg)
 	login := func() string {
 		t.Helper()
-		r, err := auth.Login(ctx, &model.LoginRequest{Email: "user@example.test", Password: "fixture-password"})
+		r, err := loginWithPin(auth, "user@example.test", "fixture-password")
 		if err != nil || r.Token == "" {
 			t.Fatal("login", err)
 		}

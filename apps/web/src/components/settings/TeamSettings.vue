@@ -81,6 +81,12 @@ const changeRole = (member: OrgMember, role: string) => run(member.uuid, async (
   const updated = await orgApi.changeRole(member.uuid, role as 'admin' | 'member')
   people.value = people.value.map(m => m.uuid === updated.uuid ? updated : m)
 }, 'Could not change the role.')
+// Owners reset admins and members; admins reset members. Never the owner or yourself.
+const canResetPin = (member: OrgMember) => member.status === 'active' && member.role !== 'owner' && member.uuid !== currentUuid.value && (isOwner.value || member.role === 'member')
+const resetPin = (member: OrgMember) => confirm(`Reset the login PIN of ${member.email}? They are signed out everywhere and choose a new PIN at their next sign-in.`) && run(member.uuid, async () => {
+  await orgApi.resetLoginPin(member.uuid)
+  notice.value = `The login PIN of ${member.email} was reset.`
+}, 'Could not reset the login PIN.')
 const removing = ref<OrgMember | null>(null)
 const transferTo = ref('')
 const removeTargets = computed(() => activeMembers.value.filter(m => m.uuid !== removing.value?.uuid))
@@ -157,7 +163,7 @@ const formatDate = (value: string | null) => value ? new Date(value).toLocaleDat
                 <span v-else class="capitalize">{{ member.role }}</span>
               </td>
               <td class="p-2">{{ formatDate(member.lastLoginAt) }}</td>
-              <td class="p-2 text-right"><button v-if="canRemove(member)" type="button" class="p-1 rounded hover:bg-red-50" :aria-label="`Remove ${member.email}`" @click="startRemove(member)"><Trash2 class="w-4 h-4 text-red-600" /></button></td>
+              <td class="p-2 text-right whitespace-nowrap"><button v-if="canResetPin(member)" type="button" class="mr-2 text-xs text-gmail-blue hover:underline disabled:opacity-50" :disabled="busy === member.uuid" @click="resetPin(member)">Reset PIN</button><button v-if="canRemove(member)" type="button" class="p-1 rounded hover:bg-red-50" :aria-label="`Remove ${member.email}`" @click="startRemove(member)"><Trash2 class="w-4 h-4 text-red-600" /></button></td>
             </tr>
           </tbody>
         </table>

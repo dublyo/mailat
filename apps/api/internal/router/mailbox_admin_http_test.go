@@ -74,9 +74,7 @@ func TestMailboxAdminHTTP(t *testing.T) {
 	}
 	login := func(email, pw string) string {
 		t.Helper()
-		var out model.LoginResponse
-		expect(200, "POST", "/auth/login", "", map[string]string{"email": email, "password": pw}, &out)
-		return out.Token
+		return routerLogin(t, base, email, pw)
 	}
 	owner, member := login("owner@boxes.test", "mailbox-admin-password"), login("member@boxes.test", "mailbox-admin-password")
 	const domainPath = "/org/domains/00000000-0000-0000-0000-0000000000d1/mailboxes"

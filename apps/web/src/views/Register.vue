@@ -60,8 +60,9 @@ const handleSubmit = async () => {
   isLoading.value = true
 
   try {
-    await authStore.register({ name: name.value, email: email.value, password: password.value })
-    router.push('/inbox')
+    // The new owner chooses a login PIN on the sign-in page before the session starts.
+    if (await authStore.register({ name: name.value, email: email.value, password: password.value })) router.push('/inbox')
+    else router.push({ path: '/login', query: { email: email.value } })
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Registration failed'
   } finally {

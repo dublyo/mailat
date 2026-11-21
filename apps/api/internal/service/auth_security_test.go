@@ -40,8 +40,13 @@ func TestTOTPLoginAndReplayIntegration(t *testing.T) {
 		go func(challenge string) {
 			defer wg.Done()
 			result, err := auth.CompleteChallenge(ctx, challenge, code)
-			if err == nil && (result == nil || result.Token == "") {
-				err = fmt.Errorf("missing token")
+			if err == nil {
+				// TOTP leads to the PIN step, never straight to a session.
+				if result == nil || result.Token != "" || !result.RequiresPinSetup {
+					err = fmt.Errorf("missing PIN step: %+v", result)
+				} else if result, err = passPinStep(auth, result); err == nil && result.Token == "" {
+					err = fmt.Errorf("missing token")
+				}
 			}
 			results <- err
 		}(challenge)

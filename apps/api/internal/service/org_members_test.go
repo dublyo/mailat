@@ -167,13 +167,15 @@ func TestInviteLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Token == "" || res.User.Email != "new@elsewhere.test" || res.User.Role != "member" || res.User.OrgID != f.org || !res.User.EmailVerified {
-		t.Fatalf("%+v", res.User)
+	// The new account chooses its login PIN before the first session.
+	session := acceptedSession(t, f.auth, res)
+	if session.User.Email != "new@elsewhere.test" || session.User.Role != "member" || session.User.OrgID != f.org || !session.User.EmailVerified {
+		t.Fatalf("%+v", session.User)
 	}
-	if n := f.count(t, `SELECT count(*) FROM user_sessions WHERE user_id=$1 AND active`, res.User.ID); n != 1 {
+	if n := f.count(t, `SELECT count(*) FROM user_sessions WHERE user_id=$1 AND active`, session.User.ID); n != 1 {
 		t.Fatal("accept did not sign in")
 	}
-	if login, err := f.auth.Login(ctx, &model.LoginRequest{Email: "new@elsewhere.test", Password: "a-long-password"}); err != nil || login.Token == "" {
+	if login, err := loginWithPin(f.auth, "new@elsewhere.test", "a-long-password"); err != nil || login.Token == "" {
 		t.Fatal("password from the invite does not sign in", err)
 	}
 	if _, err = f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: fresh, Name: "Again", Password: "a-long-password"}, ""); !errors.Is(err, ErrInviteInvalid) {
@@ -416,10 +418,11 @@ func TestRemoveWithoutTransferDisablesIdentitiesAndReinviteResets(t *testing.T) 
 		SELECT $1,50,id,'old','a@sender.test','Old mail','ses-old',now() FROM identities WHERE email='m1@acme.test'`, f.org); err != nil {
 		t.Fatal(err)
 	}
-	back, err := f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: f.lastToken(t), Name: "Returning", Password: "brand-new-password"}, "")
+	accepted, err := f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: f.lastToken(t), Name: "Returning", Password: "brand-new-password"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	back := acceptedSession(t, f.auth, accepted)
 	// Whoever accepts gets a fresh account, never the removed one and its mailbox.
 	if back.User.ID == m || back.User.Email != "member@acme.test" || back.User.Role != "admin" || back.User.Status != "active" {
 		t.Fatalf("%+v", back.User)
@@ -452,8 +455,12 @@ func TestRemoveWithoutTransferDisablesIdentitiesAndReinviteResets(t *testing.T) 
 	if _, err = f.svc.CreateInvite(ctx, f.owner, &CreateInviteRequest{Email: "member@acme.test", Role: "member"}); err != nil {
 		t.Fatal(err)
 	}
-	if again, err := f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: f.lastToken(t), Name: "Third", Password: "another-new-password"}, ""); err != nil || again.User.ID == back.User.ID {
-		t.Fatal(again, err)
+	again, err := f.svc.AcceptInvite(ctx, &AcceptInviteRequest{Token: f.lastToken(t), Name: "Third", Password: "another-new-password"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third := acceptedSession(t, f.auth, again); third.User.ID == back.User.ID {
+		t.Fatal(third.User)
 	}
 }
 

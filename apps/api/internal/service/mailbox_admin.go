@@ -54,6 +54,7 @@ type MailboxOverview struct {
 	ForwardsActive  bool   `json:"forwardsActive"`
 	AutoReplyActive bool   `json:"autoReplyActive"`
 	TwoFactor       bool   `json:"twoFactor"`
+	LoginPin        bool   `json:"loginPin"`      // a login PIN is set (reset with POST /org/members/:uuid/pin/reset)
 	RecoveryEmail   string `json:"recoveryEmail"` // empty when none is set
 }
 
@@ -170,13 +171,13 @@ func (s *MailboxService) GetMailbox(ctx context.Context, orgID int64, userUUID s
 	var userID, identityID int64
 	d := &MailboxDetail{Aliases: []MailboxAlias{}}
 	err = tx.QueryRowContext(ctx, `SELECT u.id,ma.identity_id,d.uuid::text,d.name,COALESCE(d.ses_verified,false),COALESCE(d.receiving_enabled,false),
-		COALESCE(ma.recovery_email,''),u.totp_enabled,
+		COALESCE(ma.recovery_email,''),u.totp_enabled,u.login_pin_hash IS NOT NULL,
 		EXISTS(SELECT 1 FROM email_forwards f WHERE f.user_id=u.id AND f.active AND f.status='active'),
 		EXISTS(SELECT 1 FROM auto_replies r WHERE r.user_id=u.id AND r.active AND r.start_date<=now() AND (r.end_date IS NULL OR r.end_date>=now()))
 		FROM users u JOIN mailbox_accounts ma ON ma.user_id=u.id AND ma.removed_at IS NULL JOIN domains d ON d.id=ma.domain_id
 		WHERE u.uuid=$1 AND u.org_id=$2 AND u.role='mailbox'`, userUUID, orgID).
 		Scan(&userID, &identityID, &d.Domain.UUID, &d.Domain.Name, &d.Domain.SESVerified, &d.Domain.ReceivingEnabled,
-			&d.Overview.RecoveryEmail, &d.Overview.TwoFactor, &d.Overview.ForwardsActive, &d.Overview.AutoReplyActive)
+			&d.Overview.RecoveryEmail, &d.Overview.TwoFactor, &d.Overview.LoginPin, &d.Overview.ForwardsActive, &d.Overview.AutoReplyActive)
 	if err == sql.ErrNoRows {
 		return nil, orgError(http.StatusNotFound, "Mailbox not found")
 	}

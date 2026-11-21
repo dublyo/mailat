@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { Eye, EyeOff } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { api, authApi, oauthApi } from '@/lib/api'
 import { consumeOAuthNonce, createOAuthNonce } from '@/lib/oauthNonce'
+import { pinErrorMessage, pinProblem } from '@/lib/loginPin'
 import Button from '@/components/common/Button.vue'
-import Spinner from '@/components/common/Spinner.vue'
+import PinInput from '@/components/common/PinInput.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -18,6 +19,12 @@ const passwordReset = route.query.passwordReset === '1'
 const password = ref('')
 const showPassword = ref(false)
 const verificationCode = ref('')
+// The login PIN step: pin, plus pinConfirm when choosing the first PIN.
+const pin = ref('')
+const pinConfirm = ref('')
+const trustDevice = ref(true)
+const pinStep = computed(() => authStore.pinChallenge)
+const setupHint = computed(() => pinStep.value?.setup && pin.value.length === 4 ? pinProblem(pin.value) : '')
 const error = ref('')
 const isLoading = ref(false)
 const registrationOpen = ref(false)
@@ -60,13 +67,16 @@ onMounted(async () => {
   const params = new URLSearchParams(route.hash.replace(/^#/, ''))
   const challenge = params.get('challenge')
   const session = params.get('session')
-  if (challenge || session) {
+  const pinChallenge = params.get('pin') || params.get('pinSetup')
+  if (challenge || session || pinChallenge) {
     await router.replace({ path: route.path, query: route.query, hash: '' })
     // Only adopt a result from a sign-in this tab started (login CSRF).
     if (!consumeOAuthNonce(params.get('nonce'))) {
       error.value = oauthErrors.invalid_state
     } else if (challenge) {
       authStore.challengeToken = challenge
+    } else if (pinChallenge) {
+      await authStore.beginPinStep({ token: pinChallenge, setup: !params.get('pin') })
     } else if (session) {
       api.setToken(session)
       await authStore.checkAuth()
@@ -87,14 +97,58 @@ onMounted(async () => {
   }
 })
 
+function startOver() {
+  authStore.cancelSignIn()
+  verificationCode.value = ''
+  pin.value = ''
+  pinConfirm.value = ''
+  error.value = ''
+}
+
+// The PIN step auto-submits once four digits are in; setup waits for the
+// confirmation boxes.
+function onPinComplete() {
+  if (pinStep.value && !pinStep.value.setup && !isLoading.value) void handleSubmit()
+}
+
+async function submitPinStep() {
+  const step = pinStep.value!
+  if (step.setup) {
+    const problem = pinProblem(pin.value)
+    if (problem) throw new Error(problem)
+    if (pin.value !== pinConfirm.value) throw new Error('The two PINs do not match.')
+  } else if (!/^[0-9]{4}$/.test(pin.value)) {
+    throw new Error('Enter your 4-digit PIN.')
+  }
+  try {
+    return await authStore.submitPin(pin.value, trustDevice.value)
+  } catch (err) {
+    const status = (err as { status?: number }).status
+    const left = (err as { data?: { attemptsLeft?: number } }).data?.attemptsLeft
+    pin.value = ''
+    pinConfirm.value = ''
+    // Locked, expired, or out of attempts: the sign-in starts over.
+    if (status === 429 || (status === 401 && !(typeof left === 'number' && left > 0))) authStore.cancelSignIn()
+    throw new Error(pinErrorMessage(err))
+  }
+}
+
 const handleSubmit = async () => {
   error.value = ''
   isLoading.value = true
 
   try {
-    if (authStore.challengeToken) {
-      await authStore.verifyChallenge(verificationCode.value.trim())
-    } else if (!await authStore.login(email.value, password.value)) {
+    let signedIn: boolean
+    if (pinStep.value) {
+      signedIn = await submitPinStep()
+    } else if (authStore.challengeToken) {
+      signedIn = await authStore.verifyChallenge(verificationCode.value.trim())
+      verificationCode.value = ''
+    } else {
+      signedIn = await authStore.login(email.value, password.value)
+    }
+    if (!signedIn) {
+      // The next step (two-factor code or PIN) is now shown.
       password.value = ''
       return
     }
@@ -129,7 +183,7 @@ const handleSubmit = async () => {
         </div>
 
         <div v-if="passwordReset && !error" class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm" role="status">
-          Your password was changed. Sign in with it and your two-factor code.
+          Your password was changed. Sign in with it, your two-factor code and your PIN.
         </div>
 
         <div v-if="error" class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm" role="alert">
@@ -137,7 +191,28 @@ const handleSubmit = async () => {
         </div>
 
         <form @submit.prevent="handleSubmit" class="space-y-4">
-          <div v-if="!authStore.challengeToken">
+          <div v-if="pinStep" class="space-y-4">
+            <div>
+              <p class="text-sm font-medium text-gmail-gray mb-1 text-center">{{ pinStep.setup ? 'Choose a login PIN' : 'Enter your login PIN' }}</p>
+              <p class="text-sm text-gmail-gray text-center mb-3">
+                {{ pinStep.setup ? 'Pick 4 digits you will enter after your password. Avoid 1111 or 1234.' : 'The 4 digits you chose for signing in.' }}
+              </p>
+              <PinInput v-model="pin" :label="pinStep.setup ? 'New PIN' : 'PIN'" autofocus :disabled="isLoading" :invalid="!!setupHint" @complete="onPinComplete" />
+              <p v-if="setupHint" class="mt-2 text-sm text-red-700 text-center" role="status">{{ setupHint }}</p>
+            </div>
+            <div v-if="pinStep.setup">
+              <p class="text-sm font-medium text-gmail-gray mb-2 text-center">Enter the same PIN again</p>
+              <PinInput v-model="pinConfirm" label="Confirm PIN" :disabled="isLoading" :invalid="pinConfirm.length === 4 && pinConfirm !== pin" />
+              <p v-if="pinConfirm.length === 4 && pinConfirm !== pin" class="mt-2 text-sm text-red-700 text-center" role="status">The two PINs do not match.</p>
+            </div>
+            <label class="flex items-center justify-center gap-2 text-sm text-gmail-gray cursor-pointer">
+              <input v-model="trustDevice" type="checkbox" class="gmail-checkbox" />
+              Remember this device for 30 days
+            </label>
+            <p class="text-center"><button type="button" class="text-sm text-gmail-blue hover:underline" @click="startOver">Start sign in again</button></p>
+          </div>
+
+          <div v-if="!authStore.challengeToken && !pinStep">
             <label for="email" class="block text-sm font-medium text-gmail-gray mb-1">
               Email
             </label>
@@ -151,7 +226,7 @@ const handleSubmit = async () => {
             />
           </div>
 
-          <div v-if="!authStore.challengeToken">
+          <div v-if="!authStore.challengeToken && !pinStep">
             <label for="password" class="block text-sm font-medium text-gmail-gray mb-1">
               Password
             </label>
@@ -180,10 +255,10 @@ const handleSubmit = async () => {
               class="w-full px-4 py-3 border border-gmail-border rounded-lg focus:outline-none focus:border-gmail-blue focus:ring-1 focus:ring-gmail-blue"
               placeholder="Authenticator or recovery code" />
             <p class="mt-2 text-sm text-gmail-gray">Enter the code from your authenticator app, or one unused recovery code.</p>
-            <button type="button" class="mt-2 text-sm text-gmail-blue hover:underline" @click="authStore.challengeToken = null; verificationCode = ''; error = ''">Start sign in again</button>
+            <button type="button" class="mt-2 text-sm text-gmail-blue hover:underline" @click="startOver">Start sign in again</button>
           </div>
 
-          <div v-if="!authStore.challengeToken" class="flex items-center justify-between text-sm">
+          <div v-if="!authStore.challengeToken && !pinStep" class="flex items-center justify-between text-sm">
             <label class="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" class="gmail-checkbox" />
               <span class="text-gmail-gray">Remember me</span>
@@ -199,11 +274,11 @@ const handleSubmit = async () => {
             :loading="isLoading"
             class="w-full"
           >
-            {{ authStore.challengeToken ? 'Verify and sign in' : 'Sign in' }}
+            {{ pinStep ? (pinStep.setup ? 'Save PIN and sign in' : 'Sign in') : authStore.challengeToken ? 'Verify' : 'Sign in' }}
           </Button>
         </form>
 
-        <div v-if="providers.length && !authStore.challengeToken" class="mt-6">
+        <div v-if="providers.length && !authStore.challengeToken && !pinStep" class="mt-6">
           <div class="flex items-center gap-3 text-xs text-gmail-gray mb-4">
             <span class="flex-1 border-t border-gmail-border"></span>or<span class="flex-1 border-t border-gmail-border"></span>
           </div>

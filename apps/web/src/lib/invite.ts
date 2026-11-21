@@ -75,23 +75,29 @@ export function inviteCopy(invite: { purpose?: string; orgName: string; email: s
   }
 }
 
-type AcceptResult = { token?: string; user?: User; signedIn?: boolean }
+type AcceptResult = { token?: string; user?: User; signedIn?: boolean; requiresPin?: boolean; requiresPinSetup?: boolean; challengeToken?: string }
 
 /**
  * Accepts an invite or reset link; the token leaves the URL first. Returns
- * the signed-in user, or null when the account has two-factor sign-in and
- * must log in (signedIn:false).
+ * the signed-in user; 'pin' when the login PIN step follows (a new account
+ * chooses its PIN; beginPinStep has the challenge and the login page asks for
+ * it); or null when the account has two-factor sign-in and must log in.
  */
 export async function completeInvite(
   input: { token: string; name?: string; password: string },
   deps: {
     accept: (input: { token: string; name?: string; password: string }) => Promise<AcceptResult>
     setSession: (token: string, user: User) => void | Promise<void>
+    beginPinStep?: (step: { token: string; setup: boolean }) => void | Promise<void>
     clearHash: () => void
   },
-) {
+): Promise<User | 'pin' | null> {
   const session = await deps.accept(input)
   deps.clearHash()
+  if ((session.requiresPin || session.requiresPinSetup) && session.challengeToken && deps.beginPinStep) {
+    await deps.beginPinStep({ token: session.challengeToken, setup: !!session.requiresPinSetup })
+    return 'pin'
+  }
   if (session.signedIn === false || !session.token || !session.user) return null
   await deps.setSession(session.token, session.user)
   return session.user

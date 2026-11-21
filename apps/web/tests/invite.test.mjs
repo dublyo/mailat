@@ -78,6 +78,18 @@ test('a reset that cannot sign in (two-factor on) clears the link and starts no 
   assert.deepEqual(order, [['accept', undefined], ['clear']])
 })
 
+test('an accepted link that needs the login PIN starts the PIN step instead of a session', async () => {
+  const order = []
+  const result = await completeInvite({ token, name: 'New', password: 'long-password' }, {
+    accept: async () => ({ signedIn: false, requiresPinSetup: true, challengeToken: 'pin-setup' }),
+    clearHash: () => order.push(['clear']),
+    setSession: () => order.push(['session']),
+    beginPinStep: step => order.push(['pin', step]),
+  })
+  assert.equal(result, 'pin')
+  assert.deepEqual(order, [['clear'], ['pin', { token: 'pin-setup', setup: true }]])
+})
+
 test('the accept page sends a name only when the purpose asks for one', () => {
   const source = readFileSync(new URL('../src/views/AcceptInvite.vue', import.meta.url), 'utf8')
   assert.match(source, /name: copy\.value\.askName \? name\.value\.trim\(\) : undefined/)

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/gogf/gf/v2/net/ghttp"
@@ -33,8 +34,9 @@ func (c *AuthController) RegisterStatus(r *ghttp.Request) {
 }
 
 // Register creates the first owner and organization. The email must be a
-// valid address and the password 8–72 bytes. Limited to 5 attempts per client
-// IP per hour (429 with Retry-After).
+// valid address and the password 8–72 bytes. No session is issued yet: the
+// result has requiresPinSetup and a challengeToken for POST /auth/pin/setup.
+// Limited to 5 attempts per client IP per hour (429 with Retry-After).
 // POST /api/v1/auth/register
 func (c *AuthController) Register(r *ghttp.Request) {
 	if rateLimited(r, c.limiter, service.RuleRegisterIP, middleware.ClientIP(r)) {
@@ -70,12 +72,18 @@ func (c *AuthController) Register(r *ghttp.Request) {
 	response.SuccessWithMessage(r, "Registration successful", result)
 }
 
-// Login authenticates a user. Attempts are limited per client IP (20 per 15
-// minutes) and per account email (10 per 15 minutes); over the limit the API
-// returns 429 with Retry-After.
+// Login checks the email and password. The result is a session token, or
+// the next step with a challengeToken: requiresTwoFactor (POST
+// /auth/2fa/challenge), then requiresPin (POST /auth/pin/verify) or
+// requiresPinSetup (POST /auth/pin/setup). A deviceToken from an earlier PIN
+// step of this account (30 days) skips the PIN step. Limits: 20 attempts per
+// client IP per 15 minutes; failed attempts only (a correct password never
+// counts) 10 per account and client IP and 100 per account per 15 minutes.
+// Over a limit the API returns 429 with Retry-After.
 // POST /api/v1/auth/login
 func (c *AuthController) Login(r *ghttp.Request) {
-	if rateLimited(r, c.limiter, service.RuleLoginIP, middleware.ClientIP(r)) {
+	ip := middleware.ClientIP(r)
+	if rateLimited(r, c.limiter, service.RuleLoginIP, ip) {
 		return
 	}
 	var req model.LoginRequest
@@ -94,13 +102,19 @@ func (c *AuthController) Login(r *ghttp.Request) {
 		response.BadRequest(r, "password is required")
 		return
 	}
-	// Checked before bcrypt so a locked account costs no hashing work.
-	if rateLimited(r, c.limiter, service.RuleLoginAccount, strings.ToLower(strings.TrimSpace(req.Email))) {
+	// Failure budgets are checked, not spent, before bcrypt so a locked
+	// address+IP costs no hashing work; only a failed check spends them.
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if peekLimited(r, c.limiter, service.RuleLoginFailure, email+"|"+ip) || peekLimited(r, c.limiter, service.RuleLoginAccountFailure, email) {
 		return
 	}
 
 	result, err := c.authService.Login(r.Context(), &req)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidCredentials) {
+			recordHit(r, c.limiter, service.RuleLoginFailure, email+"|"+ip)
+			recordHit(r, c.limiter, service.RuleLoginAccountFailure, email)
+		}
 		response.Unauthorized(r, err.Error())
 		return
 	}
@@ -214,9 +228,11 @@ func requireHumanAdmin(r *ghttp.Request) bool {
 	return true
 }
 
-// CompleteChallenge accepts a one-use password/OAuth challenge, never an API key.
-// Limited to 20 attempts per client IP per 15 minutes, in addition to five
-// attempts per challenge.
+// CompleteChallenge accepts a one-use password/OAuth TOTP challenge, never an
+// API key. A correct code continues to the PIN step (requiresPin or
+// requiresPinSetup with a new challengeToken) unless the login carried a
+// trusted deviceToken. Limited to 20 attempts per client IP per 15 minutes,
+// in addition to five attempts per challenge.
 func (c *AuthController) CompleteChallenge(r *ghttp.Request) {
 	if rateLimited(r, c.limiter, service.Rule2FAChallengeIP, middleware.ClientIP(r)) {
 		return

@@ -3,7 +3,6 @@ package router
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -204,19 +203,7 @@ func TestMailboxRoleMatrixHTTP(t *testing.T) {
 	}
 	login := func(email string) string {
 		t.Helper()
-		data, _ := json.Marshal(map[string]string{"email": email, "password": "mailbox-matrix-password"})
-		res, err := http.Post(base+"/auth/login", "application/json", bytes.NewReader(data))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer res.Body.Close()
-		var out struct {
-			Data model.LoginResponse `json:"data"`
-		}
-		if err = json.NewDecoder(res.Body).Decode(&out); err != nil || res.StatusCode != 200 || out.Data.Token == "" {
-			t.Fatalf("login %s: %d %v", email, res.StatusCode, err)
-		}
-		return out.Data.Token
+		return routerLogin(t, base, email, "mailbox-matrix-password")
 	}
 	box, member := login("box@boxes.test"), login("member@boxes.test")
 
