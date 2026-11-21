@@ -221,3 +221,38 @@ func TestArrivalAndLiveSettingsDocumented(t *testing.T) {
 		}
 	}
 }
+
+// WEBAUTHN_ENABLED stays off unless set, and is documented and passed through
+// to a Compose deployment.
+func TestWebAuthnFlagDefaultsOffAndIsDocumented(t *testing.T) {
+	previous := Cfg
+	t.Cleanup(func() { Cfg = previous })
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef-jwt")
+	t.Setenv("ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef-enc")
+	for _, tc := range []struct {
+		value string
+		set   bool
+		want  bool
+	}{{"", false, false}, {"false", true, false}, {"true", true, true}} {
+		t.Setenv("WEBAUTHN_ENABLED", tc.value)
+		if !tc.set {
+			os.Unsetenv("WEBAUTHN_ENABLED")
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.WebAuthnEnabled != tc.want {
+			t.Fatalf("WEBAUTHN_ENABLED=%q (set=%v): enabled=%v", tc.value, tc.set, cfg.WebAuthnEnabled)
+		}
+	}
+	for _, file := range []string{".env.example", ".env.production.example", "docker-compose.prod.yml"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", file))
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		if !regexp.MustCompile(`(?m)^\s*-?\s*WEBAUTHN_ENABLED=(\$\{WEBAUTHN_ENABLED:-)?false`).Match(data) {
+			t.Errorf("%s does not default WEBAUTHN_ENABLED to false", file)
+		}
+	}
+}

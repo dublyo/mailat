@@ -2,6 +2,10 @@
 
 Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web` tagged `sha-<full commit SHA>`; there are no version tags. Upgrade notes, backups and rollback are in [docs/self-hosting-ses.md](docs/self-hosting-ses.md).
 
+## 2026-11-21 security update
+
+- **WebAuthn crash fixed; passkeys off by default.** Concurrent `POST /security/webauthn/register/begin` (or `authenticate/begin`) requests from any signed-in user, mailbox users included, could crash the API with `concurrent map writes`, and pending challenges were never freed. The challenge store is now locked, challenges expire after 5 minutes, a user holds at most 5 and the server at most 10,000 (oldest evicted), and begin is limited to 10 calls per user per 15 minutes. The ceremonies still do not verify attestation, origin or signatures, so they are now behind `WEBAUTHN_ENABLED` (default `false`; experimental and insecure). Off, the four begin/finish endpoints answer 404 "Passkeys are not available on this server yet"; listing and deleting stored keys still work. Settings no longer shows the non-working "Add Key" button. No API contract or migration changes.
+
 ## Domains: list, domain pages and "who reads mail"
 
 Not yet deployed; web only (no API, DTO or migration changes).

@@ -59,6 +59,11 @@ type Config struct {
 	AutoMigrate      bool
 	DisableAppLimits bool
 
+	// WebAuthnEnabled (WEBAUTHN_ENABLED, default false) turns on the
+	// experimental passkey ceremonies, which do not yet verify attestation,
+	// origin or signatures. Off, they answer 404.
+	WebAuthnEnabled bool
+
 	// Email Provider ("smtp" or "ses")
 	EmailProvider string
 
@@ -126,6 +131,7 @@ func Load() (*Config, error) {
 	workerEnabled, _ := strconv.ParseBool(getEnv("WORKER_ENABLED", "true"))
 	autoMigrate, _ := strconv.ParseBool(getEnv("AUTO_MIGRATE", "true"))
 	disableAppLimits, _ := strconv.ParseBool(getEnv("DISABLE_APP_LIMITS", "true"))
+	webAuthnEnabled, _ := strconv.ParseBool(getEnv("WEBAUTHN_ENABLED", "false"))
 	campaignMaxSendRate, _ := strconv.ParseFloat(getEnv("CAMPAIGN_MAX_SEND_RATE", "0"), 64)
 	campaignSendConcurrency, _ := strconv.Atoi(getEnv("CAMPAIGN_SEND_CONCURRENCY", "4"))
 	autoReplyDailyLimit, autoReplyErr := strconv.Atoi(getEnv("AUTO_REPLY_DAILY_LIMIT", "200"))
@@ -192,6 +198,7 @@ func Load() (*Config, error) {
 		WorkerEnabled:    workerEnabled,
 		AutoMigrate:      autoMigrate,
 		DisableAppLimits: disableAppLimits,
+		WebAuthnEnabled:  webAuthnEnabled,
 
 		// Email Provider
 		EmailProvider: getEnv("EMAIL_PROVIDER", "ses"),

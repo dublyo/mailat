@@ -7,7 +7,9 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/dublyo/mailat/api/internal/config"
@@ -18,38 +20,53 @@ const (
 	ChallengeLength = 32
 )
 
+// Pending ceremony challenges live in process memory, so they are bounded:
+// each expires after webAuthnChallengeTTL, a user holds at most
+// webAuthnMaxPendingPerUser and the process at most webAuthnMaxPending. The
+// oldest challenge is evicted when a cap is reached.
+const (
+	webAuthnChallengeTTL      = 5 * time.Minute
+	webAuthnMaxPendingPerUser = 5
+	webAuthnMaxPending        = 10000
+)
+
+// ErrWebAuthnDisabled is returned by every ceremony while WEBAUTHN_ENABLED is
+// off. The ceremonies do not verify attestation, origin, rpIdHash or
+// signatures yet, so they stay off by default.
+var ErrWebAuthnDisabled = errors.New("Passkeys are not available on this server yet")
+
 // WebAuthnCredential represents a stored WebAuthn credential
 type WebAuthnCredential struct {
-	ID              int64     `json:"id"`
-	UUID            string    `json:"uuid"`
-	UserID          int       `json:"userId"`
-	CredentialID    string    `json:"credentialId"` // Base64 encoded
-	Name            string    `json:"name"`
-	DeviceType      string    `json:"deviceType,omitempty"`
-	Transports      []string  `json:"transports,omitempty"`
-	LastUsedAt      *time.Time `json:"lastUsedAt,omitempty"`
-	CreatedAt       time.Time `json:"createdAt"`
+	ID           int64      `json:"id"`
+	UUID         string     `json:"uuid"`
+	UserID       int        `json:"userId"`
+	CredentialID string     `json:"credentialId"` // Base64 encoded
+	Name         string     `json:"name"`
+	DeviceType   string     `json:"deviceType,omitempty"`
+	Transports   []string   `json:"transports,omitempty"`
+	LastUsedAt   *time.Time `json:"lastUsedAt,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
 }
 
 // RegistrationOptions represents WebAuthn registration options
 type RegistrationOptions struct {
-	Challenge        string                 `json:"challenge"`
-	RP               RPEntity               `json:"rp"`
-	User             UserEntity             `json:"user"`
-	PubKeyCredParams []PubKeyCredParam      `json:"pubKeyCredParams"`
-	Timeout          int                    `json:"timeout"`
-	Attestation      string                 `json:"attestation"`
+	Challenge              string                 `json:"challenge"`
+	RP                     RPEntity               `json:"rp"`
+	User                   UserEntity             `json:"user"`
+	PubKeyCredParams       []PubKeyCredParam      `json:"pubKeyCredParams"`
+	Timeout                int                    `json:"timeout"`
+	Attestation            string                 `json:"attestation"`
 	AuthenticatorSelection AuthenticatorSelection `json:"authenticatorSelection"`
-	ExcludeCredentials []CredentialDescriptor `json:"excludeCredentials,omitempty"`
+	ExcludeCredentials     []CredentialDescriptor `json:"excludeCredentials,omitempty"`
 }
 
 // AuthenticationOptions represents WebAuthn authentication options
 type AuthenticationOptions struct {
-	Challenge          string                 `json:"challenge"`
-	Timeout            int                    `json:"timeout"`
-	RPID               string                 `json:"rpId"`
-	AllowCredentials   []CredentialDescriptor `json:"allowCredentials,omitempty"`
-	UserVerification   string                 `json:"userVerification"`
+	Challenge        string                 `json:"challenge"`
+	Timeout          int                    `json:"timeout"`
+	RPID             string                 `json:"rpId"`
+	AllowCredentials []CredentialDescriptor `json:"allowCredentials,omitempty"`
+	UserVerification string                 `json:"userVerification"`
 }
 
 // RPEntity represents the Relying Party
@@ -87,11 +104,11 @@ type CredentialDescriptor struct {
 
 // RegistrationResponse from the authenticator
 type RegistrationResponse struct {
-	ID                string `json:"id"`
-	RawID             string `json:"rawId"`
-	Type              string `json:"type"`
-	AttestationObject string `json:"attestationObject"`
-	ClientDataJSON    string `json:"clientDataJSON"`
+	ID                string   `json:"id"`
+	RawID             string   `json:"rawId"`
+	Type              string   `json:"type"`
+	AttestationObject string   `json:"attestationObject"`
+	ClientDataJSON    string   `json:"clientDataJSON"`
 	Transports        []string `json:"transports,omitempty"`
 }
 
@@ -110,7 +127,10 @@ type AuthenticationResponse struct {
 type WebAuthnService struct {
 	db  *sql.DB
 	cfg *config.Config
-	challenges map[string]challengeData // In-memory challenge storage (use Redis in production)
+
+	mu         sync.Mutex
+	challenges map[string]challengeData // pending ceremonies, guarded by mu
+	now        func() time.Time
 }
 
 type challengeData struct {
@@ -126,7 +146,88 @@ func NewWebAuthnService(db *sql.DB, cfg *config.Config) *WebAuthnService {
 		db:         db,
 		cfg:        cfg,
 		challenges: make(map[string]challengeData),
+		now:        time.Now,
 	}
+}
+
+// Enabled reports whether the WebAuthn ceremonies are switched on
+// (WEBAUTHN_ENABLED). Listing and deleting stored credentials always work.
+func (s *WebAuthnService) Enabled() bool {
+	return s.cfg != nil && s.cfg.WebAuthnEnabled
+}
+
+// storeChallenge records a pending ceremony. It prunes expired entries, then
+// evicts the oldest entries of the user and of the process so neither cap is
+// exceeded.
+func (s *WebAuthnService) storeChallenge(challenge string, userID int64, kind string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	var userKeys []string
+	for k, c := range s.challenges {
+		if !now.Before(c.ExpiresAt) {
+			delete(s.challenges, k)
+		} else if c.UserID == userID {
+			userKeys = append(userKeys, k)
+		}
+	}
+	for len(userKeys) >= webAuthnMaxPendingPerUser {
+		oldest := 0
+		for i, k := range userKeys {
+			if s.challenges[k].ExpiresAt.Before(s.challenges[userKeys[oldest]].ExpiresAt) {
+				oldest = i
+			}
+		}
+		delete(s.challenges, userKeys[oldest])
+		userKeys = append(userKeys[:oldest], userKeys[oldest+1:]...)
+	}
+	for len(s.challenges) >= webAuthnMaxPending {
+		var oldestKey string
+		var oldestAt time.Time
+		for k, c := range s.challenges {
+			if oldestKey == "" || c.ExpiresAt.Before(oldestAt) {
+				oldestKey, oldestAt = k, c.ExpiresAt
+			}
+		}
+		delete(s.challenges, oldestKey)
+	}
+	s.challenges[challenge] = challengeData{
+		Challenge: challenge,
+		UserID:    userID,
+		ExpiresAt: now.Add(webAuthnChallengeTTL),
+		Type:      kind,
+	}
+}
+
+// takeChallenge consumes a pending ceremony of the given kind for userID.
+// Expired entries are removed; a challenge held by another user or ceremony
+// is left alone.
+func (s *WebAuthnService) takeChallenge(challenge string, userID int64, kind string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.challenges[challenge]
+	if !ok {
+		return fmt.Errorf("invalid or expired challenge")
+	}
+	if !s.now().Before(c.ExpiresAt) {
+		delete(s.challenges, challenge)
+		return fmt.Errorf("invalid or expired challenge")
+	}
+	if c.Type != kind {
+		return fmt.Errorf("invalid or expired challenge")
+	}
+	if c.UserID != userID {
+		return fmt.Errorf("challenge does not match user")
+	}
+	delete(s.challenges, challenge)
+	return nil
+}
+
+// pendingChallenges returns the number of stored challenges (tests).
+func (s *WebAuthnService) pendingChallenges() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.challenges)
 }
 
 // GetRPID returns the Relying Party ID (domain)
@@ -141,6 +242,9 @@ func (s *WebAuthnService) GetRPName() string {
 
 // BeginRegistration starts the WebAuthn registration process
 func (s *WebAuthnService) BeginRegistration(ctx context.Context, userID int64, email, name string) (*RegistrationOptions, error) {
+	if !s.Enabled() {
+		return nil, ErrWebAuthnDisabled
+	}
 	// Generate challenge
 	challenge, err := generateChallenge()
 	if err != nil {
@@ -190,19 +294,16 @@ func (s *WebAuthnService) BeginRegistration(ctx context.Context, userID int64, e
 		ExcludeCredentials: excludeCredentials,
 	}
 
-	// Store challenge
-	s.challenges[challenge] = challengeData{
-		Challenge: challenge,
-		UserID:    userID,
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-		Type:      "registration",
-	}
+	s.storeChallenge(challenge, userID, "registration")
 
 	return options, nil
 }
 
 // FinishRegistration completes the WebAuthn registration
 func (s *WebAuthnService) FinishRegistration(ctx context.Context, userID int64, credentialName string, response *RegistrationResponse) (*WebAuthnCredential, error) {
+	if !s.Enabled() {
+		return nil, ErrWebAuthnDisabled
+	}
 	if response == nil {
 		return nil, fmt.Errorf("response is required")
 	}
@@ -222,14 +323,9 @@ func (s *WebAuthnService) FinishRegistration(ctx context.Context, userID int64, 
 	}
 
 	// Verify challenge
-	challengeInfo, ok := s.challenges[clientData.Challenge]
-	if !ok || challengeInfo.ExpiresAt.Before(time.Now()) || challengeInfo.Type != "registration" {
-		return nil, fmt.Errorf("invalid or expired challenge")
+	if err := s.takeChallenge(clientData.Challenge, userID, "registration"); err != nil {
+		return nil, err
 	}
-	if challengeInfo.UserID != userID {
-		return nil, fmt.Errorf("challenge does not match user")
-	}
-	delete(s.challenges, clientData.Challenge)
 
 	// Verify type
 	if clientData.Type != "webauthn.create" {
@@ -283,6 +379,9 @@ func (s *WebAuthnService) FinishRegistration(ctx context.Context, userID int64, 
 
 // BeginAuthentication starts the WebAuthn authentication process
 func (s *WebAuthnService) BeginAuthentication(ctx context.Context, userID int64) (*AuthenticationOptions, error) {
+	if !s.Enabled() {
+		return nil, ErrWebAuthnDisabled
+	}
 	// Generate challenge
 	challenge, err := generateChallenge()
 	if err != nil {
@@ -316,19 +415,19 @@ func (s *WebAuthnService) BeginAuthentication(ctx context.Context, userID int64)
 		UserVerification: "preferred",
 	}
 
-	// Store challenge
-	s.challenges[challenge] = challengeData{
-		Challenge: challenge,
-		UserID:    userID,
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-		Type:      "authentication",
-	}
+	s.storeChallenge(challenge, userID, "authentication")
 
 	return options, nil
 }
 
 // FinishAuthentication completes the WebAuthn authentication
 func (s *WebAuthnService) FinishAuthentication(ctx context.Context, userID int64, response *AuthenticationResponse) error {
+	if !s.Enabled() {
+		return ErrWebAuthnDisabled
+	}
+	if response == nil {
+		return fmt.Errorf("response is required")
+	}
 	// Decode client data
 	clientDataJSON, err := base64.RawURLEncoding.DecodeString(response.ClientDataJSON)
 	if err != nil {
@@ -345,14 +444,9 @@ func (s *WebAuthnService) FinishAuthentication(ctx context.Context, userID int64
 	}
 
 	// Verify challenge
-	challengeInfo, ok := s.challenges[clientData.Challenge]
-	if !ok || challengeInfo.ExpiresAt.Before(time.Now()) || challengeInfo.Type != "authentication" {
-		return fmt.Errorf("invalid or expired challenge")
+	if err := s.takeChallenge(clientData.Challenge, userID, "authentication"); err != nil {
+		return err
 	}
-	if challengeInfo.UserID != userID {
-		return fmt.Errorf("challenge does not match user")
-	}
-	delete(s.challenges, clientData.Challenge)
 
 	// Verify type
 	if clientData.Type != "webauthn.get" {
