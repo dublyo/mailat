@@ -217,7 +217,12 @@ func (p *ReceivingProvider) createS3Bucket(ctx context.Context, bucketName, acco
 	}
 
 	// Messages live until their owner deletes them; an implicit 90-day lifecycle
-	// would silently destroy attachments still referenced by the mailbox.
+	// would silently destroy attachments still referenced by the mailbox. The
+	// bucket holds both raw incoming/ objects (the only full copy of a message,
+	// re-read by the DMARC history scan) and the attachments/ objects every
+	// download and forward reads, so it deliberately has no expiry rule. The
+	// storage cleanup worker deletes objects once no mailbox row references
+	// them, including mail to unknown recipients and virus-flagged mail.
 	if _, err = p.s3Client.PutPublicAccessBlock(ctx, &s3.PutPublicAccessBlockInput{Bucket: aws.String(bucketName), PublicAccessBlockConfiguration: &s3types.PublicAccessBlockConfiguration{BlockPublicAcls: aws.Bool(true), IgnorePublicAcls: aws.Bool(true), BlockPublicPolicy: aws.Bool(true), RestrictPublicBuckets: aws.Bool(true)}}); err != nil {
 		return err
 	}

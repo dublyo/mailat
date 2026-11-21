@@ -2,6 +2,15 @@
 
 Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web` tagged `sha-<full commit SHA>`; there are no version tags. Upgrade notes, backups and rollback are in [docs/self-hosting-ses.md](docs/self-hosting-ses.md).
 
+## 2026-11-21 security update
+
+- **Inbound mail abuse fixes** (API only; no migration, no API change):
+  - From, Reply-To and the auto-reply sender are parsed with `net/mail`. A display name such as `"<victim@x>" <attacker@y>` no longer becomes the stored sender, so it can't steer auto-replies, sender filters or trusted-sender images. Auto-replies also require exactly one From mailbox that matches the From SES checked DMARC against.
+  - Forwarding skips mail whose DMARC verdict is FAIL, or whose SPF and DKIM both FAIL. The local copy is kept and the job is recorded as `skipped:unauthenticated`.
+  - Mail to unknown addresses (no identity and no catch-all) no longer stays in S3 forever. Its raw object is queued for deletion after an hour, and the cleanup worker still never deletes an object that a mailbox row references.
+  - Mail with an SES virus verdict of FAIL is not delivered to any mailbox (before, it went to Spam). Its raw object is queued for deletion and the rejection is logged. Spam verdicts are unchanged.
+  - The receiving bucket still has no S3 lifecycle rule. It also holds the attachment objects that downloads and forwards read, so an expiry rule would delete mail people still have.
+
 ## Domains: list, domain pages and "who reads mail"
 
 Not yet deployed; web only (no API, DTO or migration changes).

@@ -11,6 +11,9 @@ type ArrivalVerdicts struct {
 	Spam, Virus, SPF, DKIM, DMARC string
 	DMARCReport                   bool
 	Folder                        string
+	// ProviderFrom is the From header as SES parsed it (commonHeaders.from),
+	// the address its DMARC verdict was computed for. Empty when unknown.
+	ProviderFrom []string
 }
 
 // Local parts that never belong to a person (RFC 3834 §2 and common list/bounce
@@ -61,6 +64,19 @@ func AutoReplyEligible(h mail.Header, envelopeFrom, sender string, ownAddrs, rcp
 	for _, own := range ownAddrs {
 		if strings.EqualFold(strings.TrimSpace(own), sender) {
 			return false, "own-address"
+		}
+	}
+	// The receipt verdicts speak for one From domain. Answer only a From header
+	// that is exactly one well-formed mailbox, is the sender being answered,
+	// and (when known) is the mailbox SES evaluated DMARC on; a header with
+	// several or unparseable addresses could steer the reply to a third party.
+	if from, _, strict := parseAddressHeader(h["From"]); !strict || !strings.EqualFold(from, sender) {
+		return false, "ambiguous-from"
+	}
+	if len(v.ProviderFrom) > 0 {
+		seen, _, _ := parseAddressHeader(v.ProviderFrom)
+		if len(v.ProviderFrom) != 1 || !strings.EqualFold(seen, sender) {
+			return false, "ambiguous-from"
 		}
 	}
 	if strings.EqualFold(v.Spam, "FAIL") || strings.EqualFold(v.Virus, "FAIL") {

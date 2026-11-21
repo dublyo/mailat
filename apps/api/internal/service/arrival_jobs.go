@@ -95,7 +95,8 @@ func EnqueueArrivalJobs(ctx context.Context, tx *sql.Tx, in ArrivalInput) error 
 		return nil
 	}
 	sesID := in.Notification.Mail.MessageId
-	sender := strings.ToLower(extractEmail(in.Header["From"]))
+	fromAddress, _, _ := parseAddressHeader(in.Header["From"])
+	sender := strings.ToLower(fromAddress)
 	subject := clipUTF8(decodeMIMEHeader(in.Header.Get("Subject")), 1000)
 
 	// copyOf picks the given user's copy; jobs of other users use the first copy.
@@ -125,6 +126,7 @@ func EnqueueArrivalJobs(ctx context.Context, tx *sql.Tx, in ArrivalInput) error 
 		ok, _ := AutoReplyEligible(in.Header, in.Notification.Mail.Source, sender, own, append([]string{in.IdentityEmail}, in.Recipients...), ArrivalVerdicts{
 			Spam: r.SpamVerdict.Status, Virus: r.VirusVerdict.Status, SPF: r.SPFVerdict.Status, DKIM: r.DKIMVerdict.Status,
 			DMARC: r.DMARCVerdict.Status, DMARCReport: in.DMARCReport, Folder: owner.Folder,
+			ProviderFrom: in.Notification.Mail.CommonHeaders.From,
 		})
 		if ok {
 			payload := arrivalAutoReply{Sender: sender, Subject: subject, MessageID: clipUTF8(strings.TrimSpace(in.Header.Get("Message-Id")), 500), References: clipUTF8(strings.Join(strings.Fields(in.Header.Get("References")), " "), 4000)}

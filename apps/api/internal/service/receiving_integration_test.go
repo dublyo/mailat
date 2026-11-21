@@ -16,6 +16,7 @@ type fakeIncomingStorage struct {
 	raw                 []byte
 	err                 error
 	gets, puts, deletes int
+	deleted             []string
 }
 
 func (f *fakeIncomingStorage) GetEmailFromS3(context.Context, string, string) ([]byte, error) {
@@ -26,8 +27,9 @@ func (f *fakeIncomingStorage) PutAttachment(context.Context, string, string, str
 	f.puts++
 	return f.err
 }
-func (f *fakeIncomingStorage) DeleteObject(context.Context, string, string) error {
+func (f *fakeIncomingStorage) DeleteObject(_ context.Context, _ string, key string) error {
 	f.deletes++
+	f.deleted = append(f.deleted, key)
 	return f.err
 }
 func (f *fakeIncomingStorage) GenerateDownloadURL(context.Context, string, string, string) (string, error) {
