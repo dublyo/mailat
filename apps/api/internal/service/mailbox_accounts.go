@@ -406,18 +406,24 @@ func lockMailbox(ctx context.Context, tx *sql.Tx, a OrgActor, userUUID string, w
 }
 
 // revokeSignIns ends every session, pending second-factor or PIN challenge
-// and remembered (PIN-skipping) device.
+// and remembered (PIN-skipping) device, and clears wrong-PIN counts so an
+// admin's password set, 2FA reset or PIN reset also ends a PIN lock.
 func revokeSignIns(ctx context.Context, tx *sql.Tx, userID int64) (int, error) {
 	res, err := tx.ExecContext(ctx, `UPDATE user_sessions SET active=false,revoked_at=now() WHERE user_id=$1 AND active`, userID)
 	if err != nil {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	if _, err = tx.ExecContext(ctx, `DELETE FROM auth_challenges WHERE user_id=$1`, userID); err != nil {
-		return 0, err
+	for _, q := range []string{
+		`DELETE FROM auth_challenges WHERE user_id=$1`,
+		`DELETE FROM trusted_devices WHERE user_id=$1`,
+		`DELETE FROM login_pin_failures WHERE user_id=$1`,
+	} {
+		if _, err = tx.ExecContext(ctx, q, userID); err != nil {
+			return 0, err
+		}
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM trusted_devices WHERE user_id=$1`, userID)
-	return int(n), err
+	return int(n), nil
 }
 
 func revokeResetLinks(ctx context.Context, tx *sql.Tx, userID int64) error {

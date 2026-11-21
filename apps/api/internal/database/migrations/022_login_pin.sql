@@ -40,3 +40,10 @@ ALTER TABLE auth_challenges DROP CONSTRAINT IF EXISTS auth_challenges_kind_check
 ALTER TABLE auth_challenges ADD CONSTRAINT auth_challenges_kind_check CHECK (kind IN ('totp','pin'));
 ALTER TABLE auth_challenges ADD COLUMN IF NOT EXISTS factor_verified boolean NOT NULL DEFAULT false;
 ALTER TABLE auth_challenges ADD COLUMN IF NOT EXISTS trusted_device_id bigint REFERENCES trusted_devices(id) ON DELETE SET NULL;
+
+-- Sessions issued before this migration never passed a PIN step. Nobody has a
+-- PIN yet, so this signs every user out once (the same columns the API sets
+-- when it revokes a session); the next sign-in asks them to choose a PIN.
+UPDATE user_sessions s SET active=false, revoked_at=now()
+FROM users u
+WHERE u.id=s.user_id AND u.login_pin_hash IS NULL AND s.active;

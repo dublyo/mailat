@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net/netip"
 	"time"
 
 	"github.com/dublyo/mailat/api/internal/config"
@@ -20,8 +21,8 @@ type RateRule struct {
 	Window time.Duration
 }
 
-// Auth and public endpoint limits (M2 C2). Subjects are client IPs, lowercased
-// account emails or user IDs depending on the rule.
+// Auth and public endpoint limits (M2 C2). Subjects are client IPs (see
+// RateLimitIPKey), lowercased account emails or user IDs depending on the rule.
 var (
 	RuleLoginIP = RateRule{Name: "login-ip", Limit: 20, Window: 15 * time.Minute}
 	// Failed logins only (wrong password or unknown account): a correct
@@ -120,6 +121,43 @@ func (l *RateLimiter) Peek(ctx context.Context, rule RateRule, subject string) (
 		return false, time.Duration(seconds * float64(time.Second)), nil
 	}
 	return true, 0, nil
+}
+
+// Refund gives back one hit recorded by Allow in the current window, never
+// going below zero. Failure-only limits reserve a hit before the check (so
+// concurrent requests cannot exceed the limit) and refund it when the check
+// passed. A refund after the window rolled over takes one hit off the new
+// window, at most one per refunded request.
+func (l *RateLimiter) Refund(ctx context.Context, rule RateRule, subject string) error {
+	window := int64(rule.Window / time.Second)
+	if window < 1 {
+		return fmt.Errorf("invalid rate rule %s", rule.Name)
+	}
+	_, err := l.db.ExecContext(ctx, `UPDATE auth_rate_limits SET hits=hits-1
+		WHERE key=$1 AND hits>0 AND window_start=to_timestamp(floor(extract(epoch FROM now())/$2::int)*$2::int)`,
+		l.storageKey(rule, subject), window)
+	return err
+}
+
+// RateLimitIPKey is the rate-limit subject for a client address: an IPv4
+// address as is, an IPv6 address as its /64 network, because one client
+// usually holds a whole /64 and could otherwise rotate through 2^64 buckets.
+// IPv4-mapped IPv6 addresses count as IPv4. Anything that is not an IP
+// address is returned unchanged.
+func RateLimitIPKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	addr = addr.Unmap().WithZone("")
+	if addr.Is4() {
+		return addr.String()
+	}
+	prefix, err := addr.Prefix(64)
+	if err != nil {
+		return ip
+	}
+	return prefix.String()
 }
 
 // Record counts one hit for rule/subject (a failure, for failure-only

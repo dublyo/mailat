@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,5 +83,96 @@ func TestRegistrationPolicy(t *testing.T) {
 		if c.ok && email != "owner@example.com" {
 			t.Fatalf("email not normalized: %q", email)
 		}
+	}
+}
+
+func TestRateLimitIPKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"203.0.113.7":             "203.0.113.7",
+		"::ffff:203.0.113.7":      "203.0.113.7",
+		"2001:db8:1:2::1":         "2001:db8:1:2::/64",
+		"2001:db8:1:2:ffff:1:2:3": "2001:db8:1:2::/64",
+		"2001:DB8:1:2:0:0:0:9":    "2001:db8:1:2::/64",
+		"fe80::1%eth0":            "fe80::/64",
+		"::1":                     "::/64",
+		"42":                      "42",
+		"":                        "",
+		"owner@example.test":      "owner@example.test",
+		"owner@example.test|::1":  "owner@example.test|::1",
+		"2001:db8:1:3::1":         "2001:db8:1:3::/64",
+	} {
+		if got := RateLimitIPKey(in); got != want {
+			t.Errorf("RateLimitIPKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Refund gives back a reserved hit in the current window only and never
+// goes below zero; Allow stays atomic under concurrency.
+func TestRateLimiterRefundAndConcurrentAllow(t *testing.T) {
+	db := testutil.Database(t)
+	ctx := context.Background()
+	l := NewRateLimiter(db, &config.Config{JWTSecret: "rate-limit-fixture-secret-0123456789"})
+	rule := RateRule{Name: "fixture-refund", Limit: 2, Window: time.Hour}
+	hits := func() int {
+		var n int
+		db.QueryRow(`SELECT COALESCE((SELECT hits FROM auth_rate_limits WHERE key=$1),-1)`, l.storageKey(rule, "s")).Scan(&n)
+		return n
+	}
+	// Refunding a subject with no row is a no-op.
+	if err := l.Refund(ctx, rule, "s"); err != nil || hits() != -1 {
+		t.Fatalf("refund without row: %v hits=%d", err, hits())
+	}
+	for i := 0; i < 2; i++ {
+		if ok, _, err := l.Allow(ctx, rule, "s"); err != nil || !ok {
+			t.Fatal("allow", i, err)
+		}
+	}
+	if ok, _, _ := l.Allow(ctx, rule, "s"); ok {
+		t.Fatal("limit not enforced")
+	}
+	if err := l.Refund(ctx, rule, "s"); err != nil || hits() != 1 {
+		t.Fatalf("refund: %v hits=%d", err, hits())
+	}
+	if ok, _, _ := l.Allow(ctx, rule, "s"); !ok {
+		t.Fatal("refunded hit not usable")
+	}
+	for i := 0; i < 4; i++ {
+		if err := l.Refund(ctx, rule, "s"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if hits() != 0 {
+		t.Fatalf("refund went below zero: %d", hits())
+	}
+	// A row from an earlier window is not touched.
+	l.Allow(ctx, rule, "s")
+	db.Exec(`UPDATE auth_rate_limits SET window_start=window_start-interval '1 hour' WHERE key=$1`, l.storageKey(rule, "s"))
+	if err := l.Refund(ctx, rule, "s"); err != nil || hits() != 1 {
+		t.Fatalf("old window refunded: %v hits=%d", err, hits())
+	}
+
+	race := RateRule{Name: "fixture-race", Limit: 10, Window: time.Hour}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	allowed := 0
+	for i := 0; i < 40; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, _, err := l.Allow(ctx, race, "203.0.113.7")
+			if err != nil {
+				t.Error(err)
+			}
+			if ok {
+				mu.Lock()
+				allowed++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if allowed != 10 {
+		t.Fatalf("concurrent allow accepted %d of limit 10", allowed)
 	}
 }

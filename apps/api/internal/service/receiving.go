@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/dublyo/mailat/api/internal/eventoutbox"
 	"github.com/dublyo/mailat/api/internal/model"
@@ -473,10 +474,13 @@ func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *Recei
 			}
 			// Forwarding with keepCopy=false archives the local copy; it is never
 			// deleted. Shared identities always keep their copies.
+			keptArchived := false
 			if ident.Kind == "personal" {
+				before := email.Folder
 				if email.Folder, err = keepCopyArchive(ctx, tx, ident.ID, emailID, email.Folder); err != nil {
 					return err
 				}
+				keptArchived = email.Folder != before
 			}
 			dedupe := fmt.Sprintf("received:%s:%d", n.Mail.MessageId, ident.ID)
 			if ident.Kind == "shared" {
@@ -485,7 +489,7 @@ func (s *ReceivingService) processIncomingEmail(ctx context.Context, auth *Recei
 			if err = eventoutbox.Emit(ctx, tx, eventoutbox.Event{Type: "email.received", OrgID: ident.OrgID, UserID: owner, IdentityID: ident.ID, MessageUUID: emailUUID, DedupeKey: dedupe, Data: map[string]any{"from": email.FromEmail, "to": email.ToEmails, "subject": email.Subject, "folder": email.Folder, "inReplyTo": parsed.Header.Get("In-Reply-To"), "hasAttachments": email.HasAttachments}}); err != nil {
 				return err
 			}
-			copies = append(copies, ArrivalCopy{OwnerID: owner, EmailID: emailID, UUID: emailUUID, Folder: email.Folder})
+			copies = append(copies, ArrivalCopy{OwnerID: owner, EmailID: emailID, UUID: emailUUID, Folder: email.Folder, KeptArchived: keptArchived})
 		}
 		if err = EnqueueArrivalJobs(ctx, tx, ArrivalInput{OrgID: ident.OrgID, IdentityID: ident.ID, IdentityKind: ident.Kind, IdentityEmail: strings.ToLower(ident.Email), Recipients: ident.Recipients,
 			Copies: copies, Header: parsed.Header, Notification: n, DMARCReport: isDMARCReport}); err != nil {
@@ -775,8 +779,10 @@ func (s *ReceivingService) matchesCondition(email model.ReceivedEmail, cond mode
 //
 // A display name can itself contain "<...>" (From: "<victim@x>" <attacker@y>),
 // so the address is never cut out of the raw text at the first angle bracket.
-// A header net/mail rejects falls back only to one unambiguous <addr-spec>
-// (exactly one "<" and one ">"); anything else yields an empty address.
+// A header net/mail rejects (real senders such as foo..bar@docomo.ne.jp)
+// falls back leniently, and never strictly, to the contents of one
+// unambiguous <...> pair (exactly one "<" and one ">"), or to a bare token,
+// when either is one plausible address; anything else yields an empty address.
 func parseAddressHeader(values []string) (address, name string, strict bool) {
 	if len(values) == 0 {
 		return "", "", false
@@ -786,18 +792,46 @@ func parseAddressHeader(values []string) (address, name string, strict bool) {
 		if len(list) == 0 {
 			return "", "", false
 		}
-		return safeMailText(list[0].Address), safeMailText(list[0].Name), len(list) == 1 && len(values) == 1
+		name = list[0].Name
+		// net/mail decodes encoded words only in atoms, not in a quoted name.
+		if strings.Contains(name, "=?") && strings.Contains(name, "?=") {
+			name = decodeMIMEHeader(name)
+		}
+		return safeMailText(list[0].Address), safeMailText(name), len(list) == 1 && len(values) == 1
 	}
 	raw := strings.TrimSpace(values[0])
+	if !strings.ContainsAny(raw, "<>") {
+		if lenientAddress(raw) {
+			return safeMailText(raw), "", false
+		}
+		return "", "", false
+	}
 	open, end := strings.Index(raw, "<"), strings.Index(raw, ">")
 	if strings.Count(raw, "<") != 1 || strings.Count(raw, ">") != 1 || end < open {
 		return "", "", false
 	}
-	inner, err := mail.ParseAddress(raw[open+1 : end])
-	if err != nil {
+	inner := strings.TrimSpace(raw[open+1 : end])
+	if !lenientAddress(inner) {
 		return "", "", false
 	}
-	return safeMailText(inner.Address), decodeMIMEHeader(strings.Trim(strings.TrimSpace(raw[:open]), `"`)), false
+	return safeMailText(inner), decodeMIMEHeader(strings.Trim(strings.TrimSpace(raw[:open]), `"`)), false
+}
+
+// lenientAddress accepts an address net/mail rejects only when it is one
+// token with exactly one "@" between a non-empty local part and domain, and no
+// whitespace, control characters, or the list, comment, quote and angle
+// delimiters that would make it more than one address.
+func lenientAddress(s string) bool {
+	at := strings.Index(s, "@")
+	if at <= 0 || at == len(s)-1 || strings.Count(s, "@") != 1 || strings.ContainsAny(s, `<>,;()"`) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // incomingAddressParser decodes encoded display names in any charset the

@@ -43,11 +43,9 @@ func (s *OrgMemberService) ResetLoginPin(ctx context.Context, a OrgActor, userUU
 	if _, err = tx.ExecContext(ctx, `UPDATE users SET login_pin_hash=NULL,login_pin_set_at=NULL,auth_version=auth_version+1,updated_at=now() WHERE id=$1`, id); err != nil {
 		return nil, err
 	}
+	// Also clears the user's wrong-PIN counts, so a PIN lock ends here.
 	n, err := revokeSignIns(ctx, tx, id)
 	if err != nil {
-		return nil, err
-	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM login_pin_failures WHERE user_id=$1`, id); err != nil {
 		return nil, err
 	}
 	if err = auditTx(ctx, tx, a, "login_pin_reset", "user", userUUID, "Reset the login PIN of "+email, map[string]any{"role": role, "sessionsRevoked": n}); err != nil {

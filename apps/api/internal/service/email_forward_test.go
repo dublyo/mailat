@@ -503,3 +503,65 @@ func TestArrivalJobsSkipInactiveOwner(t *testing.T) {
 		t.Fatalf("rule missing once active again: %d %v", id, err)
 	}
 }
+
+// A keep_copy=false forward archives the local copy as read at ingest; when
+// the forward then refuses the message (unauthenticated or spam), the copy
+// must come back to the inbox unread instead of staying hidden.
+func TestForwardSkipRestoresKeepCopyArchive(t *testing.T) {
+	f := newForwardFixture(t)
+	uuid, token := f.create(t, "dest@outside.test", false)
+	if err := f.replies.VerifyEmailForward(context.Background(), uuid, token); err != nil {
+		t.Fatal(err)
+	}
+	state := func(ses string) (folder string, archived, read bool) {
+		t.Helper()
+		if err := f.db.QueryRow(`SELECT folder,is_archived,is_read FROM received_emails WHERE ses_message_id=$1`, ses).Scan(&folder, &archived, &read); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	dmarcFail := func(r *model.SESReceipt) { r.DMARCVerdict.Status = "FAIL" }
+	f.deliverWith(t, "kc-unauth", "alice@sender.test", dmarcFail)
+	f.deliverWith(t, "kc-spf-dkim", "alice@sender.test", func(r *model.SESReceipt) {
+		r.DMARCVerdict.Status, r.SPFVerdict.Status, r.DKIMVerdict.Status = "GRAY", "FAIL", "FAIL"
+	})
+	f.deliverWith(t, "kc-moved", "alice@sender.test", dmarcFail)
+	f.deliverWith(t, "kc-spam", "alice@sender.test", func(r *model.SESReceipt) { r.SpamVerdict.Status = "FAIL" })
+	f.deliver(t, "kc-pass", "alice@sender.test")
+	for _, ses := range []string{"kc-unauth", "kc-spf-dkim", "kc-moved", "kc-pass"} {
+		if folder, archived, read := state(ses); folder != "archive" || !archived || !read {
+			t.Fatalf("%s at ingest: %s archived=%v read=%v", ses, folder, archived, read)
+		}
+	}
+	// The user moved this copy before the job ran: the move stands.
+	mustExec(t, f.db, `UPDATE received_emails SET folder='work',is_archived=false WHERE ses_message_id='kc-moved'`)
+	f.runOnce(t)
+
+	for ses, want := range map[string]string{"kc-unauth": "skipped:unauthenticated", "kc-spf-dkim": "skipped:unauthenticated", "kc-moved": "skipped:unauthenticated", "kc-spam": "skipped:spam", "kc-pass": "done"} {
+		if _, result := f.job(t, ses, "forward"); result != want {
+			t.Errorf("%s: %s, want %s", ses, result, want)
+		}
+	}
+	for _, ses := range []string{"kc-unauth", "kc-spf-dkim"} {
+		if folder, archived, read := state(ses); folder != "inbox" || archived || read {
+			t.Errorf("%s not restored: %s archived=%v read=%v", ses, folder, archived, read)
+		}
+	}
+	if folder, archived, read := state("kc-moved"); folder != "work" || archived || !read {
+		t.Errorf("user move overridden: %s archived=%v read=%v", folder, archived, read)
+	}
+	// Spam is never archived for the forward, so it stays in spam.
+	if folder, archived, _ := state("kc-spam"); folder != "spam" || archived {
+		t.Errorf("spam copy moved: %s archived=%v", folder, archived)
+	}
+	// A forwarded message keeps its archived local copy.
+	if folder, archived, read := state("kc-pass"); folder != "archive" || !archived || !read {
+		t.Errorf("forwarded copy changed: %s archived=%v read=%v", folder, archived, read)
+	}
+	if len(f.dispatched) != 1 {
+		t.Fatalf("forwarded %d messages, want only the authenticated one", len(f.dispatched))
+	}
+	if status, _, _ := f.forward(t, uuid); status != "active" {
+		t.Fatal("forward state changed:", status)
+	}
+}

@@ -79,7 +79,10 @@ func (c *AuthController) Register(r *ghttp.Request) {
 // step of this account (30 days) skips the PIN step. Limits: 20 attempts per
 // client IP per 15 minutes; failed attempts only (a correct password never
 // counts) 10 per account and client IP and 100 per account per 15 minutes.
-// Over a limit the API returns 429 with Retry-After.
+// IPv6 clients are counted per /64. When the per-account limit is reached, a
+// request with a valid deviceToken of that account is still checked, so
+// wrong guesses from elsewhere cannot lock out a remembered browser. Over a
+// limit the API returns 429 with Retry-After.
 // POST /api/v1/auth/login
 func (c *AuthController) Login(r *ghttp.Request) {
 	ip := middleware.ClientIP(r)
@@ -102,24 +105,65 @@ func (c *AuthController) Login(r *ghttp.Request) {
 		response.BadRequest(r, "password is required")
 		return
 	}
-	// Failure budgets are checked, not spent, before bcrypt so a locked
-	// address+IP costs no hashing work; only a failed check spends them.
 	email := strings.ToLower(strings.TrimSpace(req.Email))
-	if peekLimited(r, c.limiter, service.RuleLoginFailure, email+"|"+ip) || peekLimited(r, c.limiter, service.RuleLoginAccountFailure, email) {
+	pair := email + "|" + service.RateLimitIPKey(ip)
+	refund, ok := c.reserveLoginFailure(r, email, pair, req.DeviceToken)
+	if !ok {
 		return
 	}
 
 	result, err := c.authService.Login(r.Context(), &req)
-	if err != nil {
-		if errors.Is(err, service.ErrInvalidCredentials) {
-			recordHit(r, c.limiter, service.RuleLoginFailure, email+"|"+ip)
-			recordHit(r, c.limiter, service.RuleLoginAccountFailure, email)
+	if !errors.Is(err, service.ErrInvalidCredentials) {
+		// The password was right: the reserved failures are given back.
+		for _, rf := range refund {
+			refundHit(r, c.limiter, rf.rule, rf.subject)
 		}
+	}
+	if err != nil {
 		response.Unauthorized(r, err.Error())
 		return
 	}
 
 	response.Success(r, result)
+}
+
+type reservedHit struct {
+	rule    service.RateRule
+	subject string
+}
+
+// reserveLoginFailure spends one failure of each login failure budget before
+// bcrypt, atomically, so concurrent wrong guesses cannot exceed them and a
+// locked address+IP costs no hashing work. It returns the hits to refund when
+// the password turns out right, or ok=false after writing the response.
+// When only the per-account budget is spent, a deviceToken of a live
+// remembered device of that account still gets its password checked (a hash
+// lookup, before bcrypt; the token is unguessable).
+func (c *AuthController) reserveLoginFailure(r *ghttp.Request, email, pair, deviceToken string) ([]reservedHit, bool) {
+	allowed, retryAfter, err := reserveHit(r, c.limiter, service.RuleLoginFailure, pair)
+	if err != nil {
+		response.InternalError(r, "Unable to process the request right now")
+		return nil, false
+	}
+	if !allowed {
+		response.TooManyRequests(r, retryAfter, tooManyAttemptsMessage(retryAfter))
+		return nil, false
+	}
+	refund := []reservedHit{{service.RuleLoginFailure, pair}}
+	allowed, retryAfter, err = reserveHit(r, c.limiter, service.RuleLoginAccountFailure, email)
+	if err == nil && allowed {
+		return append(refund, reservedHit{service.RuleLoginAccountFailure, email}), true
+	}
+	if err == nil && c.authService.HasTrustedDevice(r.Context(), email, deviceToken) {
+		return refund, true
+	}
+	refundHit(r, c.limiter, service.RuleLoginFailure, pair)
+	if err != nil {
+		response.InternalError(r, "Unable to process the request right now")
+	} else {
+		response.TooManyRequests(r, retryAfter, tooManyAttemptsMessage(retryAfter))
+	}
+	return nil, false
 }
 
 // Me returns the current user's profile

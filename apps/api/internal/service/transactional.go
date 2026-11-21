@@ -254,9 +254,8 @@ func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID int64
 	if _, _, err = provider.BuildMailMIME(msg); err != nil {
 		return nil, err
 	}
-	// After the replay check, so a retry with a recorded key is not counted again.
-	// Scheduled sends count when they are submitted.
-	if err = s.limits.Reserve(ctx, len(req.To)+len(req.Cc)+len(req.Bcc)); err != nil {
+	// The SES headroom check may call AWS, so it runs before the transaction.
+	if err = s.limits.headroom(ctx); err != nil {
 		return nil, err
 	}
 
@@ -280,6 +279,13 @@ func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID int64
 	if err != nil || payload == nil {
 		return response, err
 	}
+	// Count recipients after enqueueDurable claimed the key, in its transaction:
+	// a replay or a concurrent request with the same key gets no payload above
+	// and counts nothing, and a refusal rolls the claim back so the key stays
+	// usable. Scheduled sends count when they are submitted.
+	if err = s.limits.reserveInTx(ctx, tx, len(req.To)+len(req.Cc)+len(req.Bcc)); err != nil {
+		return nil, err
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -302,31 +308,48 @@ func (s *TransactionalService) BatchSendEmailForUser(ctx context.Context, orgID 
 	body, _ := json.Marshal(req)
 	sum := sha256.Sum256(body)
 	hash := hex.EncodeToString(sum[:])
-	// Recipient limits count the whole batch once, before its key is recorded:
-	// a refused batch leaves the key unused, and a retry of a recorded batch is
-	// not counted again. Its items are then not counted individually.
+	// Recipient limits count the whole batch once, in the transaction that
+	// records its key: a refused batch leaves the key unused, and a retry of a
+	// recorded batch, or a concurrent request with the same key that loses the
+	// insert, is not counted again. Its items are then not counted individually.
 	if _, limited := sendQuotaSubject(ctx); limited && s.limits != nil {
 		var recorded bool
 		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM email_batch_submissions WHERE org_id=$1 AND submission_key=$2)`, orgID, req.IdempotencyKey).Scan(&recorded); err != nil {
 			return nil, err
 		}
+		// The SES headroom check may call AWS, so it runs before the transaction.
 		if !recorded {
-			recipients := 0
-			for _, e := range req.Emails {
-				recipients += len(e.To) + len(e.Cc) + len(e.Bcc)
-			}
-			if err := s.limits.Reserve(ctx, recipients); err != nil {
+			if err := s.limits.headroom(ctx); err != nil {
 				return nil, err
 			}
 		}
 	}
-	ctx = withoutSendQuota(ctx)
+	recipients := 0
+	for _, e := range req.Emails {
+		recipients += len(e.To) + len(e.Cc) + len(e.Bcc)
+	}
 	// Reserve the unchanged entire batch before any item is submitted. Retries may
 	// revisit failed validation items, while already accepted items keep their receipt.
-	_, err := s.db.ExecContext(ctx, `INSERT INTO email_batch_submissions(org_id,submission_key,user_id,request_hash) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, orgID, req.IdempotencyKey, userID, hash)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
+	defer tx.Rollback()
+	claim, err := tx.ExecContext(ctx, `INSERT INTO email_batch_submissions(org_id,submission_key,user_id,request_hash) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, orgID, req.IdempotencyKey, userID, hash)
+	if err != nil {
+		return nil, err
+	}
+	if claimed, err := claim.RowsAffected(); err != nil {
+		return nil, err
+	} else if claimed == 1 {
+		if err = s.limits.reserveInTx(ctx, tx, recipients); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	ctx = withoutSendQuota(ctx)
 	var stored string
 	var storedUser int64
 	if err = s.db.QueryRowContext(ctx, `SELECT request_hash,COALESCE(user_id,0) FROM email_batch_submissions WHERE org_id=$1 AND submission_key=$2`, orgID, req.IdempotencyKey).Scan(&stored, &storedUser); err != nil {

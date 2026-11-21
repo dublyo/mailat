@@ -465,3 +465,102 @@ func TestLoginPinStepHTTP(t *testing.T) {
 	f.call(t, "DELETE", "/api/v1/security/trusted-devices/"+list.Data[0].UUID, skipped.Token, nil).expect(t, 404)
 	f.call(t, "POST", "/api/v1/security/trusted-devices/forget-all", skipped.Token, nil).expect(t, 200)
 }
+
+// When wrong guesses from many IPs used up the per-account budget, a request
+// with the account's remembered device token still gets its password checked
+// (RL-1); without one, or with another account's or a made-up token, it is
+// 429. The per address+IP budget still applies to the remembered browser.
+func TestLoginAccountLockoutRememberedDeviceHTTP(t *testing.T) {
+	f := newAuthFixture(t)
+	setup := func(email string) string {
+		first := loginResult(t, f.call(t, "POST", "/api/v1/auth/login", "", map[string]string{"email": email, "password": "fixture-password"}))
+		set := loginResult(t, f.call(t, "POST", "/api/v1/auth/pin/setup", "", map[string]interface{}{"challengeToken": first.ChallengeToken, "pin": fixturePin, "trustDevice": true}))
+		if set.DeviceToken == "" {
+			t.Fatalf("no device token: %+v", set)
+		}
+		return set.DeviceToken
+	}
+	owner, member := setup("owner@example.test"), setup("member@example.test")
+	limiter := service.NewRateLimiter(f.db, f.cfg)
+	for i := 0; i < 100; i++ {
+		if err := limiter.Record(context.Background(), service.RuleLoginAccountFailure, "owner@example.test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	login := func(ip, password, device string) authHTTPResult {
+		return f.callFrom(t, ip, "POST", "/api/v1/auth/login", "", map[string]string{"email": "Owner@Example.test", "password": password, "deviceToken": device})
+	}
+	ip := "203.0.113.50"
+	for _, device := range []string{"", member, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", owner[:63]} {
+		if res := login(ip, "fixture-password", device); res.status != 429 || res.header.Get("Retry-After") == "" {
+			t.Fatalf("device %q: %d %s", device, res.status, res.body)
+		}
+	}
+	if res := loginResult(t, login(ip, "fixture-password", owner)); res.Token == "" {
+		t.Fatalf("remembered device locked out: %+v", res)
+	}
+	// The refused requests above spent nothing: 10 wrong passwords from this
+	// IP are answered, the 11th request is limited even with the device.
+	for i := 0; i < 10; i++ {
+		login(ip, "wrong-password", owner).expect(t, 401)
+	}
+	login(ip, "fixture-password", owner).expect(t, 429)
+	// An expired device no longer passes.
+	execAuth(t, f.db, `UPDATE trusted_devices SET expires_at=now()-interval '1 second'`)
+	login("203.0.113.51", "fixture-password", owner).expect(t, 429)
+}
+
+// Concurrent wrong passwords cannot exceed the per address+IP failure budget
+// (RL-2): reservations are atomic, and a correct password gives its back.
+func TestLoginFailureLimitConcurrentHTTP(t *testing.T) {
+	f := newAuthFixture(t)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	statuses := map[int]int{}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res := f.callFrom(t, "198.51.100.9", "POST", "/api/v1/auth/login", "", map[string]string{"email": "owner@example.test", "password": "wrong-password"})
+			mu.Lock()
+			statuses[res.status]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if statuses[401] != 10 || statuses[429] != 10 {
+		t.Fatalf("statuses %v", statuses)
+	}
+	var hits int
+	limiter := service.NewRateLimiter(f.db, f.cfg)
+	if ok, _, _ := limiter.Peek(context.Background(), service.RuleLoginAccountFailure, "owner@example.test"); !ok {
+		t.Fatal("account budget exhausted by 10 failures")
+	}
+	f.db.QueryRow(`SELECT COALESCE(sum(hits),0) FROM auth_rate_limits`).Scan(&hits)
+	// 20 login-ip hits, 10 address+IP failures, 10 account failures.
+	if hits != 40 {
+		t.Fatalf("stored hits %d", hits)
+	}
+	// Correct passwords from a fresh IP leave the failure budgets as they were.
+	for i := 0; i < 3; i++ {
+		loginResult(t, f.callFrom(t, "198.51.100.10", "POST", "/api/v1/auth/login", "", map[string]string{"email": "owner@example.test", "password": "fixture-password"}))
+	}
+	f.db.QueryRow(`SELECT COALESCE(sum(hits),0) FROM auth_rate_limits`).Scan(&hits)
+	if hits != 43 {
+		t.Fatalf("correct passwords spent failure budget: stored hits %d", hits)
+	}
+}
+
+// IPv6 clients are limited per /64: rotating addresses inside one /64 does
+// not reset the failure budget, another /64 is a separate bucket.
+func TestLoginFailureLimitIPv6PrefixHTTP(t *testing.T) {
+	f := newAuthFixture(t)
+	login := func(ip string) authHTTPResult {
+		return f.callFrom(t, ip, "POST", "/api/v1/auth/login", "", map[string]string{"email": "owner@example.test", "password": "wrong-password"})
+	}
+	for i := 1; i <= 10; i++ {
+		login(fmt.Sprintf("2001:db8:aa:1::%x", i)).expect(t, 401)
+	}
+	login("2001:db8:aa:1:ffff:ffff:ffff:ffff").expect(t, 429)
+	login("2001:db8:aa:2::1").expect(t, 401)
+}

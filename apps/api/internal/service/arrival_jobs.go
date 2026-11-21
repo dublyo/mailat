@@ -45,6 +45,9 @@ const (
 type ArrivalCopy struct {
 	OwnerID, EmailID int64
 	UUID, Folder     string
+	// KeptArchived is set when keepCopyArchive moved the copy from the inbox
+	// to the archive because a forward of the identity keeps no copy.
+	KeptArchived bool
 }
 
 // ArrivalInput is one identity's share of an arriving message.
@@ -159,7 +162,10 @@ func EnqueueArrivalJobs(ctx context.Context, tx *sql.Tx, in ArrivalInput) error 
 		forwardPayload.LoopTokens = forwardPayload.LoopTokens[:maxForwardHops]
 	}
 	for _, f := range forwards {
-		if err = insertArrivalJob(ctx, tx, in.OrgID, in.IdentityID, f.user, f.id, copyOf(f.user).EmailID, "forward", sesID, fmt.Sprintf("fw:%d:%s", f.id, sesID), forwardPayload); err != nil {
+		c := copyOf(f.user)
+		payload := forwardPayload
+		payload.KeepCopyArchived = c.KeptArchived
+		if err = insertArrivalJob(ctx, tx, in.OrgID, in.IdentityID, f.user, f.id, c.EmailID, "forward", sesID, fmt.Sprintf("fw:%d:%s", f.id, sesID), payload); err != nil {
 			return err
 		}
 	}

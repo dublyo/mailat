@@ -130,6 +130,21 @@ func (s *AuthService) matchTrustedDevice(ctx context.Context, userID, version in
 	return id
 }
 
+// HasTrustedDevice reports whether token is a live remembered device of the
+// active account with this address. It is one indexed hash lookup, so the
+// login handler may ask before the password check: the token is 256 random
+// bits and only a browser that passed this account's PIN step holds one.
+func (s *AuthService) HasTrustedDevice(ctx context.Context, email, token string) bool {
+	if len(token) != 64 {
+		return false
+	}
+	var ok bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM trusted_devices d JOIN users u ON u.id=d.user_id AND u.auth_version=d.auth_version
+		WHERE d.token_hash=$1 AND u.email=$2 AND u.status='active' AND d.expires_at>now())`,
+		hashToken(token), strings.ToLower(strings.TrimSpace(email))).Scan(&ok)
+	return err == nil && ok
+}
+
 // pinGate is the last step of every sign-in path: password, TOTP, OAuth,
 // invite and registration. A live trusted device of this user signs in at
 // once; otherwise a PIN challenge (or a PIN setup challenge when none is set)
@@ -179,28 +194,44 @@ type pinChallenge struct {
 	pinHash                sql.NullString
 }
 
-// lockPinChallenge locks a live PIN challenge and its user, in that order.
+// lockPinChallenge locks a live PIN challenge's user, then the challenge.
+// Users before challenges is the order ResetLoginPin and ChangeLoginPin use
+// too, so they cannot deadlock with a PIN step. The challenge is read
+// unlocked only to find its user; every condition is checked again once both
+// rows are locked.
 func lockPinChallenge(ctx context.Context, tx *sql.Tx, challenge string) (*pinChallenge, error) {
 	if len(challenge) != 64 {
 		return nil, errPinChallenge
 	}
-	var c pinChallenge
-	err := tx.QueryRowContext(ctx, `SELECT user_id,auth_version,factor_verified,attempts FROM auth_challenges
-		WHERE token_hash=$1 AND kind='pin' AND expires_at>now() AND consumed_at IS NULL AND attempts<$2 FOR UPDATE`,
-		hashToken(challenge), loginPinChallengeTries).Scan(&c.userID, &c.version, &c.factorVerified, &c.attempts)
+	hash := hashToken(challenge)
+	var owner int64
+	err := tx.QueryRowContext(ctx, `SELECT user_id FROM auth_challenges WHERE token_hash=$1 AND kind='pin'`, hash).Scan(&owner)
 	if err == sql.ErrNoRows {
 		return nil, errPinChallenge
 	}
 	if err != nil {
 		return nil, err
 	}
+	c := pinChallenge{userID: owner}
 	var current int64
-	err = tx.QueryRowContext(ctx, `SELECT org_id,auth_version,login_pin_hash FROM users WHERE id=$1 AND status='active' FOR UPDATE`, c.userID).
+	err = tx.QueryRowContext(ctx, `SELECT org_id,auth_version,login_pin_hash FROM users WHERE id=$1 AND status='active' FOR UPDATE`, owner).
 		Scan(&c.orgID, &current, &c.pinHash)
+	if err == sql.ErrNoRows {
+		return nil, errPinChallenge
+	}
+	if err != nil {
+		return nil, err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT auth_version,factor_verified,attempts FROM auth_challenges
+		WHERE token_hash=$1 AND user_id=$2 AND kind='pin' AND expires_at>now() AND consumed_at IS NULL AND attempts<$3 FOR UPDATE`,
+		hash, owner, loginPinChallengeTries).Scan(&c.version, &c.factorVerified, &c.attempts)
 	if err == sql.ErrNoRows || (err == nil && current != c.version) {
 		return nil, errPinChallenge
 	}
-	return &c, err
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 // pinFailures counts the user's wrong PINs in the short and daily windows and

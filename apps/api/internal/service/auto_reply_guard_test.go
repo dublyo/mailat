@@ -182,6 +182,23 @@ func TestParseAddressHeader(t *testing.T) {
 		{name: "unclosed angle rejected", values: []string{"Foo <a@example.org"}},
 		{name: "garbage", values: []string{"not an address"}},
 		{name: "empty group", values: []string{"undisclosed-recipients:;"}},
+		// net/mail leaves encoded words in a quoted display name undecoded.
+		{name: "quoted B-encoded name", values: []string{`"=?UTF-8?B?w6nDqQ==?=" <a@example.com>`}, address: "a@example.com", disp: "éé", strict: true},
+		{name: "quoted Q-encoded name", values: []string{`"=?utf-8?q?=C3=A9t=C3=A9?=" <a@example.com>`}, address: "a@example.com", disp: "été", strict: true},
+		{name: "quoted Arabic name", values: []string{`"=?UTF-8?B?2YXYrdmF2K8g2LnZhNmK?=" <m@example.com>`}, address: "m@example.com", disp: "محمد علي", strict: true},
+		{name: "quoted name with only literal markers", values: []string{`"Price =? 5 ?=" <a@example.com>`}, address: "a@example.com", disp: "Price =? 5 ?=", strict: true},
+		// Addresses net/mail rejects that real mobile carriers send: kept, never strict.
+		{name: "lenient bare dotted local part", values: []string{"foo..bar@docomo.ne.jp"}, address: "foo..bar@docomo.ne.jp"},
+		{name: "lenient angle dotted local part", values: []string{"<foo..bar@docomo.ne.jp>"}, address: "foo..bar@docomo.ne.jp"},
+		{name: "lenient named trailing dot", values: []string{"Taro <foo.@ezweb.ne.jp>"}, address: "foo.@ezweb.ne.jp", disp: "Taro"},
+		{name: "lenient angle trimmed", values: []string{"Taro < foo.@ezweb.ne.jp >"}, address: "foo.@ezweb.ne.jp", disp: "Taro"},
+		{name: "bare token without at", values: []string{"MAILER-DAEMON"}},
+		{name: "bare token two ats", values: []string{"a@b@example.org"}},
+		{name: "bare token empty domain", values: []string{"foo..bar@"}},
+		{name: "angle with whitespace inside", values: []string{"Taro <foo. bar@ezweb.ne.jp>"}},
+		{name: "angle with two ats", values: []string{"Taro <a@b@ezweb.ne.jp>"}},
+		{name: "angle without at", values: []string{"Mail Delivery <MAILER-DAEMON>"}},
+		{name: "bare token with comment", values: []string{"foo..bar@docomo.ne.jp(Taro)"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			address, disp, strict := parseAddressHeader(tt.values)

@@ -368,3 +368,137 @@ func TestCampaignTestSendCountsTowardSendLimits(t *testing.T) {
 		t.Fatalf("remaining recipient refused: %v calls=%d", err, fake.calls)
 	}
 }
+
+// Concurrent requests with one idempotency key count their recipients once:
+// only the request that claims the key reserves, inside the claim transaction.
+func TestSameKeyConcurrentSendsCountOnce(t *testing.T) {
+	db := testutil.Database(t)
+	org, user, identity := mailboxFixture(t, db, "same-key.test")
+	limits := newTestSendLimiter(db, &config.Config{SendLimitUserPerHour: 100}, nil)
+	session := WithSendQuota(context.Background(), SendQuotaSubject{UserID: user})
+	hits := func() int {
+		t.Helper()
+		var n int
+		key := limits.rates.storageKey(RateRule{Name: "send-user-hour", Window: time.Hour}, strconv.FormatInt(user, 10))
+		if err := db.QueryRow(`SELECT COALESCE(SUM(hits),0) FROM auth_rate_limits WHERE key=$1`, key).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// race holds the key's claim row in an open transaction until all n
+	// requests passed their replay checks and wait on the claim, so every one
+	// of them races for the key; the blocker then rolls back.
+	race := func(n int, table string, block func(*sql.Tx) error, send func() (string, error)) string {
+		t.Helper()
+		blocker, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer blocker.Rollback()
+		if err = block(blocker); err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, n)
+		errs := make([]error, n)
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				ids[i], errs[i] = send()
+			}(i)
+		}
+		for deadline := time.Now().Add(10 * time.Second); ; {
+			var waiting int
+			if err = db.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'INSERT INTO '||$1||'%'`, table).Scan(&waiting); err != nil {
+				t.Fatal(err)
+			}
+			if waiting >= n {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("only %d of %d requests reached the %s claim", waiting, n, table)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err = blocker.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		wg.Wait()
+		for i := range ids {
+			if errs[i] != nil || ids[i] == "" || ids[i] != ids[0] {
+				t.Fatalf("request %d: id=%q (first %q) err=%v", i, ids[i], ids[0], errs[i])
+			}
+		}
+		return ids[0]
+	}
+
+	fake := &mailboxTestProvider{}
+	compose := &ComposeService{db: db, cfg: &config.Config{EmailProvider: "ses", DisableAppLimits: true}, emailProvider: fake, attachments: mailboxTestStorage{}}
+	compose.SetSendLimiter(limits)
+	race(4, "compose_submission_keys", func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO compose_submission_keys(user_id,submission_key,request_hash,email_uuid,message_id,identity_id) VALUES($1,'same-key-compose','blocker',gen_random_uuid(),'<blocker@same-key.test>',$2)`, user, identity)
+		return err
+	}, func() (string, error) {
+		res, err := compose.SendEmail(session, user, &ComposeEmail{IdentityID: identity, Subject: "same key", TextBody: "hello", SubmissionKey: "same-key-compose",
+			To: []EmailAddress{{Email: "a@ext.test"}}, Cc: []EmailAddress{{Email: "b@ext.test"}}})
+		if err != nil {
+			return "", err
+		}
+		return res.EmailID, nil
+	})
+	if got := hits(); got != 2 || fake.calls != 1 {
+		t.Fatalf("compose: counted %d recipients (want 2), provider calls %d", got, fake.calls)
+	}
+
+	// One provider for both services, so provider message ids stay unique.
+	svc := &TransactionalService{db: db, cfg: &config.Config{EmailProvider: "ses", DisableAppLimits: true}, emailProvider: fake}
+	svc.SetSendLimiter(limits)
+	actor := SendActor{UserID: user, Admin: true}
+	sentID := race(4, "email_submission_keys", func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO email_submission_keys(org_id,submission_key,request_hash) VALUES($1,'same-key-single','blocker')`, org)
+		return err
+	}, func() (string, error) {
+		res, err := svc.SendEmailForUser(session, org, actor, &model.SendEmailRequest{From: "owner@same-key.test", To: []string{"c@ext.test", "d@ext.test"}, Bcc: []string{"e@ext.test"}, Subject: "s", Text: "t", IdempotencyKey: "same-key-single"})
+		if err != nil {
+			return "", err
+		}
+		return res.ID, nil
+	})
+	waitForTransactionalSend(t, db, sentID)
+	if got := hits(); got != 5 {
+		t.Fatalf("single /emails: counted %d recipients in all, want 5", got)
+	}
+
+	batch := &model.BatchSendRequest{IdempotencyKey: "same-key-batch", Emails: []model.SendEmailRequest{
+		{From: "owner@same-key.test", To: []string{"f@ext.test"}, Subject: "s", Text: "t"},
+		{From: "owner@same-key.test", To: []string{"g@ext.test"}, Cc: []string{"h@ext.test"}, Subject: "s", Text: "t"},
+	}}
+	var batchIDs []string
+	var mu sync.Mutex
+	race(4, "email_batch_submissions", func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO email_batch_submissions(org_id,submission_key,user_id,request_hash) VALUES($1,'same-key-batch',$2,'blocker')`, org, user)
+		return err
+	}, func() (string, error) {
+		res, err := svc.BatchSendEmailForUser(session, org, actor, batch)
+		if err != nil {
+			return "", err
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		batchIDs = nil
+		for _, r := range res.Results {
+			if r.ID == "" {
+				return "", errors.New("batch item failed: " + r.Error)
+			}
+			batchIDs = append(batchIDs, r.ID)
+		}
+		return res.Results[0].ID, nil
+	})
+	for _, id := range batchIDs {
+		waitForTransactionalSend(t, db, id)
+	}
+	if got := hits(); got != 8 {
+		t.Fatalf("batch: counted %d recipients in all, want 8", got)
+	}
+}

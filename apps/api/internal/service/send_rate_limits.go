@@ -139,12 +139,36 @@ func (l *SendLimiter) ReserveTx(ctx context.Context, tx *sql.Tx, recipients int)
 	if l == nil || recipients <= 0 {
 		return nil
 	}
+	if err := l.headroom(ctx); err != nil {
+		return err
+	}
+	return l.reserveInTx(ctx, tx, recipients)
+}
+
+// headroom is Reserve's SES headroom check alone, for callers that count with
+// reserveInTx inside a transaction they open afterwards: the check may call
+// AWS, so it runs before a connection is held. Without a subject it does nothing.
+func (l *SendLimiter) headroom(ctx context.Context) error {
+	if l == nil {
+		return nil
+	}
+	if _, ok := sendQuotaSubject(ctx); !ok {
+		return nil
+	}
+	return l.checkSESHeadroom(ctx)
+}
+
+// reserveInTx counts recipients in the caller's transaction without the SES
+// check (the caller ran headroom first). A send that claims an idempotency key
+// reserves right after a successful claim, so a concurrent request with the
+// same key, which loses the claim, counts nothing.
+func (l *SendLimiter) reserveInTx(ctx context.Context, tx *sql.Tx, recipients int) error {
+	if l == nil || recipients <= 0 {
+		return nil
+	}
 	subject, ok := sendQuotaSubject(ctx)
 	if !ok {
 		return nil
-	}
-	if err := l.checkSESHeadroom(ctx); err != nil {
-		return err
 	}
 	return l.reserveWindows(ctx, tx, subject, recipients)
 }

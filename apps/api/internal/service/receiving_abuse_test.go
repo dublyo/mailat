@@ -110,6 +110,27 @@ func TestInboundFromSpoofIntegration(t *testing.T) {
 	if n, _ := replies("agrees"); n != 1 {
 		t.Fatal("no auto-reply for a genuine sender")
 	}
+	// An encoded word inside a quoted display name is decoded too.
+	f.ingestRaw(t, "quoted-encoded", spoofRaw("quoted-encoded", `"=?UTF-8?B?2YXYrdmF2K8g2LnZhNmK?=" <alice@sender.test>`), owner, nil)
+	if from, name := stored("quoted-encoded"); from != "alice@sender.test" || name != "محمد علي" {
+		t.Fatalf("quoted encoded name stored from=%q name=%q", from, name)
+	}
+	// Carrier addresses net/mail rejects keep their address for reply, filters
+	// and block rules, but are never answered automatically.
+	for sesID, want := range map[string]string{
+		"docomo-bare":  "foo..bar@docomo.ne.jp",
+		"docomo-angle": "<foo..bar@docomo.ne.jp>",
+		"ezweb-named":  "Taro <foo.@ezweb.ne.jp>",
+	} {
+		f.ingestRaw(t, sesID, spoofRaw(sesID, want), owner, nil)
+		got, _ := stored(sesID)
+		if !strings.Contains(want, got) || got == "" || strings.ContainsAny(got, "<> ") {
+			t.Fatalf("%s stored from=%q", sesID, got)
+		}
+		if n, _ := replies(sesID); n != 0 {
+			t.Fatalf("%s auto-replied to a lenient From", sesID)
+		}
+	}
 	// Reply-To is parsed the same way.
 	f.ingestRaw(t, "replyto", "From: alice@sender.test\r\nReply-To: \"<victim@third.example>\" <alice@sender.test>\r\nTo: owner@arrival.test\r\n\r\nHi\r\n", owner, nil)
 	var replyTo string

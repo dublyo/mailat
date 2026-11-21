@@ -574,6 +574,9 @@ func forwardLoopTag(orgUUID, forwardUUID string) string {
 type arrivalForward struct {
 	LoopTokens  []string `json:"loopTokens,omitempty"`
 	DMARCReport bool     `json:"dmarcReport,omitempty"`
+	// KeepCopyArchived: ingest archived the job's copy (marked read) because a
+	// forward keeps no copy; a forward that will never send restores it.
+	KeepCopyArchived bool `json:"keepCopyArchived,omitempty"`
 }
 
 func (r *ArrivalRunner) forwardMaxBytes() int {
@@ -672,12 +675,14 @@ func (r *ArrivalRunner) runForward(ctx context.Context, tx *sql.Tx, job *arrival
 	tag := forwardLoopTag(orgUUID, forwardUUID)
 	loopHeader := mail.Header{"X-Mailat-Loop": {strings.Join(p.LoopTokens, ",")}}
 	switch {
+	// Mail that is never forwarded for what it is must not stay hidden in the
+	// archive as read, where a keep_copy=false forward put it at ingest.
 	case strings.EqualFold(spamVerdict, "FAIL") || strings.EqualFold(virusVer, "FAIL"):
-		return arrivalSkipped("spam"), nil
+		return restoreKeptCopy(arrivalSkipped("spam"), job, p), nil
 	// Forwarding re-sends from our own domain, so a forged From would pass the
 	// destination's checks. Mail the receipt proved forged stays local only.
 	case strings.EqualFold(dmarcVerdict, "FAIL") || (strings.EqualFold(spfVerdict, "FAIL") && strings.EqualFold(dkimVerdict, "FAIL")):
-		return arrivalSkipped("unauthenticated"), nil
+		return restoreKeptCopy(arrivalSkipped("unauthenticated"), job, p), nil
 	case p.DMARCReport:
 		return arrivalSkipped("dmarc-report"), nil
 	case ForwardLoopBlocked(loopHeader, tag):
@@ -759,6 +764,22 @@ func (r *ArrivalRunner) runForward(ctx context.Context, tx *sql.Tx, job *arrival
 		return arrivalResult{}, err
 	}
 	return arrivalResult{Status: "done", Payload: payload}, nil
+}
+
+// restoreKeptCopy adds to a skipped forward the hook that moves the job's copy
+// back to the inbox as unread, when ingest archived it for a forward that keeps
+// no copy. Only a copy still in the archive is moved, so a user's later move
+// stands; several skipped forwards of one message restore it once.
+func restoreKeptCopy(result arrivalResult, job *arrivalJob, p arrivalForward) arrivalResult {
+	if !p.KeepCopyArchived || job.EmailID == 0 {
+		return result
+	}
+	result.After = func(ctx context.Context, q queryer) error {
+		_, err := q.ExecContext(ctx, `UPDATE received_emails SET folder='inbox',is_archived=false,is_read=false,read_at=NULL,updated_at=now()
+			WHERE id=$1 AND identity_id=$2 AND folder='archive' AND is_archived AND NOT is_trashed`, job.EmailID, job.IdentityID)
+		return err
+	}
+	return result
 }
 
 // keepCopyArchive archives a new inbox copy when an active forward of the

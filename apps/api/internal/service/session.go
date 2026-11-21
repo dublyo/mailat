@@ -260,7 +260,8 @@ func (s *SessionService) GetActiveSessionCount(ctx context.Context, userID int64
 	return count, nil
 }
 
-// ChangePassword changes the user's password
+// ChangePassword changes the user's password. Every session, pending
+// challenge and remembered device ends, and wrong-PIN counts are cleared.
 func (s *SessionService) ChangePassword(ctx context.Context, userID int64, currentPassword, newPassword string) error {
 	// First verify the current password
 	var storedHash string
@@ -301,6 +302,11 @@ func (s *SessionService) ChangePassword(ctx context.Context, userID int64, curre
 	}
 	if _, err = tx.ExecContext(ctx, forgetTrustedDevices, userID); err != nil {
 		return fmt.Errorf("unable to forget remembered devices")
+	}
+	// A new password ends a PIN lock: the lock exists because the old
+	// password was probably known to someone else.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM login_pin_failures WHERE user_id=$1`, userID); err != nil {
+		return fmt.Errorf("unable to clear PIN failures")
 	}
 	// An admin-sent reset link is pointless once the user chose a password.
 	if _, err = tx.ExecContext(ctx, `UPDATE org_invites SET revoked_at=now() WHERE user_id=$1 AND purpose='password_reset' AND accepted_at IS NULL AND revoked_at IS NULL`, userID); err != nil {

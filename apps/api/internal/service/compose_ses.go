@@ -425,10 +425,9 @@ func (s *ComposeService) sendMailboxEmail(ctx context.Context, userID int64, ema
 	if _, _, err := provider.BuildMailMIME(msg); err != nil {
 		return nil, err
 	}
-	// Count recipients after the replay check (a retry with the same key is not
-	// counted again) and before the key is claimed, so a refused send leaves the
-	// key unused and can be retried unchanged once the window allows.
-	if err := s.limits.Reserve(ctx, len(recipients)); err != nil {
+	// The SES headroom check may call AWS, so it runs before the transaction;
+	// the recipients are counted inside it, after the claim.
+	if err := s.limits.headroom(ctx); err != nil {
 		return nil, err
 	}
 	id := uuid.NewString()
@@ -450,6 +449,12 @@ func (s *ComposeService) sendMailboxEmail(ctx context.Context, userID int64, ema
 	if claimed == 0 {
 		tx.Rollback()
 		return s.existingSubmission(ctx, userID, email.SubmissionKey, hash)
+	}
+	// Count recipients only once the key is ours: a concurrent request with the
+	// same key loses the claim above and counts nothing, and a refusal rolls the
+	// claim back, so the key stays usable for an unchanged retry.
+	if err = s.limits.reserveInTx(ctx, tx, len(recipients)); err != nil {
+		return nil, err
 	}
 	if email.DraftID != "" {
 		var version int

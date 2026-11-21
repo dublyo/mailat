@@ -19,12 +19,13 @@ import (
 
 // rateLimited records a hit for rule/subject. When the request must stop it
 // writes the 429 (or 500 on a database error) and returns true. A nil limiter
-// allows everything, which keeps narrow controller fixtures simple.
+// allows everything, which keeps narrow controller fixtures simple. A client
+// IP subject is bucketed by service.RateLimitIPKey (IPv6 per /64).
 func rateLimited(r *ghttp.Request, l *service.RateLimiter, rule service.RateRule, subject string) bool {
 	if l == nil {
 		return false
 	}
-	allowed, retryAfter, err := l.Allow(r.Context(), rule, subject)
+	allowed, retryAfter, err := l.Allow(r.Context(), rule, service.RateLimitIPKey(subject))
 	if err != nil {
 		response.InternalError(r, "Unable to process the request right now")
 		return true
@@ -36,32 +37,25 @@ func rateLimited(r *ghttp.Request, l *service.RateLimiter, rule service.RateRule
 	return false
 }
 
-// peekLimited checks rule/subject without counting this request; use it with
-// recordHit for limits that count failures only.
-func peekLimited(r *ghttp.Request, l *service.RateLimiter, rule service.RateRule, subject string) bool {
+// reserveHit spends one hit of a failure-only limit before the check it
+// guards, so concurrent requests cannot together exceed the limit. Give it
+// back with refundHit when the check passed. allowed is false (with the time
+// left in the window) when the limit is already reached; nothing is spent then.
+func reserveHit(r *ghttp.Request, l *service.RateLimiter, rule service.RateRule, subject string) (allowed bool, retryAfter time.Duration, err error) {
 	if l == nil {
-		return false
+		return true, 0, nil
 	}
-	allowed, retryAfter, err := l.Peek(r.Context(), rule, subject)
-	if err != nil {
-		response.InternalError(r, "Unable to process the request right now")
-		return true
-	}
-	if !allowed {
-		response.TooManyRequests(r, retryAfter, tooManyAttemptsMessage(retryAfter))
-		return true
-	}
-	return false
+	return l.Allow(r.Context(), rule, subject)
 }
 
-// recordHit counts one failure. A database error is logged, not returned:
-// the request already failed for its own reason.
-func recordHit(r *ghttp.Request, l *service.RateLimiter, rule service.RateRule, subject string) {
+// refundHit returns a hit taken by reserveHit. A database error is logged,
+// not returned: the request already has its answer.
+func refundHit(r *ghttp.Request, l *service.RateLimiter, rule service.RateRule, subject string) {
 	if l == nil {
 		return
 	}
-	if err := l.Record(r.Context(), rule, subject); err != nil {
-		log.Printf("rate limit %s record failed: %v", rule.Name, err)
+	if err := l.Refund(context.WithoutCancel(r.Context()), rule, subject); err != nil {
+		log.Printf("rate limit %s refund failed: %v", rule.Name, err)
 	}
 }
 

@@ -1264,6 +1264,9 @@ func (s *OrgMemberService) acceptMailboxLink(ctx context.Context, token string, 
 		`UPDATE user_sessions SET active=false,revoked_at=now() WHERE user_id=$1 AND active`,
 		`DELETE FROM auth_challenges WHERE user_id=$1`,
 		`DELETE FROM trusted_devices WHERE user_id=$1`,
+		// A new password from a setup/reset link ends any PIN lock earned
+		// with the old one, as ChangePassword does.
+		`DELETE FROM login_pin_failures WHERE user_id=$1`,
 	} {
 		if _, err = tx.ExecContext(ctx, q, inv.userID); err != nil {
 			return 0, err

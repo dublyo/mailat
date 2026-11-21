@@ -473,9 +473,15 @@ func TestResetLoginPinGuards(t *testing.T) {
 	if _, err = f.db.Exec(`INSERT INTO trusted_devices(user_id,token_hash,auth_version,expires_at) VALUES($1,'member-device',0,now()+interval '1 day')`, f.member.UserID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = f.db.Exec(`INSERT INTO login_pin_failures(user_id) SELECT $1 FROM generate_series(1,20)`, f.member.UserID); err != nil {
+		t.Fatal(err)
+	}
 	m, err := f.svc.ResetLoginPin(ctx, f.admin, f.memberUUID)
 	if err != nil || m.UUID != f.memberUUID {
 		t.Fatal(m, err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM login_pin_failures WHERE user_id=$1`, f.member.UserID); n != 0 {
+		t.Fatal("PIN failures survived a PIN reset")
 	}
 	var hash sql.NullString
 	var version int
@@ -506,5 +512,135 @@ func TestResetLoginPinGuards(t *testing.T) {
 	wantStatus(t, err, http.StatusForbidden)
 	if _, err = f.svc.ResetLoginPin(ctx, f.owner, admin2); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A password change ends a 24-hour PIN lock (the lock means the old password
+// leaked); so do admin paths that revoke sign-ins (revokeSignIns).
+func TestPinLockClearedByPasswordChange(t *testing.T) {
+	f := newPinFixture(t)
+	ctx := context.Background()
+	if _, err := loginWithPin(f.auth, "user@example.test", "fixture-password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO login_pin_failures(user_id) SELECT u FROM generate_series(1,20), (VALUES (1),(2)) v(u)`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loginWithPin(f.auth, "user@example.test", "fixture-password")
+	wantPinStatus(t, err, http.StatusTooManyRequests)
+	sessions := NewSessionService(f.db, &config.Config{JWTSecret: "pin-fixture-secret"})
+	if err = sessions.ChangePassword(ctx, 1, "fixture-password", "second-password"); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM login_pin_failures WHERE user_id=1`); n != 0 {
+		t.Fatalf("password change kept %d PIN failures", n)
+	}
+	if res, err := loginWithPin(f.auth, "user@example.test", "second-password"); err != nil || res.Token == "" {
+		t.Fatalf("still PIN-locked after a password change: %+v %v", res, err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM login_pin_failures WHERE user_id=2`); n != 20 {
+		t.Fatalf("other user's failures touched: %d", n)
+	}
+
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = revokeSignIns(ctx, tx, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM login_pin_failures WHERE user_id=2`); n != 0 {
+		t.Fatalf("revokeSignIns kept %d PIN failures", n)
+	}
+}
+
+// HasTrustedDevice matches only a live device of the active account with that
+// address; it runs before the password check.
+func TestHasTrustedDevice(t *testing.T) {
+	f := newPinFixture(t)
+	ctx := context.Background()
+	res, err := f.auth.SetupLoginPin(ctx, f.login(t, "user@example.test", "").ChallengeToken, testLoginPin, true, DeviceMeta{})
+	if err != nil || res.DeviceToken == "" {
+		t.Fatalf("setup: %+v %v", res, err)
+	}
+	device := res.DeviceToken
+	if !f.auth.HasTrustedDevice(ctx, " User@Example.test", device) {
+		t.Fatal("own device not matched")
+	}
+	for _, c := range []struct{ email, token string }{
+		{"other@example.test", device},
+		{"missing@example.test", device},
+		{"user@example.test", strings.Repeat("a", 64)},
+		{"user@example.test", device[:63]},
+		{"user@example.test", ""},
+	} {
+		if f.auth.HasTrustedDevice(ctx, c.email, c.token) {
+			t.Fatalf("matched %q with %q", c.email, c.token)
+		}
+	}
+	for _, q := range []string{
+		`UPDATE users SET auth_version=auth_version+1 WHERE id=1`,
+		`UPDATE users SET auth_version=0, status='suspended' WHERE id=1`,
+		`UPDATE users SET status='active'; UPDATE trusted_devices SET expires_at=now()-interval '1 second'`,
+	} {
+		if _, err = f.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+		if f.auth.HasTrustedDevice(ctx, "user@example.test", device) {
+			t.Fatalf("matched after %s", q)
+		}
+	}
+}
+
+// The PIN step locks the user row before the challenge, like ResetLoginPin
+// and ChangeLoginPin, so the two cannot deadlock. While another transaction
+// holds the user row the PIN step waits without holding the challenge, and it
+// re-checks the challenge once it gets the lock.
+func TestLockPinChallengeLocksUserFirst(t *testing.T) {
+	f := newPinFixture(t)
+	ctx := context.Background()
+	if _, err := loginWithPin(f.auth, "user@example.test", "fixture-password"); err != nil {
+		t.Fatal(err)
+	}
+	ch := f.login(t, "user@example.test", "").ChallengeToken
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`SELECT id FROM users WHERE id=1 FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.auth.VerifyLoginPin(ctx, ch, testLoginPin, false, DeviceMeta{})
+		done <- err
+	}()
+	time.Sleep(300 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("PIN step did not wait for the user row: %v", err)
+	default:
+	}
+	// The challenge is free: the old order (challenge, then user) held it here.
+	if _, err = tx.Exec(`SELECT token_hash FROM auth_challenges WHERE token_hash=$1 FOR UPDATE NOWAIT`, hashToken(ch)); err != nil {
+		t.Fatalf("challenge locked while waiting for the user: %v", err)
+	}
+	if _, err = tx.Exec(`DELETE FROM auth_challenges WHERE user_id=1 AND kind='pin'`); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err = <-done:
+		if err != errPinChallenge {
+			t.Fatalf("deleted challenge accepted: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("PIN step still waiting")
 	}
 }
