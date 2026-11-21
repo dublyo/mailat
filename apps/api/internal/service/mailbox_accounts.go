@@ -406,8 +406,10 @@ func lockMailbox(ctx context.Context, tx *sql.Tx, a OrgActor, userUUID string, w
 }
 
 // revokeSignIns ends every session, pending second-factor or PIN challenge
-// and remembered (PIN-skipping) device, and clears wrong-PIN counts so an
-// admin's password set, 2FA reset or PIN reset also ends a PIN lock.
+// and remembered (PIN-skipping) device. It keeps wrong-PIN counts: suspension
+// and 2FA reset leave the password unchanged, so a PIN lock earned with it
+// must stand. Callers that set a new password or clear the PIN call
+// clearPinFailures as well.
 func revokeSignIns(ctx context.Context, tx *sql.Tx, userID int64) (int, error) {
 	res, err := tx.ExecContext(ctx, `UPDATE user_sessions SET active=false,revoked_at=now() WHERE user_id=$1 AND active`, userID)
 	if err != nil {
@@ -417,13 +419,18 @@ func revokeSignIns(ctx context.Context, tx *sql.Tx, userID int64) (int, error) {
 	for _, q := range []string{
 		`DELETE FROM auth_challenges WHERE user_id=$1`,
 		`DELETE FROM trusted_devices WHERE user_id=$1`,
-		`DELETE FROM login_pin_failures WHERE user_id=$1`,
 	} {
 		if _, err = tx.ExecContext(ctx, q, userID); err != nil {
 			return 0, err
 		}
 	}
 	return int(n), nil
+}
+
+// clearPinFailures ends a PIN lock once the credential it guarded changed.
+func clearPinFailures(ctx context.Context, tx *sql.Tx, userID int64) error {
+	_, err := tx.ExecContext(ctx, `DELETE FROM login_pin_failures WHERE user_id=$1`, userID)
+	return err
 }
 
 func revokeResetLinks(ctx context.Context, tx *sql.Tx, userID int64) error {
@@ -484,6 +491,9 @@ func (s *MailboxService) SetPassword(ctx context.Context, a OrgActor, userUUID, 
 	}
 	n, err := revokeSignIns(ctx, tx, m.id)
 	if err != nil {
+		return nil, err
+	}
+	if err = clearPinFailures(ctx, tx, m.id); err != nil {
 		return nil, err
 	}
 	if err = revokeResetLinks(ctx, tx, m.id); err != nil {

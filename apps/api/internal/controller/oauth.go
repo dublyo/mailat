@@ -57,7 +57,7 @@ func (c *OAuthController) oauthLimited(r *ghttp.Request, redirect bool) bool {
 	if c.limiter == nil {
 		return false
 	}
-	allowed, _, err := c.limiter.Allow(r.Context(), service.RuleOAuthIP, middleware.ClientIP(r))
+	allowed, _, err := c.limiter.Allow(r.Context(), service.RuleOAuthIP, service.RateLimitIPKey(middleware.ClientIP(r)))
 	if err != nil || !allowed {
 		c.redirectWithError(r, "rate_limited")
 		return true

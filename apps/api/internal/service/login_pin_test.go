@@ -516,7 +516,8 @@ func TestResetLoginPinGuards(t *testing.T) {
 }
 
 // A password change ends a 24-hour PIN lock (the lock means the old password
-// leaked); so do admin paths that revoke sign-ins (revokeSignIns).
+// leaked); revoking sign-ins alone (suspend, 2FA reset) keeps it, and
+// clearPinFailures (admin password set, PIN reset) ends it.
 func TestPinLockClearedByPasswordChange(t *testing.T) {
 	f := newPinFixture(t)
 	ctx := context.Background()
@@ -552,8 +553,20 @@ func TestPinLockClearedByPasswordChange(t *testing.T) {
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	if n := f.count(t, `SELECT count(*) FROM login_pin_failures WHERE user_id=2`); n != 20 {
+		t.Fatalf("revokeSignIns alone must keep the PIN lock, have %d failures", n)
+	}
+	if tx, err = f.db.BeginTx(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err = clearPinFailures(ctx, tx, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	if n := f.count(t, `SELECT count(*) FROM login_pin_failures WHERE user_id=2`); n != 0 {
-		t.Fatalf("revokeSignIns kept %d PIN failures", n)
+		t.Fatalf("clearPinFailures kept %d PIN failures", n)
 	}
 }
 
