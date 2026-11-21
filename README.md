@@ -156,7 +156,7 @@ curl -X POST https://mail.example.com/api/v1/emails \
   }'
 ```
 
-The idempotency key (8–128 characters) is required. For live updates, the browser fetches a 60-second, single-use stream ticket from `POST /api/v1/auth/stream-token` and opens `GET /api/v1/sse/connect` with it, fetching a new ticket on every reconnect. Session JWTs and API keys are never accepted in a URL; headless clients send an `email:read` key in the `Authorization` header instead.
+The idempotency key (8–128 characters) is required. Sending is capped per signed-in user and per API key, by default at 300 recipients per hour and 2000 per day (`SEND_LIMIT_*`, always on; HTTP 429 when reached); see [Sending limits](docs/self-hosting-ses.md#sending-limits). For live updates, the browser fetches a 60-second, single-use stream ticket from `POST /api/v1/auth/stream-token` and opens `GET /api/v1/sse/connect` with it, fetching a new ticket on every reconnect. Session JWTs and API keys are never accepted in a URL; headless clients send an `email:read` key in the `Authorization` header instead.
 
 ### SDKs
 

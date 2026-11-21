@@ -76,7 +76,8 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 	listService := service.NewListService(database.DB, cfg)
 	signupService := service.NewSignupFormService(database.DB, cfg, transactionalService)
 	go signupService.RunCleanup(ctx)
-	campaignService := service.NewCampaignService(database.DB, cfg, service.NewCampaignProvider(ctx, cfg))
+	sesProvider := service.NewCampaignProvider(ctx, cfg) // nil unless EMAIL_PROVIDER=ses
+	campaignService := service.NewCampaignService(database.DB, cfg, sesProvider)
 	automationService := service.NewAutomationService(database.DB, cfg)
 	trackingService := service.NewTrackingService(database.DB, cfg)
 	complianceService := service.NewComplianceService(database.DB, cfg)
@@ -92,6 +93,12 @@ func SetupWithContext(ctx context.Context, s *ghttp.Server, cfg *config.Config) 
 	rateLimiter := service.NewRateLimiter(database.DB, cfg)
 	go rateLimiter.RunCleanup(ctx)
 	go oauthService.RunStateCleanup(ctx)
+	// Per-user and per-API-key recipient limits plus the SES headroom guard,
+	// enforced regardless of DISABLE_APP_LIMITS. Controllers opt sends in.
+	sendLimiter := service.NewSendLimiter(rateLimiter, cfg, sesProvider)
+	composeService.SetSendLimiter(sendLimiter)
+	transactionalService.SetSendLimiter(sendLimiter)
+	campaignService.SetSendLimiter(sendLimiter)
 
 	// Phase 5 additional services
 	webauthnService := service.NewWebAuthnService(database.DB, cfg)

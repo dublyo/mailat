@@ -60,7 +60,14 @@ type CampaignService struct {
 	sandbox     *bool
 	sandboxAt   time.Time
 	sandboxFunc func(context.Context) (bool, error)
+
+	// limits counts test-send recipients against the caller (campaign
+	// delivery itself is not counted); nil allows all.
+	limits *SendLimiter
 }
+
+// SetSendLimiter enables the user and API-key recipient limits for test sends.
+func (s *CampaignService) SetSendLimiter(l *SendLimiter) { s.limits = l }
 
 // NewCampaignService takes the SES provider built once at startup (see
 // NewCampaignProvider); campaigns refuse to start without it.

@@ -88,6 +88,13 @@ type Config struct {
 	ForwardDailyLimit int
 	// Hours an organization invite link stays valid (0 means 168).
 	InviteTTLHours int
+	// Recipients (to+cc+bcc) one user's sessions, or one API key, may send to
+	// per fixed UTC hour and day. Always enforced, independent of
+	// DisableAppLimits; 0 means no limit for that window.
+	SendLimitUserPerHour int
+	SendLimitUserPerDay  int
+	SendLimitKeyPerHour  int
+	SendLimitKeyPerDay   int
 	// Open live-update streams one API replica accepts (0 means 5000).
 	SSEMaxConnections int
 
@@ -144,6 +151,11 @@ func Load() (*Config, error) {
 	if inviteTTLErr != nil {
 		inviteTTLHours = -1
 	}
+
+	sendLimitUserPerHour := wholeNumberEnv("SEND_LIMIT_USER_PER_HOUR", 300)
+	sendLimitUserPerDay := wholeNumberEnv("SEND_LIMIT_USER_PER_DAY", 2000)
+	sendLimitKeyPerHour := wholeNumberEnv("SEND_LIMIT_KEY_PER_HOUR", 300)
+	sendLimitKeyPerDay := wholeNumberEnv("SEND_LIMIT_KEY_PER_DAY", 2000)
 
 	sseMaxConnections, sseMaxErr := strconv.Atoi(getEnv("SSE_MAX_CONNECTIONS", "5000"))
 	if sseMaxErr != nil {
@@ -216,6 +228,10 @@ func Load() (*Config, error) {
 		ForwardMaxBytes:         forwardMaxBytes,
 		ForwardDailyLimit:       forwardDailyLimit,
 		InviteTTLHours:          inviteTTLHours,
+		SendLimitUserPerHour:    sendLimitUserPerHour,
+		SendLimitUserPerDay:     sendLimitUserPerDay,
+		SendLimitKeyPerHour:     sendLimitKeyPerHour,
+		SendLimitKeyPerDay:      sendLimitKeyPerDay,
 		SSEMaxConnections:       sseMaxConnections,
 
 		VAPIDPublicKey:           strings.TrimSpace(getEnv("VAPID_PUBLIC_KEY", "")),
@@ -311,6 +327,14 @@ func (c *Config) Validate() error {
 	}
 	if c.InviteTTLHours < 0 || c.InviteTTLHours > 720 {
 		add("INVITE_TTL_HOURS must be a whole number from 1 to 720")
+	}
+	for _, l := range []struct {
+		name  string
+		value int
+	}{{"SEND_LIMIT_USER_PER_HOUR", c.SendLimitUserPerHour}, {"SEND_LIMIT_USER_PER_DAY", c.SendLimitUserPerDay}, {"SEND_LIMIT_KEY_PER_HOUR", c.SendLimitKeyPerHour}, {"SEND_LIMIT_KEY_PER_DAY", c.SendLimitKeyPerDay}} {
+		if l.value < 0 || l.value > 10000000 {
+			add("%s must be a whole number from 0 (no limit) to 10000000", l.name)
+		}
 	}
 	if c.SSEMaxConnections < 0 || c.SSEMaxConnections > 100000 {
 		add("SSE_MAX_CONNECTIONS must be a whole number from 1 to 100000")
@@ -435,6 +459,20 @@ func splitList(raw string) []string {
 		}
 	}
 	return out
+}
+
+// wholeNumberEnv reads an integer setting; unset or blank uses fallback. A
+// malformed value becomes -1 so Validate rejects it instead of guessing.
+func wholeNumberEnv(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return -1
+	}
+	return v
 }
 
 func getEnv(key, fallback string) string {

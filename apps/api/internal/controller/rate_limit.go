@@ -1,12 +1,17 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"time"
 
 	"github.com/gogf/gf/v2/net/ghttp"
 
+	"github.com/dublyo/mailat/api/internal/middleware"
+	"github.com/dublyo/mailat/api/internal/model"
 	"github.com/dublyo/mailat/api/internal/service"
 	"github.com/dublyo/mailat/api/pkg/response"
 )
@@ -28,6 +33,33 @@ func rateLimited(r *ghttp.Request, l *service.RateLimiter, rule service.RateRule
 		return true
 	}
 	return false
+}
+
+// sendQuotaContext marks a request's sends as user-initiated: API-key requests
+// count per key, session requests per user (see service.SendLimiter).
+func sendQuotaContext(r *ghttp.Request, claims *model.JWTClaims) context.Context {
+	subject := service.SendQuotaSubject{UserID: claims.UserID}
+	if id := middleware.APIKeyID(r.Context()); id > 0 {
+		subject = service.SendQuotaSubject{APIKeyID: id}
+	}
+	return service.WithSendQuota(r.Context(), subject)
+}
+
+// writeSendLimit answers a *service.SendLimitError with 429 (and Retry-After
+// when waiting helps) and reports whether err was one. Nothing was recorded
+// or attempted, so the same idempotency key may be reused.
+func writeSendLimit(r *ghttp.Request, err error) bool {
+	var limit *service.SendLimitError
+	if !errors.As(err, &limit) {
+		return false
+	}
+	if limit.RetryAfter > 0 {
+		response.TooManyRequests(r, limit.RetryAfter, limit.Message)
+	} else {
+		r.Response.Status = http.StatusTooManyRequests
+		response.Error(r, http.StatusTooManyRequests, limit.Message)
+	}
+	return true
 }
 
 func tooManyAttemptsMessage(retryAfter time.Duration) string {

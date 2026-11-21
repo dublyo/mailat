@@ -22,7 +22,12 @@ type ComposeService struct {
 	emailProvider provider.EmailProvider
 	attachments   provider.AttachmentStorage
 	sleep         func(time.Duration) // nil means time.Sleep; tests inject a fake
+	limits        *SendLimiter        // per-user/API-key recipient windows; nil allows all
 }
+
+// SetSendLimiter enables the user and API-key recipient limits for sends whose
+// context carries WithSendQuota.
+func (s *ComposeService) SetSendLimiter(l *SendLimiter) { s.limits = l }
 
 // NewComposeService creates a new compose service
 func NewComposeService(db *sql.DB, cfg *config.Config, identityService *IdentityService) *ComposeService {
@@ -115,6 +120,10 @@ func (s *ComposeService) SendEmail(ctx context.Context, userID int64, email *Com
 	identity, err := s.getIdentityByID(ctx, userID, email.IdentityID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid identity: %w", err)
+	}
+	// The legacy path has no submission key, so every attempt is counted.
+	if err = s.limits.Reserve(ctx, len(email.To)+len(email.Cc)+len(email.Bcc)); err != nil {
+		return nil, err
 	}
 
 	// Set the From address

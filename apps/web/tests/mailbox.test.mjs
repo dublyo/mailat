@@ -196,6 +196,8 @@ test('uncertain send keys survive later client errors while first-attempt valida
   for (const status of [undefined, 400, 401, 403, 409, 422, 429, 500, 503]) assert.equal(retainSendAttempt(status, true), true)
   assert.equal(retainSendAttempt(400, false), false)
   assert.equal(retainSendAttempt(409, false), false)
+  // A sending-limit 429 records nothing; its message is shown and the draft stays editable.
+  assert.equal(retainSendAttempt(429, false), false)
   assert.equal(retainSendAttempt(503, false), true)
   assert.equal(retainSendAttempt(undefined, false), true)
 })

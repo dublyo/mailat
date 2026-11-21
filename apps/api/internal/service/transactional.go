@@ -32,7 +32,12 @@ type TransactionalService struct {
 	queueClient   *worker.QueueClient
 	emailProvider provider.EmailProvider
 	attachments   provider.AttachmentStorage
+	limits        *SendLimiter // per-user/API-key recipient windows; nil allows all
 }
+
+// SetSendLimiter enables the user and API-key recipient limits for sends whose
+// context carries WithSendQuota (HTTP requests only; system mail never does).
+func (s *TransactionalService) SetSendLimiter(l *SendLimiter) { s.limits = l }
 
 // NewTransactionalService creates a new transactional service
 func NewTransactionalService(db *sql.DB, cfg *config.Config, redisClient *redis.Client) *TransactionalService {
@@ -249,6 +254,11 @@ func (s *TransactionalService) SendEmailForUser(ctx context.Context, orgID int64
 	if _, _, err = provider.BuildMailMIME(msg); err != nil {
 		return nil, err
 	}
+	// After the replay check, so a retry with a recorded key is not counted again.
+	// Scheduled sends count when they are submitted.
+	if err = s.limits.Reserve(ctx, len(req.To)+len(req.Cc)+len(req.Bcc)); err != nil {
+		return nil, err
+	}
 
 	tagsJSON, _ := json.Marshal(req.Tags)
 	metadataJSON, _ := json.Marshal(req.Metadata)
@@ -292,6 +302,25 @@ func (s *TransactionalService) BatchSendEmailForUser(ctx context.Context, orgID 
 	body, _ := json.Marshal(req)
 	sum := sha256.Sum256(body)
 	hash := hex.EncodeToString(sum[:])
+	// Recipient limits count the whole batch once, before its key is recorded:
+	// a refused batch leaves the key unused, and a retry of a recorded batch is
+	// not counted again. Its items are then not counted individually.
+	if _, limited := sendQuotaSubject(ctx); limited && s.limits != nil {
+		var recorded bool
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM email_batch_submissions WHERE org_id=$1 AND submission_key=$2)`, orgID, req.IdempotencyKey).Scan(&recorded); err != nil {
+			return nil, err
+		}
+		if !recorded {
+			recipients := 0
+			for _, e := range req.Emails {
+				recipients += len(e.To) + len(e.Cc) + len(e.Bcc)
+			}
+			if err := s.limits.Reserve(ctx, recipients); err != nil {
+				return nil, err
+			}
+		}
+	}
+	ctx = withoutSendQuota(ctx)
 	// Reserve the unchanged entire batch before any item is submitted. Retries may
 	// revisit failed validation items, while already accepted items keep their receipt.
 	_, err := s.db.ExecContext(ctx, `INSERT INTO email_batch_submissions(org_id,submission_key,user_id,request_hash) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, orgID, req.IdempotencyKey, userID, hash)

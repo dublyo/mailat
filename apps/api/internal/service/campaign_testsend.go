@@ -78,6 +78,11 @@ func (s *CampaignService) SendTestEmail(ctx context.Context, orgID int64, actor 
 	if _, _, err := resolveCampaignSender(ctx, tx, orgID, effectiveCreator(c, actor), c.FromEmail); err != nil {
 		return nil, err
 	}
+	// Test sends reach arbitrary addresses, so they count toward the caller's
+	// recipient limits; inside tx, a later failure rolls the count back.
+	if err := s.limits.ReserveTx(ctx, tx, len(recipients)); err != nil {
+		return nil, err
+	}
 	granted, err := reserveMonthlySendsTx(ctx, tx, s.cfg, orgID, int64(len(recipients)))
 	if err != nil {
 		return nil, err

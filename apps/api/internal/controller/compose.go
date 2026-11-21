@@ -84,7 +84,7 @@ func (c *ComposeController) SendEmail(r *ghttp.Request) {
 		})
 	}
 
-	result, err := c.composeService.SendEmail(r.Context(), claims.UserID, email)
+	result, err := c.composeService.SendEmail(sendQuotaContext(r, claims), claims.UserID, email)
 	if err != nil {
 		writeComposeError(r, err)
 		return
@@ -371,6 +371,9 @@ func composeErrorDetails(err error) (int, string) {
 }
 
 func writeComposeError(r *ghttp.Request, err error) {
+	if writeSendLimit(r, err) {
+		return
+	}
 	status, message := composeErrorDetails(err)
 	r.Response.Status = status
 	response.Error(r, status, message)

@@ -2,6 +2,10 @@
 
 Changes by milestone, newest first. Images are published as `ghcr.io/dublyo/mailat-api` and `ghcr.io/dublyo/mailat-web` tagged `sha-<full commit SHA>`; there are no version tags. Upgrade notes, backups and rollback are in [docs/self-hosting-ses.md](docs/self-hosting-ses.md).
 
+## 2026-11-21 security update
+
+- **Outbound sending limits, always on.** Compose sends, `POST /emails`, `POST /emails/batch` and campaign test sends are now capped by recipients (to+cc+bcc) per fixed UTC hour and day: per signed-in user (`SEND_LIMIT_USER_PER_HOUR`/`_PER_DAY`, default 300/2000) and separately per API key (`SEND_LIMIT_KEY_PER_HOUR`/`_PER_DAY`, default 300/2000), regardless of `DISABLE_APP_LIMITS`; `0` turns a window off and invalid values stop startup. A batch is counted and refused as a whole. User and API-key sends are also refused once the SES account has used 90% of its 24-hour quota (checked at most every five minutes; fails open if SES cannot be read), keeping the rest for system mail. Refusals return HTTP 429 with a readable message and `Retry-After`, record nothing, and leave the idempotency key reusable; replays of a recorded key are not counted twice. System mail, forwards, auto-replies, campaigns and automations are not counted. No migration (counts reuse `auth_rate_limits`). OpenAPI contract `2026-11-21` documents the 429 on those routes. New settings are in both `.env` examples and `docker-compose.prod.yml`; see [Sending limits](docs/self-hosting-ses.md#sending-limits).
+
 ## Domains: list, domain pages and "who reads mail"
 
 Not yet deployed; web only (no API, DTO or migration changes).

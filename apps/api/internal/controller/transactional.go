@@ -62,7 +62,7 @@ func (c *TransactionalController) SendEmail(r *ghttp.Request) {
 		return
 	}
 
-	result, err := c.transactionalService.SendEmailForUser(r.Context(), claims.OrgID, service.SendActor{UserID: claims.UserID, Admin: middleware.IsOrgAdmin(claims)}, &req)
+	result, err := c.transactionalService.SendEmailForUser(sendQuotaContext(r, claims), claims.OrgID, service.SendActor{UserID: claims.UserID, Admin: middleware.IsOrgAdmin(claims)}, &req)
 	if err != nil {
 		writeTransactionalError(r, err)
 		return
@@ -97,7 +97,7 @@ func (c *TransactionalController) BatchSendEmail(r *ghttp.Request) {
 		return
 	}
 
-	result, err := c.transactionalService.BatchSendEmailForUser(r.Context(), claims.OrgID, service.SendActor{UserID: claims.UserID, Admin: middleware.IsOrgAdmin(claims)}, &req)
+	result, err := c.transactionalService.BatchSendEmailForUser(sendQuotaContext(r, claims), claims.OrgID, service.SendActor{UserID: claims.UserID, Admin: middleware.IsOrgAdmin(claims)}, &req)
 	if err != nil {
 		writeTransactionalError(r, err)
 		return
@@ -323,6 +323,9 @@ func validHTTPSubmissionKey(key string) bool {
 	return len(key) >= 8 && len(key) <= 128 && !strings.ContainsAny(key, "\r\n")
 }
 func writeTransactionalError(r *ghttp.Request, err error) {
+	if writeSendLimit(r, err) {
+		return
+	}
 	if errors.Is(err, service.ErrSubmissionConflict) {
 		r.Response.Status = http.StatusConflict
 		response.Error(r, http.StatusConflict, err.Error())

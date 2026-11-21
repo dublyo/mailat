@@ -90,7 +90,12 @@ sending health (`/health/*`), `/auto-replies`, `/forwards`,
 among them still carry `x-mailat-role-required` for signed-in sessions.
 
 Key expiry, active user status and a PostgreSQL-backed per-minute request counter
-are checked on every call. A 429 includes `Retry-After` in seconds. API keys cannot
+are checked on every call. A 429 includes `Retry-After` in seconds. Each key also
+has its own recipient allowance for sends (`POST /emails`, `/emails/batch`,
+`/compose/send`, `/campaigns/:uuid/test`; default 300 recipients per hour and 2000
+per day, see [Sending limits](self-hosting-ses.md#sending-limits)); a refused send
+returns 429 without recording anything, so retry it later with the same
+idempotency key. A batch is counted, and refused, as a whole. API keys cannot
 create stronger keys, administer sessions, change passwords or bypass MFA. The
 OpenAPI reference marks human-only routes. Browser SSE uses a 60-second,
 single-use stream ticket, fetched again for every reconnect; ordinary API
