@@ -39,6 +39,7 @@ var (
 	RuleForwardVerifyIP     = RateRule{Name: "forward-verify-ip", Limit: 20, Window: 15 * time.Minute}
 	RuleInviteLookupIP      = RateRule{Name: "invite-lookup-ip", Limit: 20, Window: 15 * time.Minute}
 	RuleInviteAcceptIP      = RateRule{Name: "invite-accept-ip", Limit: 10, Window: 15 * time.Minute}
+	RuleWebAuthnBeginUser   = RateRule{Name: "webauthn-begin-user", Limit: 10, Window: 15 * time.Minute}
 )
 
 // RateLimiter counts hits in Postgres so limits hold across API replicas.

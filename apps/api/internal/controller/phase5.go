@@ -19,6 +19,7 @@ type Phase5Controller struct {
 	pushService           *service.PushNotificationService
 	brandingService       *service.BrandingService
 	auditLogService       *service.AuditLogService
+	limiter               *service.RateLimiter
 }
 
 // NewPhase5Controller creates a new Phase 5 controller
@@ -29,6 +30,7 @@ func NewPhase5Controller(
 	pushService *service.PushNotificationService,
 	brandingService *service.BrandingService,
 	auditLogService *service.AuditLogService,
+	limiter *service.RateLimiter,
 ) *Phase5Controller {
 	return &Phase5Controller{
 		webauthnService:       webauthnService,
@@ -37,7 +39,18 @@ func NewPhase5Controller(
 		pushService:           pushService,
 		brandingService:       brandingService,
 		auditLogService:       auditLogService,
+		limiter:               limiter,
 	}
+}
+
+// webauthnUnavailable answers 404 while WEBAUTHN_ENABLED is off, before any
+// challenge is created or consumed.
+func (c *Phase5Controller) webauthnUnavailable(r *ghttp.Request) bool {
+	if c.webauthnService.Enabled() {
+		return false
+	}
+	response.NotFound(r, service.ErrWebAuthnDisabled.Error())
+	return true
 }
 
 // ====================
@@ -50,6 +63,10 @@ func (c *Phase5Controller) BeginWebAuthnRegistration(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+
+	if c.webauthnUnavailable(r) || rateLimited(r, c.limiter, service.RuleWebAuthnBeginUser, strconv.FormatInt(claims.UserID, 10)) {
 		return
 	}
 
@@ -68,6 +85,10 @@ func (c *Phase5Controller) FinishWebAuthnRegistration(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+
+	if c.webauthnUnavailable(r) {
 		return
 	}
 
@@ -113,6 +134,10 @@ func (c *Phase5Controller) BeginWebAuthnAuthentication(r *ghttp.Request) {
 		return
 	}
 
+	if c.webauthnUnavailable(r) || rateLimited(r, c.limiter, service.RuleWebAuthnBeginUser, strconv.FormatInt(claims.UserID, 10)) {
+		return
+	}
+
 	options, err := c.webauthnService.BeginAuthentication(r.Context(), claims.UserID)
 	if err != nil {
 		response.BadRequest(r, err.Error())
@@ -128,6 +153,10 @@ func (c *Phase5Controller) FinishWebAuthnAuthentication(r *ghttp.Request) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
 		response.Unauthorized(r, "Not authenticated")
+		return
+	}
+
+	if c.webauthnUnavailable(r) {
 		return
 	}
 

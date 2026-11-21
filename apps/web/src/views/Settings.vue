@@ -620,13 +620,7 @@ async function handleSignOutAll() {
                     <button class="text-gmail-red hover:underline" @click="openFactorAction('disable')">Turn off</button>
                   </div>
                 </div>
-                <div class="flex items-center justify-between p-4 bg-gmail-lightGray rounded-lg">
-                  <div>
-                    <p class="font-medium">Security Keys (WebAuthn)</p>
-                    <p class="text-sm text-gmail-gray">Use hardware security keys like YubiKey</p>
-                  </div>
-                  <Button variant="secondary">Add Key</Button>
-                </div>
+                <!-- No security key / passkey option until the server verifies WebAuthn (WEBAUTHN_ENABLED is experimental). -->
               </div>
             </section>
 
