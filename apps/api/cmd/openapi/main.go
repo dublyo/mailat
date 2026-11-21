@@ -576,6 +576,15 @@ func customize(op object, verb, path string) {
 			limited["content"].(object)["application/json"].(object)["example"] = object{"code": 429, "message": "Too many attempts. Try again in 12 minutes."}
 		}
 	}
+	// Per-user / per-API-key recipient windows and the SES headroom guard.
+	sendLimited := map[string]bool{"POST /compose/send": true, "POST /emails": true, "POST /emails/batch": true, "POST /campaigns/:uuid/test": true}
+	if responses, ok := op["responses"].(object); ok && sendLimited[verb+" "+path] {
+		if limited, ok := responses["429"].(object); ok {
+			limited["description"] = "Sending limit reached: recipients (to+cc+bcc; a batch counts as a whole) per hour or day for this user, or for this API key, or the server's SES 24-hour quota is 90% used. Nothing was recorded; retry later with the same idempotency key. Retry-After is present when waiting helps, and also applies to the per-minute API key request limit."
+			limited["headers"] = object{"Retry-After": object{"description": "Seconds until the current window ends. Absent when the send has more recipients than a whole window allows.", "schema": object{"type": "integer", "minimum": 1}}}
+			limited["content"].(object)["application/json"].(object)["example"] = object{"code": 429, "message": "Sending limit reached: 300 recipients per hour. Try again in 12 minutes."}
+		}
+	}
 	if path == "/compose/reply/:id" || path == "/compose/forward/:id" {
 		op["description"] = "Get a context using the public SES mailbox message UUID as id. Map returned from.email to compose/send's fromEmail, and retain identityId, recipients, subject, bodies, inReplyTo, references and authorized attachments; do not post the context unchanged. Forward context includes authenticated attachment blob references. replyAll=true is supported on reply."
 	}

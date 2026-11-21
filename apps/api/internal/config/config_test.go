@@ -68,6 +68,9 @@ func TestValidate(t *testing.T) {
 		{"forward limits", func(c *Config) { c.ForwardMaxBytes, c.ForwardDailyLimit = 1<<20, 50 }, ""},
 		{"bad forward size", func(c *Config) { c.ForwardMaxBytes = 11 << 20 }, "FORWARD_MAX_BYTES"},
 		{"bad forward limit", func(c *Config) { c.ForwardDailyLimit = -1 }, "FORWARD_DAILY_LIMIT"},
+		{"send limits unlimited", func(c *Config) { c.SendLimitUserPerHour, c.SendLimitKeyPerDay = 0, 0 }, ""},
+		{"bad user send limit", func(c *Config) { c.SendLimitUserPerHour = -1 }, "SEND_LIMIT_USER_PER_HOUR"},
+		{"bad key send limit", func(c *Config) { c.SendLimitKeyPerDay = 10000001 }, "SEND_LIMIT_KEY_PER_DAY"},
 		{"sse connections", func(c *Config) { c.SSEMaxConnections = 200 }, ""},
 		{"bad sse connections", func(c *Config) { c.SSEMaxConnections = -1 }, "SSE_MAX_CONNECTIONS"},
 		{"push", func(c *Config) { setVAPID(c, testVAPIDPublic, testVAPIDPrivate, "mailto:ops@example.com") }, ""},
@@ -140,6 +143,37 @@ func TestDocumentedSecretExamplesFailValidate(t *testing.T) {
 	}
 }
 
+func TestLoadSendLimits(t *testing.T) {
+	previous := Cfg
+	t.Cleanup(func() { Cfg = previous })
+	keys := []string{"SEND_LIMIT_USER_PER_HOUR", "SEND_LIMIT_USER_PER_DAY", "SEND_LIMIT_KEY_PER_HOUR", "SEND_LIMIT_KEY_PER_DAY"}
+	for _, k := range append(keys, "EMAIL_PROVIDER", "JWT_EXPIRES_IN", "CORS_ORIGINS", "TRUSTED_PROXY_CIDRS", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT") {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef-jwt")
+	t.Setenv("ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef-enc")
+	t.Setenv("DISABLE_APP_LIMITS", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SendLimitUserPerHour != 300 || cfg.SendLimitUserPerDay != 2000 || cfg.SendLimitKeyPerHour != 300 || cfg.SendLimitKeyPerDay != 2000 {
+		t.Fatalf("send limits must default on even with DISABLE_APP_LIMITS: %+v", cfg)
+	}
+	t.Setenv("SEND_LIMIT_USER_PER_HOUR", "0")
+	t.Setenv("SEND_LIMIT_KEY_PER_DAY", " 50 ")
+	if cfg, err = Load(); err != nil || cfg.SendLimitUserPerHour != 0 || cfg.SendLimitKeyPerDay != 50 {
+		t.Fatalf("explicit limits: %+v %v", cfg, err)
+	}
+	for _, bad := range []string{"-5", "lots", "1.5"} {
+		t.Setenv("SEND_LIMIT_USER_PER_DAY", bad)
+		if _, err = Load(); err == nil || !strings.Contains(err.Error(), "SEND_LIMIT_USER_PER_DAY") {
+			t.Fatalf("%q accepted: %v", bad, err)
+		}
+	}
+}
+
 func TestLoadDefaultsAndValidation(t *testing.T) {
 	previous := Cfg
 	t.Cleanup(func() { Cfg = previous })
@@ -208,7 +242,8 @@ func TestParseProxyNets(t *testing.T) {
 // both example files.
 func TestArrivalAndLiveSettingsDocumented(t *testing.T) {
 	keys := []string{"AUTO_REPLY_DAILY_LIMIT", "FORWARD_MAX_BYTES", "FORWARD_DAILY_LIMIT", "INVITE_TTL_HOURS",
-		"VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "PUSH_ENDPOINT_HOST_SUFFIXES", "SSE_MAX_CONNECTIONS"}
+		"VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "PUSH_ENDPOINT_HOST_SUFFIXES", "SSE_MAX_CONNECTIONS",
+		"SEND_LIMIT_USER_PER_HOUR", "SEND_LIMIT_USER_PER_DAY", "SEND_LIMIT_KEY_PER_HOUR", "SEND_LIMIT_KEY_PER_DAY"}
 	for _, file := range []string{".env.example", ".env.production.example", "docker-compose.prod.yml"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", file))
 		if err != nil {

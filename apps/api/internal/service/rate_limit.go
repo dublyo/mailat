@@ -63,26 +63,36 @@ func (l *RateLimiter) storageKey(rule RateRule, subject string) string {
 // Allow records one hit and reports whether it is within the rule. When it is
 // not, retryAfter is the time left in the current window.
 func (l *RateLimiter) Allow(ctx context.Context, rule RateRule, subject string) (bool, time.Duration, error) {
+	return l.allowN(ctx, l.db, rule, subject, 1)
+}
+
+// allowN records n hits at once, or none when they would exceed the rule, so a
+// multi-recipient send is counted atomically. q may be a transaction, letting
+// several rules commit or roll back together.
+func (l *RateLimiter) allowN(ctx context.Context, q queryer, rule RateRule, subject string, n int) (bool, time.Duration, error) {
 	window := int64(rule.Window / time.Second)
-	if window < 1 || rule.Limit < 1 {
+	if window < 1 || rule.Limit < 1 || n < 1 {
 		return false, 0, fmt.Errorf("invalid rate rule %s", rule.Name)
 	}
-	var hits int
-	err := l.db.QueryRowContext(ctx, `
+	var err error
+	if n <= rule.Limit {
+		var hits int
+		err = q.QueryRowContext(ctx, `
 		WITH w AS (SELECT to_timestamp(floor(extract(epoch FROM now())/$3::int)*$3::int) AS ws)
-		INSERT INTO auth_rate_limits(key,window_start,hits) SELECT $1,ws,1 FROM w
+		INSERT INTO auth_rate_limits(key,window_start,hits) SELECT $1,ws,$4::int FROM w
 		ON CONFLICT(key) DO UPDATE SET window_start=EXCLUDED.window_start,
-			hits=CASE WHEN auth_rate_limits.window_start=EXCLUDED.window_start THEN auth_rate_limits.hits+1 ELSE 1 END
-		WHERE auth_rate_limits.window_start<>EXCLUDED.window_start OR auth_rate_limits.hits<$2
-		RETURNING hits`, l.storageKey(rule, subject), rule.Limit, window).Scan(&hits)
-	if err == nil {
-		return true, 0, nil
-	}
-	if err != sql.ErrNoRows {
-		return false, 0, err
+			hits=CASE WHEN auth_rate_limits.window_start=EXCLUDED.window_start THEN auth_rate_limits.hits+$4::int ELSE $4::int END
+		WHERE auth_rate_limits.window_start<>EXCLUDED.window_start OR auth_rate_limits.hits<=$2::int-$4::int
+		RETURNING hits`, l.storageKey(rule, subject), rule.Limit, window, n).Scan(&hits)
+		if err == nil {
+			return true, 0, nil
+		}
+		if err != sql.ErrNoRows {
+			return false, 0, err
+		}
 	}
 	var seconds float64
-	err = l.db.QueryRowContext(ctx, `SELECT extract(epoch FROM to_timestamp(floor(extract(epoch FROM now())/$1::int)*$1::int) + make_interval(secs => $1::int) - now())`, window).Scan(&seconds)
+	err = q.QueryRowContext(ctx, `SELECT extract(epoch FROM to_timestamp(floor(extract(epoch FROM now())/$1::int)*$1::int) + make_interval(secs => $1::int) - now())`, window).Scan(&seconds)
 	if err != nil {
 		return false, 0, err
 	}

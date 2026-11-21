@@ -24652,6 +24652,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Sending limit reached: 300 recipients per hour. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -24670,10 +24674,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Sending limit reached: recipients (to+cc+bcc; a batch counts as a whole) per hour or day for this user, or for this API key, or the server's SES 24-hour quota is 90% used. Nothing was recorded; retry later with the same idempotency key. Retry-After is present when waiting helps, and also applies to the per-minute API key request limit.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current window ends. Absent when the send has more recipients than a whole window allows.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -26563,6 +26567,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Sending limit reached: 300 recipients per hour. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -26581,10 +26589,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Sending limit reached: recipients (to+cc+bcc; a batch counts as a whole) per hour or day for this user, or for this API key, or the server's SES 24-hour quota is 90% used. Nothing was recorded; retry later with the same idempotency key. Retry-After is present when waiting helps, and also applies to the per-minute API key request limit.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current window ends. Absent when the send has more recipients than a whole window allows.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -33691,6 +33699,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Sending limit reached: 300 recipients per hour. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -33709,10 +33721,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Sending limit reached: recipients (to+cc+bcc; a batch counts as a whole) per hour or day for this user, or for this API key, or the server's SES 24-hour quota is 90% used. Nothing was recorded; retry later with the same idempotency key. Retry-After is present when waiting helps, and also applies to the per-minute API key request limit.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current window ends. Absent when the send has more recipients than a whole window allows.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"
@@ -33981,6 +33993,10 @@
           "429": {
             "content": {
               "application/json": {
+                "example": {
+                  "code": 429,
+                  "message": "Sending limit reached: 300 recipients per hour. Try again in 12 minutes."
+                },
                 "schema": {
                   "properties": {
                     "code": {
@@ -33999,10 +34015,10 @@
                 }
               }
             },
-            "description": "Rate limit exceeded; respect Retry-After",
+            "description": "Sending limit reached: recipients (to+cc+bcc; a batch counts as a whole) per hour or day for this user, or for this API key, or the server's SES 24-hour quota is 90% used. Nothing was recorded; retry later with the same idempotency key. Retry-After is present when waiting helps, and also applies to the per-minute API key request limit.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds until the next fixed-minute request window.",
+                "description": "Seconds until the current window ends. Absent when the send has more recipients than a whole window allows.",
                 "schema": {
                   "minimum": 1,
                   "type": "integer"

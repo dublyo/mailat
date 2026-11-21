@@ -425,6 +425,12 @@ func (s *ComposeService) sendMailboxEmail(ctx context.Context, userID int64, ema
 	if _, _, err := provider.BuildMailMIME(msg); err != nil {
 		return nil, err
 	}
+	// Count recipients after the replay check (a retry with the same key is not
+	// counted again) and before the key is claimed, so a refused send leaves the
+	// key unused and can be retried unchanged once the window allows.
+	if err := s.limits.Reserve(ctx, len(recipients)); err != nil {
+		return nil, err
+	}
 	id := uuid.NewString()
 	messageID := "<" + id + "@" + sender.domain + ">"
 	tx, err := s.db.BeginTx(ctx, nil)

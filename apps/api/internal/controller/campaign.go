@@ -47,6 +47,9 @@ func campaignErrorDetails(err error) (int, string) {
 }
 
 func writeCampaignError(r *ghttp.Request, err error) {
+	if writeSendLimit(r, err) {
+		return
+	}
 	status, message := campaignErrorDetails(err)
 	if status == http.StatusInternalServerError {
 		log.Printf("campaign request failed: %v", err)
@@ -385,7 +388,7 @@ func (c *CampaignController) SendTest(r *ghttp.Request) {
 		return
 	}
 
-	result, err := c.campaignService.SendTestEmail(r.Context(), claims.OrgID, campaignActor(claims), campaignUUID, req.Emails, r.Header.Get("Idempotency-Key"))
+	result, err := c.campaignService.SendTestEmail(sendQuotaContext(r, claims), claims.OrgID, campaignActor(claims), campaignUUID, req.Emails, r.Header.Get("Idempotency-Key"))
 	if err != nil {
 		writeCampaignError(r, err)
 		return

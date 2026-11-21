@@ -209,6 +209,14 @@ func SessionHash(ctx context.Context) string {
 	c, _ := ctx.Value(credentialContextKey).(credential)
 	return c.SessionHash
 }
+
+// APIKeyID returns the authenticating API key's ID, or 0 for sessions and
+// unauthenticated contexts.
+func APIKeyID(ctx context.Context) int64 {
+	c, _ := ctx.Value(credentialContextKey).(credential)
+	return c.KeyID
+}
+
 func GetClaims(r *ghttp.Request) *model.JWTClaims {
 	c, _ := r.Context().Value(ClaimsContextKey).(*model.JWTClaims)
 	return c

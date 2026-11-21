@@ -345,6 +345,21 @@ A newly attached file is represented as:
 
 Application safety limits are 50 recipients per message, 50 attachments, 10 MiB combined decoded attachment bytes, and 2 MiB combined compose HTML/text. The compose JSON body is bounded at 18 MiB. Received raw MIME is bounded at 40 MiB. These limits still apply when plan caps are disabled, and AWS's [service quotas](https://docs.aws.amazon.com/ses/latest/dg/quotas.html) apply independently. A received file larger than the compose attachment limit cannot be forwarded through compose unchanged.
 
+### Sending limits
+
+User-initiated sends are capped by recipients (to + cc + bcc), in fixed UTC windows, whatever `DISABLE_APP_LIMITS` says:
+
+| Setting | Default | Counts |
+| --- | --- | --- |
+| `SEND_LIMIT_USER_PER_HOUR` / `SEND_LIMIT_USER_PER_DAY` | 300 / 2000 | everything one person sends from a signed-in session |
+| `SEND_LIMIT_KEY_PER_HOUR` / `SEND_LIMIT_KEY_PER_DAY` | 300 / 2000 | everything sent with one API key (a key does not use its owner's allowance) |
+
+`0` turns a window off; a negative or non-numeric value stops startup. The limits cover `POST /compose/send`, `POST /emails`, `POST /emails/batch` (all recipients in the batch are counted together, and the whole batch is refused if they do not fit) and campaign test sends (`POST /campaigns/:uuid/test`). A refused send answers HTTP 429 with a message such as "Sending limit reached: 300 recipients per hour. Try again in 12 minutes." and, when waiting helps, `Retry-After`; nothing is recorded, so the same idempotency key can be retried unchanged later. Recipients are reserved before the send is recorded and stay counted even if delivery then fails; a retry that replays an already recorded idempotency key is not counted again. Counts live in PostgreSQL, so they hold across API replicas.
+
+Independently, once the SES account has used 90% of its 24-hour quota (read from SES at most every five minutes), user and API-key sends are refused with HTTP 429 so the remaining 10% stays available for system mail. If the quota cannot be read, sends are allowed and the failure is logged.
+
+System mail (invites, verification links, signup confirmations, alert digests), forwards and auto-replies (`FORWARD_DAILY_LIMIT`, `AUTO_REPLY_DAILY_LIMIT`), and campaign and automation delivery (the SES rate budget and monthly quota) are not counted here.
+
 Outbound attachments use private objects in the domain's attachment bucket: the `mailat-send-…` bucket that sending setup records for the domain, or otherwise the receiving bucket. A send-only domain therefore stores attachments once **Set up sending resources** has run; a domain with neither sending setup nor receiving cannot store new attachment bytes. If storage fails, the request fails instead of returning a fake blob or silently omitting a file.
 
 ### Send status and safe retries
